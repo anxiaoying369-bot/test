@@ -7,7 +7,6 @@ const inputQuery = ref('');
 const chatHistory = ref([
   { role: 'assistant', content: '您好，我是您的 AutoCast AI 助手。您可以直接吩咐我执行自动化任务，比如：“帮我在小红书上查找抹茶软欧包教程，制作成脚本”。' }
 ]);
-const logs = ref<string[]>([]);
 const isProcessing = ref(false);
 
 async function handleSend() {
@@ -22,15 +21,10 @@ async function handleSend() {
   if (query.includes('小红书') && (query.includes('查找') || query.includes('搜索') || query.includes('找') || query.includes('脚本'))) {
     chatHistory.value.push({ role: 'assistant', content: '好的，正在为您启动小红书自动化检索机制，提取相关内容与素材...' });
     
-    logs.value.push(`[${new Date().toLocaleTimeString()}] [INTENT] Detected intent: Xiaohongshu content search`);
-    logs.value.push(`[${new Date().toLocaleTimeString()}] [INFO] Starting CloakBrowser...`);
-    
     try {
       const result = await invoke('spy_xiaohongshu', { keyword: query });
-      logs.value.push(`[${new Date().toLocaleTimeString()}] [SUCCESS] Task completed: ${result}`);
-      chatHistory.value.push({ role: 'assistant', content: '✅ 检索完成！已成功抓取小红书热门内容。配方、素材与评论已提取完毕，您可以随时在右侧日志中查看细节，或者让我继续为您生成最终脚本。' });
+      chatHistory.value.push({ role: 'assistant', content: '✅ 检索完成！已成功抓取小红书热门内容。配方、素材与评论已提取完毕，您可以让我继续为您生成最终脚本。' });
     } catch (error) {
-      logs.value.push(`[${new Date().toLocaleTimeString()}] [ERROR] Task failed: ${error}`);
       chatHistory.value.push({ role: 'assistant', content: `❌ 检索过程中遇到错误：${error}` });
     }
   } else {
@@ -98,8 +92,8 @@ function handleKeydown(e: KeyboardEvent) {
       </div>
     </aside>
 
-    <!-- 2. 中间栏：LLM 聊天交互区 -->
-    <main class="flex flex-col w-[40%] h-full bg-gray-950 border-r border-gray-800">
+    <!-- 2. 主内容栏：LLM 聊天交互区 -->
+    <main class="flex flex-col flex-1 h-full bg-gray-950">
       <!-- 聊天标题 -->
       <div class="p-4 border-b border-gray-800 flex items-center justify-center shadow-sm z-10">
         <h2 class="text-sm font-medium text-gray-300 flex items-center gap-2">
@@ -146,19 +140,6 @@ function handleKeydown(e: KeyboardEvent) {
         <div class="text-center mt-2 text-[11px] text-gray-500">AutoCast AI 可自动唤起工具执行您的指令</div>
       </div>
     </main>
-
-    <!-- 3. 右侧栏：Agent 脑核控制台与本地日志 -->
-    <aside class="flex flex-col w-[40%] h-full bg-black font-mono">
-
-      <!-- 滚动日志区 -->
-      <div class="flex-1 overflow-y-auto p-4 text-[13px] leading-relaxed space-y-1">
-        <div v-for="log in logs" :key="log" class="text-gray-300">
-          {{ log }}
-        </div>
-        <!-- Blinking cursor -->
-        <div class="inline-block w-2 h-4 bg-gray-500 animate-pulse mt-2"></div>
-      </div>
-    </aside>
   </div>
 </template>
 
