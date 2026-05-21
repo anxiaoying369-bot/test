@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { 
+  Trash2,
   Settings, 
   MessageSquare, 
   Smartphone, 
@@ -62,6 +63,12 @@ function handleKeydown(e: KeyboardEvent) {
 function openLogin(platform: string) {
   currentLoginPlatform.value = platform;
   isLoginModalOpen.value = true;
+}
+
+function deleteAccount(id: number) {
+  if (confirm('确定要删除此授权账号吗？')) {
+    accounts.value = accounts.value.filter(a => a.id !== id);
+  }
 }
 </script>
 
@@ -199,6 +206,9 @@ function openLogin(platform: string) {
               <div :class="['text-xs px-2 py-1 rounded-md', acc.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500']">
                 {{ acc.status === 'active' ? '有效' : '已失效' }}
               </div>
+              <button @click="deleteAccount(acc.id)" class="text-gray-500 hover:text-red-500 transition-colors p-1 cursor-pointer">
+                <Trash2 class="w-4 h-4" />
+              </button>
             </div>
           </div>
         </div>
@@ -228,6 +238,9 @@ function openLogin(platform: string) {
               <div :class="['text-xs px-2 py-1 rounded-md', acc.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500']">
                 {{ acc.status === 'active' ? '有效' : '已失效' }}
               </div>
+              <button @click="deleteAccount(acc.id)" class="text-gray-500 hover:text-red-500 transition-colors p-1 cursor-pointer">
+                <Trash2 class="w-4 h-4" />
+              </button>
             </div>
           </div>
         </div>
