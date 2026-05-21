@@ -1,48 +1,56 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { Settings, Video, MessageSquare, Box, Play, Smartphone, AlertCircle, Clock } from 'lucide-vue-next';
+import { Settings, MessageSquare, Smartphone, Send, Bot, TerminalSquare } from 'lucide-vue-next';
 import { invoke } from '@tauri-apps/api/core';
 
-const showInspiration = ref(true);
+const inputQuery = ref('');
+const chatHistory = ref([
+  { role: 'assistant', content: '您好，我是您的 AutoCast AI 助手。您可以直接吩咐我执行自动化任务，比如：“帮我在小红书上查找抹茶软欧包教程，制作成脚本”。' }
+]);
 const logs = ref<string[]>([]);
+const isProcessing = ref(false);
 
-async function triggerXiaohongshuSpy() {
-  showInspiration.value = false;
-  logs.value.push(`[${new Date().toLocaleTimeString()}] [INFO] Starting CloakBrowser for Xiaohongshu...`);
-  
-  try {
-    const result = await invoke('spy_xiaohongshu', { keyword: '抹茶软欧包教程' });
-    logs.value.push(`[${new Date().toLocaleTimeString()}] [SUCCESS] Task completed: ${result}`);
-  } catch (error) {
-    logs.value.push(`[${new Date().toLocaleTimeString()}] [ERROR] Task failed: ${error}`);
+async function handleSend() {
+  const query = inputQuery.value.trim();
+  if (!query) return;
+
+  chatHistory.value.push({ role: 'user', content: query });
+  inputQuery.value = '';
+  isProcessing.value = true;
+
+  // 简单模拟意图识别
+  if (query.includes('小红书') && (query.includes('查找') || query.includes('搜索') || query.includes('找') || query.includes('脚本'))) {
+    chatHistory.value.push({ role: 'assistant', content: '好的，正在为您启动小红书自动化检索机制，提取相关内容与素材...' });
+    
+    logs.value.push(`[${new Date().toLocaleTimeString()}] [INTENT] Detected intent: Xiaohongshu content search`);
+    logs.value.push(`[${new Date().toLocaleTimeString()}] [INFO] Starting CloakBrowser...`);
+    
+    try {
+      const result = await invoke('spy_xiaohongshu', { keyword: query });
+      logs.value.push(`[${new Date().toLocaleTimeString()}] [SUCCESS] Task completed: ${result}`);
+      chatHistory.value.push({ role: 'assistant', content: '✅ 检索完成！已成功抓取小红书热门内容。配方、素材与评论已提取完毕，您可以随时在右侧日志中查看细节，或者让我继续为您生成最终脚本。' });
+    } catch (error) {
+      logs.value.push(`[${new Date().toLocaleTimeString()}] [ERROR] Task failed: ${error}`);
+      chatHistory.value.push({ role: 'assistant', content: `❌ 检索过程中遇到错误：${error}` });
+    }
+  } else {
+    setTimeout(() => {
+      chatHistory.value.push({ role: 'assistant', content: '我明白了。如果您需要查找素材，可以尝试对我说：“帮我在小红书上查找相关内容”。' });
+    }, 800);
+  }
+  isProcessing.value = false;
+}
+
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    handleSend();
   }
 }
 </script>
 
 <template>
   <div class="flex h-screen w-screen overflow-hidden bg-gray-950 text-gray-50 font-sans selection:bg-blue-600/30">
-    <!-- 全屏灵感遮罩 -->
-    <div v-if="showInspiration" class="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center pointer-events-none">
-       <div class="grid grid-cols-2 gap-4 pointer-events-auto">
-          <button @click="triggerXiaohongshuSpy" class="bg-gray-900 border border-gray-800 hover:border-blue-500/50 hover:bg-gray-800/80 p-6 rounded-xl text-left transition-all group cursor-pointer">
-             <h3 class="text-lg font-bold text-gray-50 mb-2 group-hover:text-blue-400">抹茶软欧包教程</h3>
-             <p class="text-sm text-gray-400">一键复刻小红书烘焙爆款</p>
-          </button>
-          <button class="bg-gray-900 border border-gray-800 hover:border-blue-500/50 hover:bg-gray-800/80 p-6 rounded-xl text-left transition-all group cursor-pointer">
-             <h3 class="text-lg font-bold text-gray-50 mb-2 group-hover:text-blue-400">数字化笔记</h3>
-             <p class="text-sm text-gray-400">效率达人必备框架</p>
-          </button>
-          <button class="bg-gray-900 border border-gray-800 hover:border-blue-500/50 hover:bg-gray-800/80 p-6 rounded-xl text-left transition-all group cursor-pointer">
-             <h3 class="text-lg font-bold text-gray-50 mb-2 group-hover:text-blue-400">健康轻食</h3>
-             <p class="text-sm text-gray-400">减脂期餐单</p>
-          </button>
-          <button class="bg-gray-900 border border-gray-800 hover:border-blue-500/50 hover:bg-gray-800/80 p-6 rounded-xl text-left transition-all group cursor-pointer">
-             <h3 class="text-lg font-bold text-gray-50 mb-2 group-hover:text-blue-400">穿搭公式</h3>
-             <p class="text-sm text-gray-400">早秋高级感</p>
-          </button>
-       </div>
-    </div>
-
     <!-- 1. 左侧栏：全局导航与设备状态 -->
     <aside class="flex flex-col w-[20%] h-full bg-gray-950 border-r border-gray-800">
       <!-- 顶部 Logo -->
@@ -61,16 +69,12 @@ async function triggerXiaohongshuSpy() {
       <nav class="flex-1 px-3 space-y-1">
         <a href="#" class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-900 text-gray-50 relative group">
           <div class="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-blue-600 rounded-r-md"></div>
-          <Video class="w-5 h-5 text-blue-500" />
-          <span class="font-medium text-sm">🎬 视频发布矩阵</span>
+          <MessageSquare class="w-5 h-5 text-blue-500" />
+          <span class="font-medium text-sm">AI 助理对话</span>
         </a>
         <a href="#" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-gray-400 hover:text-gray-50 hover:bg-gray-900/50 transition-colors">
-          <MessageSquare class="w-5 h-5" />
-          <span class="font-medium text-sm">💬 私域微信客服</span>
-        </a>
-        <a href="#" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-gray-400 hover:text-gray-50 hover:bg-gray-900/50 transition-colors">
-          <Box class="w-5 h-5" />
-          <span class="font-medium text-sm">📦 Obsidian 知识库</span>
+          <TerminalSquare class="w-5 h-5" />
+          <span class="font-medium text-sm">自动化任务</span>
         </a>
       </nav>
 
@@ -94,70 +98,52 @@ async function triggerXiaohongshuSpy() {
       </div>
     </aside>
 
-    <!-- 2. 中间栏：工作流任务队列中控台 -->
+    <!-- 2. 中间栏：LLM 聊天交互区 -->
     <main class="flex flex-col w-[40%] h-full bg-gray-950 border-r border-gray-800">
-      <!-- 顶部操控区 -->
-      <div class="p-4 border-b border-gray-800 flex gap-3">
-        <div class="relative flex-1">
-          <input type="text" placeholder="输入搞钱关键词 (如: 抹茶欧包)..." 
-            class="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2 text-sm text-gray-50 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-600 focus:border-blue-600 transition-all shadow-sm" />
-        </div>
-        <button class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors shadow-sm whitespace-nowrap cursor-pointer">
-          <Play class="w-4 h-4" />
-          + 投放新任务
-        </button>
+      <!-- 聊天标题 -->
+      <div class="p-4 border-b border-gray-800 flex items-center justify-center shadow-sm z-10">
+        <h2 class="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <Bot class="w-4 h-4 text-emerald-500" />
+          智能体交互中心
+        </h2>
       </div>
 
-      <!-- 中部队列列表 -->
-      <div class="flex-1 overflow-y-auto p-4 space-y-3">
-        <!-- 执行中卡片 -->
-        <div class="bg-gray-900 rounded-xl p-4 border border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.1)] relative overflow-hidden">
-          <div class="absolute top-0 left-0 h-1 bg-emerald-500 w-[68%] transition-all duration-1000"></div>
-          <div class="flex justify-between items-start mb-3">
-            <div class="flex items-center gap-2">
-              <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-              <span class="text-xs font-mono text-emerald-500">#Task-8821</span>
-            </div>
-            <span class="text-xs font-mono text-gray-400">68%</span>
-          </div>
-          <p class="text-sm font-medium text-gray-50">正在剪辑视频...</p>
-          <div class="mt-3 flex gap-2 text-gray-500">
-             <span class="animate-bounce">🎬</span>
-             <span class="animate-bounce" style="animation-delay: 100ms">✂️</span>
-             <span class="animate-bounce" style="animation-delay: 200ms">🎵</span>
+      <!-- 聊天内容区 -->
+      <div class="flex-1 overflow-y-auto p-4 space-y-4 flex flex-col">
+        <div v-for="(msg, index) in chatHistory" :key="index" 
+             :class="['max-w-[85%] rounded-xl p-3 text-sm leading-relaxed', 
+                      msg.role === 'user' ? 'bg-blue-600 text-white self-end rounded-br-none' : 'bg-gray-900 border border-gray-800 text-gray-200 self-start rounded-bl-none']">
+          {{ msg.content }}
+        </div>
+        
+        <div v-if="isProcessing" class="self-start bg-gray-900 border border-gray-800 rounded-xl rounded-bl-none p-3 max-w-[85%]">
+          <div class="flex gap-1 items-center">
+            <div class="w-2 h-2 bg-gray-500 rounded-full animate-bounce"></div>
+            <div class="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
+            <div class="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
           </div>
         </div>
+      </div>
 
-        <!-- 高优先级插队卡片 -->
-        <div class="bg-gray-900 rounded-xl p-4 border border-red-500/20">
-          <div class="flex items-center gap-2 mb-2">
-            <AlertCircle class="w-4 h-4 text-red-500 animate-pulse" />
-            <span class="text-xs font-bold text-red-500">[⚡ 优先响应]</span>
-          </div>
-          <p class="text-sm text-gray-300">自动回复: <span class="text-gray-50 font-medium">客户 张步步</span></p>
+      <!-- 底部输入区 -->
+      <div class="p-4 border-t border-gray-800 bg-gray-950">
+        <div class="relative flex items-end gap-2 bg-gray-900 border border-gray-800 rounded-xl p-1 focus-within:ring-1 focus-within:ring-blue-600 focus-within:border-blue-600 transition-all">
+          <textarea 
+            v-model="inputQuery"
+            @keydown="handleKeydown"
+            placeholder="输入指令，如：帮我在小红书上查找相关内容..." 
+            class="w-full bg-transparent border-none px-3 py-2 text-sm text-gray-50 placeholder-gray-500 focus:outline-none resize-none min-h-[44px] max-h-32"
+            rows="1"
+          ></textarea>
+          <button 
+            @click="handleSend"
+            :disabled="!inputQuery.trim() || isProcessing"
+            class="mb-1 mr-1 p-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <Send class="w-4 h-4" />
+          </button>
         </div>
-
-        <!-- 等待中卡片 -->
-        <div class="bg-gray-900/50 rounded-xl p-4 border border-gray-800">
-          <div class="flex justify-between items-center mb-2">
-            <span class="text-xs text-gray-500 font-mono">#Task-8822</span>
-            <span class="text-xs font-medium text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded flex items-center gap-1">
-              <Clock class="w-3 h-3" /> 排队中
-            </span>
-          </div>
-          <p class="text-sm text-gray-400">关键词: <span class="text-gray-300">肉松小贝</span></p>
-        </div>
-
-        <!-- 等待中卡片 -->
-        <div class="bg-gray-900/50 rounded-xl p-4 border border-gray-800">
-          <div class="flex justify-between items-center mb-2">
-            <span class="text-xs text-gray-500 font-mono">#Task-8823</span>
-            <span class="text-xs font-medium text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded flex items-center gap-1">
-              <Clock class="w-3 h-3" /> 排队中
-            </span>
-          </div>
-          <p class="text-sm text-gray-400">关键词: <span class="text-gray-300">提拉米苏</span></p>
-        </div>
+        <div class="text-center mt-2 text-[11px] text-gray-500">AutoCast AI 可自动唤起工具执行您的指令</div>
       </div>
     </main>
 
@@ -180,18 +166,6 @@ async function triggerXiaohongshuSpy() {
         <div v-for="log in logs" :key="log" class="text-gray-300">
           {{ log }}
         </div>
-        <div class="text-gray-400"><span class="text-gray-500">[09:42:01]</span> <span class="text-blue-400">[INFO]</span> Workspace initialized at AppData/Roaming/autocast/xhs_writer</div>
-        <div class="text-gray-300"><span class="text-gray-500">[09:42:03]</span> <span class="text-emerald-500">[OCR]</span> Crawled 15 top notes from Xiaohongshu successfully.</div>
-        <div class="text-gray-300"><span class="text-gray-500">[09:42:06]</span> <span class="text-purple-400">[LLM]</span> Thinking: Analyzing audience pain points for "Matcha Bread"...</div>
-        <div class="text-gray-300"><span class="text-gray-500">[09:42:10]</span> <span class="text-amber-400">[AIGC]</span> Triggered Stable Diffusion API. Generating merchant-grade images...</div>
-        <div class="text-gray-300"><span class="text-gray-500">[09:42:15]</span> <span class="text-pink-400">[RPA]</span> ADB Command Executed: adb shell input tap 950 1850 (Click Send)</div>
-        
-        <div class="bg-amber-500/10 border-l-2 border-amber-500 pl-2 py-1 my-2">
-          <span class="text-gray-500">[09:43:00]</span> <span class="text-amber-500 font-bold">[WECHAT]</span> <span class="text-amber-400">New message from [张步步]: "系统怎么卖？"</span>
-        </div>
-        
-        <div class="text-gray-300"><span class="text-gray-500">[09:43:01]</span> <span class="text-blue-400">[AGENT]</span> Loaded Obsidian Vault context: <span class="text-gray-50">📦 品牌产品知识库/价格表.md</span></div>
-        
         <!-- Blinking cursor -->
         <div class="inline-block w-2 h-4 bg-gray-500 animate-pulse mt-2"></div>
       </div>
