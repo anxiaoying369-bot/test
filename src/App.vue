@@ -1,9 +1,48 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { Settings, Video, MessageSquare, Box, Play, Smartphone, AlertCircle, Clock } from 'lucide-vue-next';
+import { invoke } from '@tauri-apps/api/core';
+
+const showInspiration = ref(true);
+const logs = ref<string[]>([]);
+
+async function triggerXiaohongshuSpy() {
+  showInspiration.value = false;
+  logs.value.push(`[${new Date().toLocaleTimeString()}] [INFO] Starting CloakBrowser for Xiaohongshu...`);
+  
+  try {
+    const result = await invoke('spy_xiaohongshu', { keyword: '抹茶软欧包教程' });
+    logs.value.push(`[${new Date().toLocaleTimeString()}] [SUCCESS] Task completed: ${result}`);
+  } catch (error) {
+    logs.value.push(`[${new Date().toLocaleTimeString()}] [ERROR] Task failed: ${error}`);
+  }
+}
 </script>
 
 <template>
   <div class="flex h-screen w-screen overflow-hidden bg-gray-950 text-gray-50 font-sans selection:bg-blue-600/30">
+    <!-- 全屏灵感遮罩 -->
+    <div v-if="showInspiration" class="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+       <div class="grid grid-cols-2 gap-4 pointer-events-auto">
+          <button @click="triggerXiaohongshuSpy" class="bg-gray-900 border border-gray-800 hover:border-blue-500/50 hover:bg-gray-800/80 p-6 rounded-xl text-left transition-all group cursor-pointer">
+             <h3 class="text-lg font-bold text-gray-50 mb-2 group-hover:text-blue-400">抹茶软欧包教程</h3>
+             <p class="text-sm text-gray-400">一键复刻小红书烘焙爆款</p>
+          </button>
+          <button class="bg-gray-900 border border-gray-800 hover:border-blue-500/50 hover:bg-gray-800/80 p-6 rounded-xl text-left transition-all group cursor-pointer">
+             <h3 class="text-lg font-bold text-gray-50 mb-2 group-hover:text-blue-400">数字化笔记</h3>
+             <p class="text-sm text-gray-400">效率达人必备框架</p>
+          </button>
+          <button class="bg-gray-900 border border-gray-800 hover:border-blue-500/50 hover:bg-gray-800/80 p-6 rounded-xl text-left transition-all group cursor-pointer">
+             <h3 class="text-lg font-bold text-gray-50 mb-2 group-hover:text-blue-400">健康轻食</h3>
+             <p class="text-sm text-gray-400">减脂期餐单</p>
+          </button>
+          <button class="bg-gray-900 border border-gray-800 hover:border-blue-500/50 hover:bg-gray-800/80 p-6 rounded-xl text-left transition-all group cursor-pointer">
+             <h3 class="text-lg font-bold text-gray-50 mb-2 group-hover:text-blue-400">穿搭公式</h3>
+             <p class="text-sm text-gray-400">早秋高级感</p>
+          </button>
+       </div>
+    </div>
+
     <!-- 1. 左侧栏：全局导航与设备状态 -->
     <aside class="flex flex-col w-[20%] h-full bg-gray-950 border-r border-gray-800">
       <!-- 顶部 Logo -->
@@ -138,6 +177,9 @@ import { Settings, Video, MessageSquare, Box, Play, Smartphone, AlertCircle, Clo
 
       <!-- 滚动日志区 -->
       <div class="flex-1 overflow-y-auto p-4 text-[13px] leading-relaxed space-y-1">
+        <div v-for="log in logs" :key="log" class="text-gray-300">
+          {{ log }}
+        </div>
         <div class="text-gray-400"><span class="text-gray-500">[09:42:01]</span> <span class="text-blue-400">[INFO]</span> Workspace initialized at AppData/Roaming/autocast/xhs_writer</div>
         <div class="text-gray-300"><span class="text-gray-500">[09:42:03]</span> <span class="text-emerald-500">[OCR]</span> Crawled 15 top notes from Xiaohongshu successfully.</div>
         <div class="text-gray-300"><span class="text-gray-500">[09:42:06]</span> <span class="text-purple-400">[LLM]</span> Thinking: Analyzing audience pain points for "Matcha Bread"...</div>
