@@ -35,7 +35,7 @@ async function handleSend() {
     }
   } else {
     setTimeout(() => {
-      chatHistory.value.push({ role: 'assistant', content: '我明白了。如果您需要查找素材，可以尝试对我说：“帮我在小红书上查找相关内容”。' });
+      chatHistory.value.push({ role: 'assistant', content: '我明白了。如果您需要查找素材，可以尝试对我说：“帮我在小红书上查找抹茶软欧包教程”。' });
     }, 800);
   }
   isProcessing.value = false;
@@ -149,17 +149,6 @@ function handleKeydown(e: KeyboardEvent) {
 
     <!-- 3. 右侧栏：Agent 脑核控制台与本地日志 -->
     <aside class="flex flex-col w-[40%] h-full bg-black font-mono">
-      <!-- 顶部状态栏 -->
-      <div class="p-3 border-b border-gray-800 bg-gray-950 flex items-center justify-between">
-        <div class="text-xs text-gray-400">
-          当前大脑: <span class="text-emerald-500 font-bold">[ 🎬 导演/剪辑智能体 ]</span>
-        </div>
-        <div class="flex gap-1">
-          <div class="w-3 h-3 rounded-full bg-gray-800"></div>
-          <div class="w-3 h-3 rounded-full bg-gray-800"></div>
-          <div class="w-3 h-3 rounded-full bg-gray-800"></div>
-        </div>
-      </div>
 
       <!-- 滚动日志区 -->
       <div class="flex-1 overflow-y-auto p-4 text-[13px] leading-relaxed space-y-1">
