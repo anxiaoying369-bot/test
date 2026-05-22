@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
-抖音手动登录 - Playwright 版（手动确认模式）
+抖音手动登录 - DrissionPage + Chrome CDP 接管模式
 
 流程：
-  1. 启动浏览器，跳转到抖音创作者中心登录页
-  2. 用户在浏览器里手动完成登录
-  3. 用户在 Tauri UI 上点"登录完成"
-  4. Tauri 调用 POST /finish?save_dir=... 触发本脚本抓 cookie 并保存
-  5. 关闭浏览器，进程退出
+  1. 检测 9222 端口是否占用
+     - 未占用 → 用 --remote-debugging-port=9222 启动 Chrome
+     - 已占用 → 直接连接已有 Chrome
+  2. 连接不上则报错退出
+  3. 用户在浏览器里手动完成登录
+  4. 用户在 Tauri UI 上点"登录完成"
+  5. Tauri 调用 POST /finish?save_dir=... 触发本脚本抓 cookie 并保存
+  6. 断开连接（不关闭用户的 Chrome），进程退出
 
 用法：
   python3 douyin_login.py --port 18001 --session-id <uuid>
 
 HTTP API：
   GET  /status                    -> {status, error}
-  POST /finish?save_dir=<path>    -> {status, user_info, message}
+  POST /finish?save_dir=<path>    -> {ok, user_info, message}
   DELETE /cancel                  -> 取消并退出
 """
 
@@ -24,6 +27,8 @@ import os
 import queue
 import re
 import signal
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -32,13 +37,21 @@ from typing import Optional
 from urllib.parse import urlparse, parse_qs
 
 try:
-    from playwright.sync_api import sync_playwright
+    from DrissionPage import ChromiumPage, ChromiumOptions
 except ImportError:
-    print("ERROR: playwright 未安装", flush=True)
+    print("ERROR: DrissionPage 未安装，请运行: pip3 install DrissionPage", flush=True)
     sys.exit(1)
 
 
+# ============ 配置 ============
+
+CDP_PORT = 9222
+CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME_USER_DATA_DIR = os.path.expanduser("~/chrome-debug-profile")
+
+
 # ============ 全局状态 ============
+
 class LoginState:
     status: str = "starting"   # starting | ready | saving | saved | failed | cancelled
     error_msg: Optional[str] = None
@@ -46,29 +59,105 @@ class LoginState:
 
 
 state = LoginState()
-browser_obj = None
-_context_obj = None
-_pw_obj = None
-_page_obj = None
+_page_obj = None       # DrissionPage ChromiumPage
+_chrome_process = None  # 我们自己启动的 Chrome 子进程（仅当端口空闲时）
 
 # 主线程任务队列：HTTP handler → main thread
-# 每个任务是 (save_dir: str, result_queue: queue.Queue)
 _task_queue: queue.Queue = queue.Queue()
 
 
+# ============ 端口检测 ============
+
+def is_port_in_use(port: int) -> bool:
+    """检测端口是否被占用"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        result = s.connect_ex(("127.0.0.1", port))
+        return result == 0
+
+
+def launch_chrome() -> subprocess.Popen:
+    """启动 Chrome 并开启远程调试端口，返回子进程对象"""
+    print(f"[DY] Port {CDP_PORT} is free, launching Chrome...", flush=True)
+
+    if not os.path.exists(CHROME_PATH):
+        raise FileNotFoundError(f"Chrome not found at {CHROME_PATH}")
+
+    os.makedirs(CHROME_USER_DATA_DIR, exist_ok=True)
+
+    cmd = [
+        CHROME_PATH,
+        f"--remote-debugging-port={CDP_PORT}",
+        f"--user-data-dir={CHROME_USER_DATA_DIR}",
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    print(f"[DY] Chrome launched (PID={proc.pid}), waiting for CDP port...", flush=True)
+
+    # 等待 Chrome 启动并监听端口（最多 15 秒）
+    for i in range(30):
+        time.sleep(0.5)
+        if is_port_in_use(CDP_PORT):
+            print(f"[DY] Chrome CDP port {CDP_PORT} is ready", flush=True)
+            return proc
+        # 检查进程是否已退出
+        if proc.poll() is not None:
+            raise RuntimeError(f"Chrome exited unexpectedly (code={proc.returncode})")
+
+    raise TimeoutError(f"Chrome started but CDP port {CDP_PORT} not ready within 15s")
+
+
+def connect_to_chrome():
+    """通过 DrissionPage 连接到 Chrome（CDP）"""
+    global _page_obj
+
+    print(f"[DY] Connecting to Chrome on port {CDP_PORT}...", flush=True)
+
+    co = ChromiumOptions()
+    co.set_address(f"127.0.0.1:{CDP_PORT}")
+
+    try:
+        browser = ChromiumPage(co)
+    except Exception as e:
+        _page_obj = None
+        raise ConnectionError(
+            f"无法连接到 127.0.0.1:{CDP_PORT} 上的 Chrome。"
+            f"请确认 Chrome 是以 --remote-debugging-port={CDP_PORT} 启动的。"
+            f"原始错误: {e}"
+        )
+
+    # 切到最新标签页
+    try:
+        latest_tab = browser.latest_tab
+        _page_obj = latest_tab
+        print(f"[DY] Got latest tab: {latest_tab.title}", flush=True)
+    except Exception:
+        _page_obj = browser
+        print("[DY] Using browser object directly", flush=True)
+
+    # 等页面就绪
+    time.sleep(1)
+    print("[DY] Connected to Chrome via DrissionPage", flush=True)
+
+
 # ============ 用户信息提取 ============
+
 def extract_user_info(page):
     user_name, user_id, avatar = None, None, None
     try:
         try:
-            page.goto("https://www.douyin.com/user/self", timeout=15000)
-            page.wait_for_load_state("domcontentloaded", timeout=8000)
-            time.sleep(2)
+            page.get("https://www.douyin.com/user/self")
+            time.sleep(3)
         except Exception as e:
             print(f"[DY] navigate user/self failed (non-fatal): {e}", flush=True)
 
+        # 尝试从 JS 全局变量提取
         try:
-            js_info = page.evaluate("""() => {
+            js_info = page.run_js("""() => {
                 if (window._ROUTER_DATA?.loaderData) {
                     for (let key in window._ROUTER_DATA.loaderData) {
                         const data = window._ROUTER_DATA.loaderData[key];
@@ -85,32 +174,35 @@ def extract_user_info(page):
         except Exception as e:
             print(f"[DY] js extract failed: {e}", flush=True)
 
+        # 从页面文本提取抖音号
         if not user_id:
             try:
-                body_text = page.evaluate("() => document.body.innerText")
+                body_text = page.html or ""
                 m = re.search(r"(抖音号|抖音ID|抖音id)[:：]?\s*([A-Za-z0-9_.-]+)", body_text)
                 if m:
                     user_id = m.group(2)
             except Exception:
                 pass
 
+        # 从 DOM 提取昵称
         if not user_name:
             for sel in ['[data-e2e="user-info-name"]', 'h1', '.header-right-name']:
                 try:
-                    el = page.locator(sel).first
-                    if el.is_visible(timeout=1000):
-                        user_name = (el.text_content() or "").strip().split("\n")[0]
+                    el = page.ele(f"css:{sel}", timeout=2)
+                    if el:
+                        user_name = (el.text or "").strip().split("\n")[0]
                         if user_name:
                             break
                 except Exception:
                     pass
 
+        # 从 DOM 提取头像
         if not avatar:
             for sel in ["div[class*='avatar-'] img", ".semi-avatar img", "img[src*='aweme-avatar']"]:
                 try:
-                    el = page.locator(sel).first
-                    if el.is_visible(timeout=1000):
-                        avatar = el.get_attribute("src")
+                    el = page.ele(f"css:{sel}", timeout=2)
+                    if el:
+                        avatar = el.attr("src")
                         if avatar:
                             break
                 except Exception:
@@ -123,6 +215,7 @@ def extract_user_info(page):
 
 
 # ============ Cookie 保存 ============
+
 def cookies_to_header_string(cookies: list) -> str:
     parts = []
     for c in cookies:
@@ -134,6 +227,51 @@ def cookies_to_header_string(cookies: list) -> str:
         if name and value is not None:
             parts.append(f"{name}={value}")
     return "; ".join(parts)
+
+
+def get_cookies_from_page(page) -> list:
+    """从 DrissionPage 获取 Cookie，统一为 list[dict] 格式"""
+    try:
+        raw = page.cookies()
+        if isinstance(raw, list):
+            # 确保每个 cookie 都有 path 字段（兼容 Playwright storage_state 格式）
+            for c in raw:
+                if isinstance(c, dict) and "path" not in c:
+                    c["path"] = "/"
+            return raw
+        if isinstance(raw, dict):
+            if "path" not in raw:
+                raw["path"] = "/"
+            return [raw]
+    except Exception as e:
+        print(f"[DY] get_cookies failed: {e}", flush=True)
+    return []
+
+
+def get_storage_state(page) -> Optional[dict]:
+    """从 DrissionPage 获取 localStorage 等存储状态"""
+    try:
+        origins = []
+        local_storage = page.run_js("""() => {
+            const items = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                items.push({name: key, value: localStorage.getItem(key)});
+            }
+            return items;
+        }""")
+        if local_storage:
+            # 取 origin
+            url = page.url or ""
+            origin = "/".join(url.split("/")[:3]) if url else ""
+            origins.append({
+                "origin": origin,
+                "localStorage": local_storage,
+            })
+        return {"origins": origins} if origins else None
+    except Exception as e:
+        print(f"[DY] get_storage_state failed: {e}", flush=True)
+    return None
 
 
 def save_cookie_files(save_dir: str, cookies: list, user_info: dict, storage_state: Optional[dict]) -> None:
@@ -156,26 +294,23 @@ def save_cookie_files(save_dir: str, cookies: list, user_info: dict, storage_sta
 
 
 def _do_finish_in_main_thread(save_dir: str) -> dict:
-    """
-    实际的 Playwright 操作，必须在主线程（创建浏览器的线程）中调用。
-    由主循环从 _task_queue 取出任务后调用。
-    """
+    """实际的 DrissionPage 操作，由主循环从 _task_queue 取出任务后调用。"""
     global state
 
     if state.status not in ("ready", "saving"):
         return {"ok": False, "error": f"当前状态为 {state.status}，无法保存"}
 
     state.status = "saving"
-    print(f"[DY] finish triggered in main thread, save_dir={save_dir}", flush=True)
+    print(f"[DY] finish triggered, save_dir={save_dir}", flush=True)
 
-    if not _page_obj or not _context_obj:
+    if not _page_obj:
         state.status = "failed"
         state.error_msg = "browser not running"
         return {"ok": False, "error": state.error_msg}
 
     try:
-        cookies = _context_obj.cookies()
-        cookie_names = {c["name"] for c in cookies}
+        cookies = get_cookies_from_page(_page_obj)
+        cookie_names = {c.get("name", "") for c in cookies}
         login_markers = {"sessionid", "sessionid_ss", "sid_guard", "sid_tt", "passport_auth_id",
                          "ttwid", "s_v_web_id", "LOGIN_STATUS"}
         if not (cookie_names & login_markers):
@@ -190,16 +325,10 @@ def _do_finish_in_main_thread(save_dir: str) -> dict:
         }
         state.user_info = user_info
 
-        storage_state = None
-        try:
-            storage_state = _context_obj.storage_state()
-        except Exception as e:
-            print(f"[DY] storage_state failed: {e}", flush=True)
+        storage_state = get_storage_state(_page_obj)
 
-        try:
-            cookies = _context_obj.cookies()
-        except Exception:
-            pass
+        # 再取一次 cookie（extract_user_info 可能刷新了页面）
+        cookies = get_cookies_from_page(_page_obj)
 
         save_cookie_files(save_dir, cookies, user_info, storage_state)
 
@@ -217,29 +346,33 @@ def _do_finish_in_main_thread(save_dir: str) -> dict:
 
 
 def shutdown_browser():
-    global browser_obj, _context_obj, _pw_obj, _page_obj
+    """
+    断开 DrissionPage 连接。不关闭用户自己的 Chrome。
+    如果 Chrome 是我们启动的，终止子进程。
+    """
+    global _page_obj, _chrome_process
+
     try:
-        if _context_obj:
-            _context_obj.close()
+        if _page_obj:
+            _page_obj.quit()
     except Exception:
         pass
-    try:
-        if browser_obj:
-            browser_obj.close()
-    except Exception:
-        pass
-    try:
-        if _pw_obj:
-            _pw_obj.stop()
-    except Exception:
-        pass
-    browser_obj = None
-    _context_obj = None
-    _pw_obj = None
     _page_obj = None
+
+    if _chrome_process:
+        try:
+            _chrome_process.terminate()
+            _chrome_process.wait(timeout=5)
+        except Exception:
+            try:
+                _chrome_process.kill()
+            except Exception:
+                pass
+        _chrome_process = None
 
 
 # ============ HTTP Server ============
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -269,7 +402,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "missing save_dir"}, 400)
                 return
 
-            # 把任务投递给主线程，等待结果（Playwright 不能跨线程调用）
             result_q: queue.Queue = queue.Queue()
             _task_queue.put((save_dir, result_q))
 
@@ -300,6 +432,7 @@ def run_server(port: int):
 
 
 # ============ 看门狗 ============
+
 def _parent_watchdog(initial_ppid: int):
     while True:
         time.sleep(1)
@@ -318,23 +451,49 @@ def _parent_watchdog(initial_ppid: int):
 
 
 # ============ 主流程 ============
+
 def open_browser_and_wait():
-    global browser_obj, _context_obj, _pw_obj, _page_obj, state
+    global _page_obj, _chrome_process, state
 
-    print("[DY] Launching browser...", flush=True)
+    print(f"[DY] Checking CDP port {CDP_PORT}...", flush=True)
     try:
-        _pw_obj = sync_playwright().start()
-        browser_obj = _pw_obj.chromium.launch(headless=False, channel="chrome")
-        _context_obj = browser_obj.new_context(viewport={"width": 1280, "height": 800})
-        _page_obj = _context_obj.new_page()
-
-        for url in ["https://www.douyin.com"]:
+        if is_port_in_use(CDP_PORT):
+            # 端口已被占用，直接连接
+            connect_to_chrome()
+        else:
+            # 端口空闲，启动 Chrome
             try:
-                _page_obj.goto(url, timeout=20000)
-                print(f"[DY] Page loaded: {url}", flush=True)
-                break
-            except Exception as e:
-                print(f"[DY] goto {url} failed: {e}", flush=True)
+                _chrome_process = launch_chrome()
+            except (FileNotFoundError, RuntimeError, TimeoutError) as e:
+                state.status = "failed"
+                state.error_msg = str(e)
+                print(f"[DY] Chrome launch failed: {e}", flush=True)
+                return
+
+            # 连接到刚启动的 Chrome
+            try:
+                connect_to_chrome()
+            except ConnectionError as e:
+                state.status = "failed"
+                state.error_msg = str(e)
+                print(f"[DY] CDP connect failed: {e}", flush=True)
+                if _chrome_process:
+                    try:
+                        _chrome_process.terminate()
+                    except Exception:
+                        pass
+                    _chrome_process = None
+                return
+
+        # 跳转到抖音
+        print("[DY] Navigating to douyin.com...", flush=True)
+        try:
+            _page_obj.get("https://www.douyin.com")
+            time.sleep(2)
+            current_url = _page_obj.url or ""
+            print(f"[DY] Page loaded, current URL: {current_url}", flush=True)
+        except Exception as e:
+            print(f"[DY] goto douyin.com failed: {e}", flush=True)
 
         state.status = "ready"
         print("[DY] Ready. Waiting for user to login and click '登录完成'...", flush=True)
@@ -373,7 +532,7 @@ def main():
 
     open_browser_and_wait()
 
-    # 主循环：从 _task_queue 取任务，在主线程执行 Playwright 操作
+    # 主循环：从 _task_queue 取任务，在主线程执行
     while state.status not in ("cancelled",):
         try:
             task = _task_queue.get(timeout=1)

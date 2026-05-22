@@ -1,95 +1,105 @@
 #!/usr/bin/env python3
 """
-账号 Cookie 三层验证脚本
+账号 Cookie 验证脚本（DrissionPage CDP 版）
 用法：
   python3 verify_account.py <platform> <cookie_path>
 
-原理（Spreado 三层验证）：
-  L1: storage_state.json expires 时间戳预检（~0ms，无浏览器）
-  L2: Playwright positive DOM 检测（authed_selectors 出现 = 已登录）
-  L3: Playwright negative DOM 检测（login_selectors 出现 = 未登录）
+验证流程（两层）：
+  L1: cookie.json expires 时间戳预检（~0ms，无浏览器）
+  L2: 注入 cookie 到浏览器 → 访问页面 → 读取页面信息判断登录是否失效（CDP）
+
+注意：日志输出到 stderr，stdout 只输出最终 JSON 结果（供 Rust 解析）
 """
 
 import argparse
 import json
 import os
+import socket
 import sys
 import time
 from pathlib import Path
 
-# ============ 平台配置 ============
+
+def _log(msg: str):
+    """日志输出到 stderr，不污染 stdout"""
+    print(msg, flush=True, file=sys.stderr)
+
+
+# ============ 配置 ============
+
+CDP_PORT = 9222
+CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME_USER_DATA_DIR = os.path.expanduser("~/chrome-debug-profile")
 
 PLATFORM_CONFIG = {
     "douyin": {
-        # L1: 检查 storage_state 中关键 cookie 的 expires
-        "check_urls": ["https://www.douyin.com/creator-micro/content/upload"],
         "critical_cookies": ["sessionid", "sessionid_ss", "passport_auth_id"],
-        "authed_selectors": [
-            # 上传页面特有的元素
-            "input[placeholder*='标题']",
-            "input[placeholder*='作品标题']",
-            "[class*='upload']",
-            "[class*='video-upload']",
-            "[data-e2e='upload-title']",
-            # 创作者后台通用
-            "div[class*='container']",
-            "[class*='creator-content']",
+        "verify_url": "https://www.douyin.com/",
+        "cookie_domain": ".douyin.com",
+        "authed_indicators": [
+            "[data-e2e='user-info-name']",
+            "[class*='avatar-']",
+            "[class*='user-info']",
         ],
-        "login_selectors": [
-            "text='手机号登录'",
-            "text='扫码登录'",
-            "text='登录'",
-            ".login-btn",
-            "[class*='login-mask']",
+        "login_indicators": [
+            "手机号登录",
+            "扫码登录",
         ],
-        # L2 positive — HTTP API
-        "http_check": {
-            "method": "GET",
-            "url": "https://www.douyin.com",
-            "auth_headers": ["cookie"],
-            "success_status": [200],
-        },
+        "js_user_info": """() => {
+            try {
+                if (window._ROUTER_DATA?.loaderData) {
+                    for (let key in window._ROUTER_DATA.loaderData) {
+                        const data = window._ROUTER_DATA.loaderData[key];
+                        if (data?.user) return {found: true, user: data.user};
+                    }
+                }
+                if (window.userData) return {found: true, user: window.userData};
+            } catch(e) {}
+            return {found: false};
+        }""",
     },
     "xiaohongshu": {
-        "check_urls": ["https://edith.xiaohongshu.com"],
         "critical_cookies": ["web_session", "webId"],
-        "authed_selectors": [
-            "text='我'",
+        "verify_url": "https://www.xiaohongshu.com/",
+        "cookie_domain": ".xiaohongshu.com",
+        "authed_indicators": [
             "[class*='user-avatar']",
             "[class*='side-bar']",
-            "[class*='header-container']",
             ".publish-btn",
-            "[class*='upload']",
         ],
-        "login_selectors": [
-            "text='登录'",
-            "text='手机号登录'",
-            "text='扫码登录'",
-            "[class*='login']",
+        "login_indicators": [
+            "手机号登录",
+            "扫码登录",
         ],
-        "http_check": {
-            "method": "GET",
-            "url": "https://edith.xiaohongshu.com/explore",
-            "auth_headers": ["cookie"],
-            "success_status": [200],
-        },
+        "js_user_info": """() => {
+            try {
+                if (window.__INITIAL_STATE__?.user?.userInfo) {
+                    return {found: true, user: window.__INITIAL_STATE__.user.userInfo};
+                }
+            } catch(e) {}
+            return {found: false};
+        }""",
     },
 }
 
 
+# ============ 工具函数 ============
+
+def is_port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
 # ============ L1: expires 时间戳预检 ============
 
-def check_cookie_expiry(storage_state: dict, critical_cookies: list) -> dict:
-    """
-    检查 storage_state.json 中关键 cookie 是否已过期。
-    返回: {"expired": bool, "detail": str}
-    """
-    if not storage_state:
-        return {"expired": True, "detail": "storage_state 为空"}
-
-    cookies = storage_state.get("cookies", [])
-    if isinstance(cookies, list) and len(cookies) == 0:
+def check_cookie_expiry(cookie_data: dict, critical_cookies: list) -> dict:
+    cookies = cookie_data.get("cookies", [])
+    if not cookies:
+        _log("[L1] 输入: cookie 列表为空")
         return {"expired": True, "detail": "cookies 列表为空"}
+
+    _log(f"[L1] 输入: 共 {len(cookies)} 条 cookie, 关键字段: {critical_cookies}")
 
     cookie_map = {}
     for c in cookies:
@@ -103,187 +113,242 @@ def check_cookie_expiry(storage_state: dict, critical_cookies: list) -> dict:
     for crit in critical_cookies:
         if crit not in cookie_map:
             missing_names.append(crit)
+            _log(f"[L1]   关键 cookie '{crit}': 缺失")
             continue
         exp = cookie_map[crit].get("expires", -1)
-        if exp > 0 and exp < now:
-            expired_names.append(crit)
+        if exp > 0:
+            if exp > 1e12:
+                exp = exp / 1000
+            remaining = exp - now
+            if exp < now:
+                expired_names.append(crit)
+                _log(f"[L1]   关键 cookie '{crit}': 已过期 (expires={exp}, 超期 {abs(remaining):.0f}s)")
+            else:
+                _log(f"[L1]   关键 cookie '{crit}': 有效 (剩余 {remaining:.0f}s)")
+        else:
+            _log(f"[L1]   关键 cookie '{crit}': 无 expires 字段 (session cookie)")
 
     if expired_names:
-        return {
-            "expired": True,
-            "detail": f"已过期: {expired_names}",
-        }
+        _log(f"[L1] 输出: expired=True, {expired_names}")
+        return {"expired": True, "detail": f"已过期: {expired_names}"}
     if missing_names:
-        # 部分关键 cookie 缺失，不算过期（可能是 HttpOnly 等）
-        return {
-            "expired": False,
-            "detail": f"缺失但未过期: {missing_names}",
-        }
-
-    return {
-        "expired": False,
-        "detail": "所有关键 cookie 均未过期",
-    }
+        _log(f"[L1] 输出: expired=False, 缺失 {missing_names}")
+        return {"expired": False, "detail": f"缺失但未过期: {missing_names}"}
+    _log("[L1] 输出: 所有关键 cookie 均未过期")
+    return {"expired": False, "detail": "所有关键 cookie 均未过期"}
 
 
-def load_storage_state(cookie_path: str) -> dict:
-    """加载 account.json（Playwright storage_state 格式）"""
+def load_cookie_data(cookie_path: str) -> dict:
     path = Path(cookie_path)
     if not path.exists():
         return {}
-
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    # 兼容旧格式 cookie.json
-    if "cookies" in data and "origins" not in data:
-        return data
-
-    # 标准 Playwright storage_state 格式
-    if "cookies" in data or "origins" in data:
-        return data
-
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
     return {}
 
 
-# ============ L2: HTTP API 快速检查 ============
+# ============ L2: CDP 浏览器验证 ============
 
-def check_http_api(platform: str, cookie_path: str) -> dict:
+def check_drissionpage(platform: str, cookie_data: dict) -> dict:
     """
-    用 HTTP 请求快速验证 cookie 是否有效（不启动浏览器，最快 ~200ms）。
-    适用于小红书的 edith.xiaohongshu.com 等内部 API。
-    """
-    config = PLATFORM_CONFIG.get(platform, {})
-    http_cfg = config.get("http_check")
-    if not http_cfg:
-        return {"valid": None, "detail": "该平台无 HTTP API 检查"}
-
-    try:
-        with open(cookie_path, "r", encoding="utf-8") as f:
-            cookie_data = json.load(f)
-
-        cookies = cookie_data.get("cookies", [])
-        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies if "name" in c and "value" in c)
-
-        import urllib.request
-        req = urllib.request.Request(http_cfg["url"])
-        req.add_header("Cookie", cookie_str)
-        req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-        req.add_header("Referer", "https://www.xiaohongshu.com/")
-
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            status = resp.status
-            if status in http_cfg.get("success_status", [200]):
-                body = resp.read().decode("utf-8", errors="ignore")
-                # 小红书：检查返回内容是否含登录标识
-                if "登录" in body and "user_id" not in body:
-                    return {"valid": False, "detail": f"HTTP 返回登录页 (status={status})"}
-                return {"valid": True, "detail": f"HTTP API 返回 {status}"}
-            else:
-                return {"valid": False, "detail": f"HTTP 状态码 {status}"}
-
-    except Exception as e:
-        return {"valid": None, "detail": f"HTTP 检查异常: {e}"}
-
-
-# ============ L3: Playwright DOM 检测 ============
-
-def check_playwright(platform: str, cookie_path: str) -> dict:
-    """
-    Playwright 三层 DOM 检测（参考 Spreado 架构）：
-      - positive DOM 出现 → 已登录
-      - negative DOM 出现 → 未登录
-      - 两者都不出现 → 无法判断（超时）
+    核心流程：
+    1. 连接浏览器（优先已有 Chrome，否则启动 headless）
+    2. 先访问目标域名（建立上下文）
+    3. 注入所有 cookie
+    4. 访问验证页面
+    5. 从页面读取信息，判断登录是否有效
     """
     config = PLATFORM_CONFIG.get(platform, {})
-    check_urls = config.get("check_urls", [])
-    authed_selectors = config.get("authed_selectors", [])
-    login_selectors = config.get("login_selectors", [])
+    verify_url = config.get("verify_url")
+    cookie_domain = config.get("cookie_domain", "")
+    authed_indicators = config.get("authed_indicators", [])
+    login_indicators = config.get("login_indicators", [])
+    js_user_info = config.get("js_user_info")
 
-    if not check_urls:
-        return {"status": "unknown", "detail": "无检查 URL"}
+    _log(f"[L2] 输入: platform={platform}, cookie 数量={len(cookie_data.get('cookies', []))}")
+    _log(f"[L2]   verify_url={verify_url}, cookie_domain={cookie_domain}")
+
+    if not verify_url:
+        _log("[L2] 输出: 无验证 URL")
+        return {"status": "unknown", "detail": "无验证 URL"}
 
     try:
-        from playwright.sync_api import sync_playwright
+        from DrissionPage import ChromiumPage, ChromiumOptions
     except ImportError:
-        return {"status": "unknown", "detail": "playwright 未安装"}
+        _log("[L2] 输出: DrissionPage 未安装")
+        return {"status": "unknown", "detail": "DrissionPage 未安装"}
 
-    pw = None
-    browser = None
+    page = None
+
     try:
-        pw = sync_playwright().start()
-        browser = pw.chromium.launch(headless=True, channel="chrome")
-        context = browser.new_context(storage_state=cookie_path)
-        page = context.new_page()
+        co = ChromiumOptions()
+        co.set_browser_path(CHROME_PATH)
 
-        results = []
-
-        for url in check_urls:
-            try:
-                page.goto(url, timeout=15000, wait_until="domcontentloaded")
-                time.sleep(2)
-
-                # positive 检测
-                for sel in authed_selectors:
-                    try:
-                        if sel.startswith("text="):
-                            el = page.get_by_text(sel[5:], exact=False)
-                        else:
-                            el = page.locator(sel).first
-                        if el.is_visible(timeout=2000):
-                            results.append(("authed", sel))
-                            break
-                    except:
-                        pass
-
-                # negative 检测
-                for sel in login_selectors:
-                    try:
-                        if sel.startswith("text="):
-                            el = page.get_by_text(sel[5:], exact=False)
-                        else:
-                            el = page.locator(sel).first
-                        if el.is_visible(timeout=2000):
-                            results.append(("login", sel))
-                            break
-                    except:
-                        pass
-
-            except Exception as e:
-                results.append(("error", str(e)))
-
-        browser.close()
-        pw.stop()
-
-        # 解析结果
-        has_authed = any(r[0] == "authed" for r in results)
-        has_login = any(r[0] == "login" for r in results)
-
-        if has_authed and not has_login:
-            return {"status": "valid", "detail": "positive DOM 检测通过"}
-        elif has_login and not has_authed:
-            return {"status": "invalid", "detail": "login selector 检测到未登录"}
-        elif has_authed and has_login:
-            # 两者都出现，以 positive 为准（已登录页面也可能显示登录引导）
-            return {"status": "valid", "detail": "positive DOM 检测通过（忽略同页面 login 元素）"}
+        if is_port_in_use(CDP_PORT):
+            co.set_address(f"127.0.0.1:{CDP_PORT}")
         else:
-            return {"status": "unknown", "detail": f"DOM 检测无结果: {results}"}
+            co.headless()
+            co.set_argument("--no-sandbox")
+            co.set_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
+            co.set_argument(f"--remote-debugging-port={CDP_PORT}")
 
-    except Exception as e:
+        cdp_in_use = is_port_in_use(CDP_PORT)
+        _log(f"[L2] 连接方式: {'接管已有 Chrome (port ' + str(CDP_PORT) + ')' if cdp_in_use else '启动 headless Chrome'}")
+
         try:
-            if browser:
-                browser.close()
-            if pw:
-                pw.stop()
+            page = ChromiumPage(co)
+        except Exception as e:
+            _log(f"[L2] 输出: 连接浏览器失败 {e}")
+            return {"status": "unknown", "detail": f"连接浏览器失败: {e}"}
+
+        try:
+            page = page.latest_tab
         except Exception:
             pass
-        return {"status": "unknown", "detail": f"Playwright 检测异常: {e}"}
+
+        # 1) 先访问目标域名根页面（建立浏览器上下文）
+        domain_root = verify_url.split("/")[0] + "//" + verify_url.split("/")[2]
+        _log(f"[L2] Step 1: 访问 {domain_root} 建立上下文")
+        try:
+            page.get(domain_root)
+            time.sleep(2)
+        except Exception as e:
+            _log(f"[L2] 访问域名失败: {e}")
+
+        # 2) 注入所有 cookie
+        cookies = cookie_data.get("cookies", [])
+        injected = 0
+        _log(f"[L2] Step 2: 注入 {len(cookies)} 条 cookie")
+        for c in cookies:
+            try:
+                name = c.get("name")
+                value = c.get("value")
+                if not name or value is None:
+                    continue
+                domain = c.get("domain", cookie_domain)
+                path = c.get("path", "/")
+
+                # httpOnly 的 cookie 用 CDP 设置
+                if c.get("httpOnly"):
+                    try:
+                        page.run_cdp("Network.setCookie", **{
+                            "name": name,
+                            "value": str(value),
+                            "domain": domain,
+                            "path": path,
+                            "secure": bool(c.get("secure", False)),
+                            "httpOnly": True,
+                        })
+                        injected += 1
+                    except Exception:
+                        pass
+                    continue
+
+                # 普通 cookie 用 JS 注入
+                cookie_str = f"{name}={value}; domain={domain}; path={path}"
+                if c.get("secure"):
+                    cookie_str += "; secure"
+                page.run_js(f"document.cookie = '{cookie_str}'")
+                injected += 1
+            except Exception:
+                continue
+
+        _log(f"[L2] 成功注入 {injected}/{len(cookies)} 条 cookie")
+
+        # 3) 访问验证页面
+        _log(f"[L2] Step 3: 访问验证页面 {verify_url}")
+        try:
+            page.get(verify_url)
+            time.sleep(4)
+        except Exception as e:
+            return {"status": "unknown", "detail": f"访问验证页面失败: {e}"}
+
+        current_url = page.url or ""
+        _log(f"[L2] 当前 URL: {current_url}")
+
+        # 4) 从页面读取信息，判断登录状态
+
+        # 4a) 用 JS 读用户信息
+        user_info = None
+        if js_user_info:
+            try:
+                js_result = page.run_js(js_user_info)
+                if js_result and isinstance(js_result, dict) and js_result.get("found"):
+                    user_info = js_result.get("user", {})
+                    _log(f"[L2] JS 读到用户信息: {user_info}")
+            except Exception as e:
+                _log(f"[L2] JS 读取失败: {e}")
+
+        # 4b) 检测页面元素
+        found_authed = False
+        found_login = False
+
+        for sel in authed_indicators:
+            try:
+                el = page.ele(f"css:{sel}", timeout=2)
+                if el:
+                    found_authed = True
+                    _log(f"[L2] 找到登录态元素: {sel}")
+                    break
+            except Exception:
+                pass
+
+        for text in login_indicators:
+            try:
+                el = page.ele(f"text={text}", timeout=2)
+                if el:
+                    found_login = True
+                    _log(f"[L2] 找到未登录元素: {text}")
+                    break
+            except Exception:
+                pass
+
+        # 4c) 检查 URL 是否被重定向到登录页
+        redirected_to_login = any(kw in current_url.lower() for kw in ["login", "passport", "signin"])
+
+        # 5) 综合判断
+        if user_info:
+            name = user_info.get("nickname") or user_info.get("name") or ""
+            uid = user_info.get("uniqueId") or user_info.get("userId") or user_info.get("user_id") or ""
+            return {
+                "status": "valid",
+                "detail": f"已登录，用户: {name} (ID: {uid})",
+                "user_info": {"name": name, "user_id": uid},
+            }
+
+        if found_authed and not found_login:
+            return {"status": "valid", "detail": "页面检测到登录态元素"}
+
+        if found_login and not found_authed:
+            return {"status": "invalid", "detail": "页面检测到登录/注册元素，Cookie 已失效"}
+
+        if redirected_to_login:
+            return {"status": "invalid", "detail": f"页面被重定向到登录页: {current_url}"}
+
+        if found_authed and found_login:
+            return {"status": "valid", "detail": "页面检测到登录态元素（忽略登录引导）"}
+
+        return {"status": "unknown", "detail": f"无法判断登录状态, URL={current_url}"}
+
+    except Exception as e:
+        return {"status": "unknown", "detail": f"DrissionPage 检测异常: {e}"}
+
+    finally:
+        try:
+            if page:
+                page.quit()
+        except Exception:
+            pass
 
 
 # ============ 主验证流程 ============
 
 def verify(platform: str, cookie_path: str) -> dict:
-    """三层验证入口"""
     result = {
         "status": "unknown",
         "method": "none",
@@ -298,9 +363,9 @@ def verify(platform: str, cookie_path: str) -> dict:
 
     config = PLATFORM_CONFIG[platform]
 
-    # ---- L1: expires 时间戳预检 ----
-    storage_state = load_storage_state(cookie_path)
-    l1 = check_cookie_expiry(storage_state, config["critical_cookies"])
+    # ---- L1 过期预检 ----
+    cookie_data = load_cookie_data(cookie_path)
+    l1 = check_cookie_expiry(cookie_data, config["critical_cookies"])
     result["layers"]["L1_expiry"] = l1
 
     if l1["expired"]:
@@ -309,37 +374,22 @@ def verify(platform: str, cookie_path: str) -> dict:
         result["message"] = f"Cookie 已过期: {l1['detail']}"
         return result
 
-    # ---- L2: HTTP API 检查 ----
-    l2 = check_http_api(platform, cookie_path)
-    result["layers"]["L2_http"] = l2
+    # ---- L2 CDP 浏览器验证 ----
+    l2 = check_drissionpage(platform, cookie_data)
+    result["layers"]["L2_cdp"] = l2
 
-    if l2.get("valid") is True:
+    if l2["status"] == "valid":
         result["status"] = "valid"
-        result["method"] = "L2_http"
-        result["message"] = f"HTTP API 验证通过: {l2['detail']}"
-        return result
-
-    if l2.get("valid") is False:
-        # HTTP 明确返回未登录，降级 L3
-        result["layers"]["L3_fallback_reason"] = f"HTTP 验证失败: {l2['detail']}"
-
-    # ---- L3: Playwright DOM 检测 ----
-    l3 = check_playwright(platform, cookie_path)
-    result["layers"]["L3_playwright"] = l3
-
-    if l3["status"] == "valid":
-        result["status"] = "valid"
-        result["method"] = "L3_playwright"
-        result["message"] = f"Playwright DOM 验证通过: {l3['detail']}"
-    elif l3["status"] == "invalid":
+        result["method"] = "L2_cdp"
+        result["message"] = f"CDP 验证通过: {l2['detail']}"
+    elif l2["status"] == "invalid":
         result["status"] = "invalid"
-        result["method"] = "L3_playwright"
-        result["message"] = f"Playwright DOM 检测未登录: {l3['detail']}"
+        result["method"] = "L2_cdp"
+        result["message"] = f"CDP 检测未登录: {l2['detail']}"
     else:
-        # L3 也无法判断
         result["status"] = "unknown"
-        result["method"] = "L3_playwright"
-        result["message"] = f"无法判断: {l3['detail']}"
+        result["method"] = "L2_cdp"
+        result["message"] = f"无法判断: {l2['detail']}"
 
     return result
 
@@ -349,11 +399,12 @@ def verify(platform: str, cookie_path: str) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="账号 Cookie 三层验证")
     parser.add_argument("platform", help="平台: douyin, xiaohongshu")
-    parser.add_argument("cookie_path", help="account.json 路径")
+    parser.add_argument("cookie_path", help="cookie.json 路径")
     args = parser.parse_args()
 
     result = verify(args.platform, args.cookie_path)
 
+    # stdout 只输出最终 JSON，供 Rust 解析
     print(json.dumps(result, ensure_ascii=False, indent=2))
     sys.exit(0 if result["status"] == "valid" else 1)
 

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle } from 'lucide-vue-next';
+import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search } from 'lucide-vue-next';
+import ScraperView from './components/ScraperView.vue';
 
-const showAccounts = ref(false);
+type PageKey = 'chat' | 'accounts' | 'scraper';
+const currentPage = ref<PageKey>('accounts');
 const accounts = ref<any[]>([]);
 const isLoginModalOpen = ref(false);
 const currentPlatform = ref('');
@@ -190,26 +192,30 @@ function isVerifying(platform: string, name: string) {
     <aside class="flex flex-col w-[20%] h-full bg-gray-950 border-r border-gray-800">
       <div class="p-6 font-bold tracking-tight">AutoCast AI</div>
       <nav class="flex-1 px-3 space-y-1">
-        <a href="#" @click="showAccounts = false" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', !showAccounts ? 'bg-gray-900' : 'text-gray-400']">
+        <a href="#" @click="currentPage = 'chat'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'chat' ? 'bg-gray-900' : 'text-gray-400']">
           <MessageSquare class="w-5 h-5 text-blue-500" />
           <span>AI 助理对话</span>
         </a>
-        <a href="#" @click="showAccounts = true" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', showAccounts ? 'bg-gray-900' : 'text-gray-400']">
+        <a href="#" @click="currentPage = 'accounts'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'accounts' ? 'bg-gray-900' : 'text-gray-400']">
           <Users class="w-5 h-5" />
           <span>账号管理</span>
+        </a>
+        <a href="#" @click="currentPage = 'scraper'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'scraper' ? 'bg-gray-900' : 'text-gray-400']">
+          <Search class="w-5 h-5 text-purple-500" />
+          <span>评论采集</span>
         </a>
       </nav>
     </aside>
 
-    <!-- 主内容 -->
-    <main v-if="!showAccounts" class="flex flex-col flex-1 h-full bg-gray-950 p-4">
+    <!-- 主内容：AI 助理 -->
+    <main v-if="currentPage === 'chat'" class="flex flex-col flex-1 h-full bg-gray-950 p-4">
       <div class="flex-1 flex items-center justify-center text-gray-500">
         <p>AI 助理对话区域（开发中）</p>
       </div>
     </main>
 
-    <!-- 账号管理面板 -->
-    <main v-if="showAccounts" class="flex flex-col flex-1 h-full bg-gray-950 p-6 overflow-y-auto">
+    <!-- 主内容：账号管理 -->
+    <main v-if="currentPage === 'accounts'" class="flex flex-col flex-1 h-full bg-gray-950 p-6 overflow-y-auto">
       <div class="flex justify-between items-center mb-8">
         <h2 class="text-xl font-bold">账号管理</h2>
         <div class="text-xs text-gray-500 bg-gray-900 px-3 py-1 rounded-full border border-gray-800 font-mono">
@@ -274,6 +280,11 @@ function isVerifying(platform: string, name: string) {
           <li>• 点击「验证」可检查 Cookie 是否有效</li>
         </ul>
       </div>
+    </main>
+
+    <!-- 主内容：评论采集 -->
+    <main v-if="currentPage === 'scraper'" class="flex flex-col flex-1 h-full bg-gray-950">
+      <ScraperView />
     </main>
 
     <!-- 登录弹窗 -->

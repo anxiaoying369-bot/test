@@ -116,6 +116,35 @@ pub struct VerifyResult {
     pub message: String,
 }
 
+// ============ 评论采集相关结构 ============
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ScraperTask {
+    pub task_id: String,
+    pub account_name: String,
+    pub platform: String,
+    pub sec_uid: String,
+    pub scrape_type: String,
+    pub limit: i32,
+    pub skip_existing: bool,
+    pub status: String,       // running | completed | error | cookie_expired | cancelled
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ScraperProgress {
+    pub task_id: String,
+    pub status: String,
+    pub progress: i32,
+    pub total: i32,
+    pub current_type: String,
+    pub current_user: String,
+    pub stats: serde_json::Value,
+    pub log_lines: Vec<String>,
+    pub started_at: f64,
+    pub finished_at: Option<f64>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct AccountsStoreFile {
     accounts: Vec<Account>,
@@ -412,7 +441,13 @@ async fn verify_account(platform: String, name: String) -> Result<VerifyResult, 
         .arg(&cookie_json)
         .output().await.map_err(|e| e.to_string())?;
 
-    let result_str = String::from_utf8_lossy(&output.stdout);
+    // 把 Python stderr 日志打印到 Rust 控制台（npm run tauri dev 可见）
+    let stderr_str = String::from_utf8_lossy(&output.stderr);
+    if !stderr_str.is_empty() {
+        eprintln!("[verify_account] Python stderr:\n{}", stderr_str);
+    }
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let result: serde_json::Value = serde_json::from_str(&result_str)
         .map_err(|_| format!("验证结果解析失败: {}", result_str))?;
 
@@ -446,6 +481,111 @@ async fn cleanup_login_session(session_id: String, state: State<'_, AppState>) -
     Ok(())
 }
 
+// ============ 评论采集命令 ============
+
+fn get_scraper_dir() -> PathBuf {
+    get_data_dir().join("scraper")
+}
+
+/// 启动采集任务
+#[tauri::command]
+async fn start_scrape(
+    account_name: String,
+    platform: String,
+    sec_uid: String,
+    scrape_type: String,   // video | comment | reply | all
+    limit: i32,
+    skip_existing: bool,
+    state: State<'_, AppState>,
+) -> Result<ScraperTask, String> {
+    if sec_uid.trim().is_empty() {
+        return Err("sec_uid 不能为空".to_string());
+    }
+
+    // 确认账号存在
+    let store = load_accounts();
+    let _account = store.accounts.iter()
+        .find(|a| a.platform == platform && a.name == account_name)
+        .ok_or_else(|| format!("账号不存在: {}/{}", platform, account_name))?;
+
+    let task_id = Uuid::new_v4().to_string();
+    let cookie_file = get_account_dir(&platform, &account_name).join("cookie.txt");
+    let script_path = PathBuf::from("..").join("scripts").join("douyin_scraper.py");
+
+    // 日志文件
+    let log_dir = get_data_dir().join("logs");
+    fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+    let log_path = log_dir.join(format!("scrape_{}_{}.log", &task_id[..8], &sec_uid[..8]));
+    let log_file = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
+    let stderr_file = log_file.try_clone().map_err(|e| e.to_string())?;
+
+    // 启动 Python 子进程
+    let child = tokio::process::Command::new("python3")
+        .arg(&script_path)
+        .arg("--task-id").arg(&task_id)
+        .arg("--cookie-path").arg(&cookie_file)
+        .arg("--sec-uid").arg(&sec_uid)
+        .arg("--type").arg(&scrape_type)
+        .arg("--limit").arg(limit.to_string())
+        .arg(if skip_existing { "--skip-existing" } else { "" })
+        .stdout(std::process::Stdio::from(log_file))
+        .stderr(std::process::Stdio::from(stderr_file))
+        .kill_on_drop(true)
+        .spawn().map_err(|e| e.to_string())?;
+
+    {
+        let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+        handles.insert(format!("scrape_{}", task_id), child);
+    }
+
+    let task = ScraperTask {
+        task_id: task_id.clone(),
+        account_name,
+        platform,
+        sec_uid,
+        scrape_type,
+        limit,
+        skip_existing,
+        status: "running".to_string(),
+        created_at: chrono_now(),
+    };
+
+    Ok(task)
+}
+
+/// 查询采集进度（读取 Python 写的进度文件）
+#[tauri::command]
+async fn get_scrape_progress(task_id: String) -> Result<ScraperProgress, String> {
+    let progress_path = get_scraper_dir().join(format!("{}.json", task_id));
+    if !progress_path.exists() {
+        return Err("任务进度文件不存在".to_string());
+    }
+    let content = fs::read_to_string(&progress_path).map_err(|e| e.to_string())?;
+    let progress: ScraperProgress = serde_json::from_str(&content)
+        .map_err(|e| format!("解析进度文件失败: {}", e))?;
+    Ok(progress)
+}
+
+/// 取消采集任务
+#[tauri::command]
+async fn cancel_scrape(task_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let key = format!("scrape_{}", task_id);
+    let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+    if let Some(mut child) = handles.remove(&key) {
+        let _ = child.start_kill();
+    }
+    // 更新进度文件状态为 cancelled
+    let progress_path = get_scraper_dir().join(format!("{}.json", task_id));
+    if progress_path.exists() {
+        let content = fs::read_to_string(&progress_path).unwrap_or_default();
+        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+            val["status"] = serde_json::Value::String("cancelled".to_string());
+            let _ = fs::write(&progress_path, serde_json::to_string_pretty(&val).unwrap_or_default());
+        }
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -456,7 +596,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_accounts, verify_account, delete_account,
             sync_local_accounts, init_login_session, get_login_status,
-            finish_login, cleanup_login_session
+            finish_login, cleanup_login_session,
+            start_scrape, get_scrape_progress, cancel_scrape
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
