@@ -177,9 +177,11 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
 
     # 更改工作目录到 output_dir（DouyinComment 的 StorageManager 使用相对路径 data/）
     original_dir = os.getcwd()
-    os.makedirs(output_dir, exist_ok=True)
+    data_dir_abs = os.path.abspath(os.path.join(output_dir, 'data', sec_uid))
+    os.makedirs(data_dir_abs, exist_ok=True)
     os.chdir(output_dir)
     _log(f"[SCRAPER] 工作目录: {output_dir}")
+    _log(f"[SCRAPER] data_dir: {data_dir_abs}")
 
     # 配置默认请求延迟
     delay = 1.0
