@@ -520,14 +520,17 @@ async fn start_scrape(
     let stderr_file = log_file.try_clone().map_err(|e| e.to_string())?;
 
     // 启动 Python 子进程
-    let child = tokio::process::Command::new("python3")
-        .arg(&script_path)
+    let mut cmd = tokio::process::Command::new("python3");
+    cmd.arg(&script_path)
         .arg("--task-id").arg(&task_id)
         .arg("--cookie-path").arg(&cookie_file)
         .arg("--sec-uid").arg(&sec_uid)
         .arg("--type").arg(&scrape_type)
-        .arg("--limit").arg(limit.to_string())
-        .arg(if skip_existing { "--skip-existing" } else { "" })
+        .arg("--limit").arg(limit.to_string());
+    if skip_existing {
+        cmd.arg("--skip-existing");
+    }
+    let child = cmd
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(stderr_file))
         .kill_on_drop(true)
