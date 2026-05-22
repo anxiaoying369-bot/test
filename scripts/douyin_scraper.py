@@ -142,11 +142,11 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
     from services.reply_service import ReplyService
     from utils.printer import Config
 
-    # 注册日志 handler
+    # 注册日志 handler（添加到内部的标准 logging.Logger）
     progress_handler = ProgressLogHandler(progress)
     progress_handler.setLevel(logging.INFO)
     progress_handler.setFormatter(logging.Formatter('%(message)s'))
-    logger.addHandler(progress_handler)
+    logger._get_system_logger().addHandler(progress_handler)
 
     # 重置 DouyinAPI 单例，确保使用新 cookie
     DouyinAPI._instance = None
