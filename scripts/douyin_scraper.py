@@ -22,7 +22,8 @@ from pathlib import Path
 
 # 把 DouyinComment 项目加入 import 路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DOUYIN_COMMENT_DIR = os.path.join(SCRIPT_DIR, '..', 'DouyinComment')
+# DouyinComment 是 git submodule，位于 scripts/DouyinComment/
+DOUYIN_COMMENT_DIR = os.path.join(SCRIPT_DIR, 'DouyinComment')
 sys.path.insert(0, os.path.abspath(DOUYIN_COMMENT_DIR))
 
 
