@@ -1,279 +1,416 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { 
-  Trash2,
-  Settings, 
-  MessageSquare, 
-  Smartphone, 
-  Send, 
-  Bot, 
-  TerminalSquare, 
-  Users, 
-  QrCode 
-} from 'lucide-vue-next';
+import { ref, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle } from 'lucide-vue-next';
 
-const inputQuery = ref('');
-const chatHistory = ref([
-  { role: 'assistant', content: '您好，我是您的 AutoCast AI 助手。您可以直接吩咐我执行自动化任务，比如：“帮我在小红书上查找抹茶软欧包教程，制作成脚本”。' }
-]);
-const isProcessing = ref(false);
 const showAccounts = ref(false);
-const accounts = ref([
-  { id: 1, platform: 'xiaohongshu', name: '默认小红书号', userId: 'xhs_001', status: 'active', avatar: '' },
-  { id: 2, platform: 'douyin', name: '默认抖音号', userId: 'dy_001', status: 'expired', avatar: '' },
-]);
+const accounts = ref<any[]>([]);
 const isLoginModalOpen = ref(false);
-const currentLoginPlatform = ref('');
-const qrcodeUrl = ref('');
+const currentPlatform = ref('');
+const qrcodeSrc = ref('');
+const loginStatus = ref('');
+const sessionId = ref('');
+const loginStep = ref<'init' | 'waiting' | 'success' | 'error'>('init');
+const debugMsg = ref('系统就绪');
+const verifyingIds = ref<Set<string>>(new Set());
 
-async function handleSend() {
-  const query = inputQuery.value.trim();
-  if (!query) return;
+// ============ 账号列表 ============
 
-  chatHistory.value.push({ role: 'user', content: query });
-  inputQuery.value = '';
-  isProcessing.value = true;
-
-  // 简单模拟意图识别
-  if (query.includes('小红书') && (query.includes('查找') || query.includes('搜索') || query.includes('找') || query.includes('脚本'))) {
-    chatHistory.value.push({ role: 'assistant', content: '好的，正在为您启动小红书自动化检索机制，提取相关内容与素材...' });
-    
-    try {
-      const result = await invoke('spy_xiaohongshu', { keyword: query });
-      chatHistory.value.push({ role: 'assistant', content: '✅ 检索完成！已成功抓取小红书热门内容。配方、素材与评论已提取完毕，您可以让我继续为您生成最终脚本。' });
-    } catch (error) {
-      chatHistory.value.push({ role: 'assistant', content: `❌ 检索过程中遇到错误：${error}` });
-    }
-  } else {
-    setTimeout(() => {
-      chatHistory.value.push({ role: 'assistant', content: '我明白了。如果您需要查找素材，可以尝试对我说：“帮我在小红书上查找抹茶软欧包教程”。' });
-    }, 800);
-  }
-  isProcessing.value = false;
-}
-
-function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    handleSend();
+async function loadAccounts() {
+  debugMsg.value = '正在加载账号...';
+  try {
+    const res = await invoke('list_accounts', { platform: null }) as any[];
+    accounts.value = res;
+    debugMsg.value = `账号加载成功 (${res.length})`;
+  } catch (e) {
+    console.error('加载账号失败:', e);
+    debugMsg.value = '加载失败: ' + e;
   }
 }
 
-function openLogin(platform: string) {
-  currentLoginPlatform.value = platform;
+// ============ 登录流程 ============
+
+async function startLogin(platform: string) {
+  currentPlatform.value = platform;
   isLoginModalOpen.value = true;
+  loginStep.value = 'init';
+  qrcodeSrc.value = '';
+  loginStatus.value = '正在初始化登录...';
+  debugMsg.value = `准备登录: ${platform}`;
+
+  try {
+    const session: any = await invoke('init_login_session', { platform });
+    sessionId.value = session.session_id;
+    loginStep.value = 'waiting';
+    loginStatus.value = '请前往浏览器进行操作';
+    pollLoginStatus();
+  } catch (e) {
+    console.error('初始化登录失败:', e);
+    loginStep.value = 'error';
+    loginStatus.value = '登录初始化失败: ' + e;
+    debugMsg.value = '初始化失败: ' + e;
+  }
 }
 
-function deleteAccount(id: number) {
-  if (confirm('确定要删除此授权账号吗？')) {
-    accounts.value = accounts.value.filter(a => a.id !== id);
+async function pollLoginStatus() {
+  if (!isLoginModalOpen.value || !sessionId.value) return;
+
+  try {
+    const status: any = await invoke('get_login_status', { sessionId: sessionId.value });
+
+    if (status.status === 'pending' || status.status === 'qrcode') {
+      loginStep.value = 'waiting';
+      loginStatus.value = '请前往浏览器进行操作';
+    } else if (status.status === 'scanned') {
+      loginStep.value = 'waiting';
+      loginStatus.value = '已扫码，等待确认...';
+    } else if (status.status === 'confirmed') {
+      loginStep.value = 'success';
+      loginStatus.value = '✓ 登录成功！';
+      // 登录成功后不自动关闭，等用户点击确认
+      return;
+    } else if (status.status === 'expired') {
+      loginStep.value = 'error';
+      loginStatus.value = '二维码已过期，请关闭后重试';
+      return;
+    } else if (status.status === 'error') {
+      loginStep.value = 'error';
+      loginStatus.value = '登录出错: ' + (status.error || '未知错误');
+      return;
+    }
+    setTimeout(pollLoginStatus, 2000);
+  } catch (e) {
+    console.error('轮询失败:', e);
+    setTimeout(pollLoginStatus, 3000);
   }
+}
+
+// ============ 保存账号 ============
+
+async function saveAccount(userInfo: any, cookieData: any) {
+  const platformLabel = currentPlatform.value === 'xiaohongshu' ? '小红书' : '抖音';
+  const suggestedName = userInfo?.name || userInfo?.user_id || `${platformLabel}账号`;
+
+  const name = prompt('登录成功！请输入账号名称（如：我的工作号）:', suggestedName);
+  if (!name || !name.trim()) return;
+
+  try {
+    const account: any = await invoke('save_account', {
+      platform: currentPlatform.value,
+      name: name.trim(),
+      userInfo: userInfo,
+      cookieData: cookieData,
+    });
+    console.log('账号已保存:', account);
+    debugMsg.value = `账号已保存: ${name}`;
+  } catch (e) {
+    console.error('保存账号失败:', e);
+    debugMsg.value = '保存失败: ' + e;
+  }
+}
+
+// ============ 验证账号 ============
+
+async function verifyAccount(account: any) {
+  const key = `${account.platform}:${account.name}`;
+  verifyingIds.value.add(key);
+  try {
+    const result: any = await invoke('verify_account', {
+      platform: account.platform,
+      name: account.name,
+    });
+
+    // 更新 accounts 中对应账号的状态
+    const idx = accounts.value.findIndex(
+      (a) => a.platform === account.platform && a.name === account.name
+    );
+    if (idx >= 0) {
+      accounts.value[idx] = {
+        ...accounts.value[idx],
+        verify_status: result.status,
+        verify_method: result.method,
+        verify_message: result.message,
+      };
+    }
+    debugMsg.value = `验证完成: ${account.name} → ${result.status}`;
+  } catch (e) {
+    console.error('验证失败:', e);
+    debugMsg.value = `验证失败: ${e}`;
+  } finally {
+    verifyingIds.value.delete(key);
+  }
+}
+
+// ============ 删除账号 ============
+
+async function removeAccount(account: any) {
+  const key = `${account.platform}:${account.name}`;
+  const confirmed = confirm(`确认删除账号「${account.name}」？`);
+  if (!confirmed) return;
+
+  try {
+    await invoke('delete_account', {
+      platform: account.platform,
+      name: account.name,
+    });
+    debugMsg.value = `已删除: ${account.name}`;
+    await loadAccounts();
+  } catch (e) {
+    console.error('删除失败:', e);
+    debugMsg.value = '删除失败: ' + e;
+  }
+}
+
+// ============ 关闭弹窗 ============
+
+async function closeModal() {
+  if (sessionId.value) {
+    try {
+      await invoke('cleanup_login_session', { sessionId: sessionId.value });
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  isLoginModalOpen.value = false;
+  sessionId.value = '';
+  loginStep.value = 'init';
+  loginStatus.value = '';
+}
+
+// ============ 确认保存 ============
+
+async function confirmAndSave() {
+  try {
+    const cookieData: any = await invoke('get_cookies', { sessionId: sessionId.value });
+    const userInfo: any = cookieData.user_info || { user_id: '', name: '', avatar: null };
+    await saveAccount(userInfo, cookieData);
+  } catch (e) {
+    console.error('获取 Cookie 失败:', e);
+    debugMsg.value = '保存失败: ' + e;
+  }
+  closeModal();
+  await loadAccounts();
+}
+
+// ============ 重试 ============
+
+async function retryLogin() {
+  closeModal();
+  await startLogin(currentPlatform.value);
+}
+
+// ============ 生命周期 ============
+
+onMounted(() => {
+  loadAccounts();
+});
+
+// ============ 辅助 ============
+
+function statusIcon(status: string) {
+  if (status === 'valid') return CheckCircle;
+  if (status === 'invalid') return XCircle;
+  return HelpCircle;
+}
+
+function statusColor(status: string) {
+  if (status === 'valid') return 'text-green-400';
+  if (status === 'invalid') return 'text-red-400';
+  return 'text-gray-400';
+}
+
+function statusBg(status: string) {
+  if (status === 'valid') return 'bg-green-900/30 text-green-400';
+  if (status === 'invalid') return 'bg-red-900/30 text-red-400';
+  return 'bg-gray-800 text-gray-400';
+}
+
+function isVerifying(platform: string, name: string) {
+  return verifyingIds.value.has(`${platform}:${name}`);
 }
 </script>
 
 <template>
-  <div class="flex h-screen w-screen overflow-hidden bg-gray-950 text-gray-50 font-sans selection:bg-blue-600/30">
-    <!-- 1. 左侧栏：全局导航与设备状态 -->
+  <div class="flex h-screen w-screen overflow-hidden bg-gray-950 text-gray-50 font-sans">
+    <!-- 左侧导航 -->
     <aside class="flex flex-col w-[20%] h-full bg-gray-950 border-r border-gray-800">
-      <!-- 顶部 Logo -->
-      <div class="p-6 flex items-center justify-between">
-        <h1 class="text-xl font-bold tracking-tight">AutoCast AI</h1>
-        <div class="flex items-center gap-2 text-xs text-emerald-500">
-          <span class="relative flex h-2 w-2">
-            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-          </span>
-          Online
-        </div>
-      </div>
-
-      <!-- 中部导航区 -->
+      <div class="p-6 font-bold tracking-tight">AutoCast AI</div>
       <nav class="flex-1 px-3 space-y-1">
-        <a href="#" @click="showAccounts = false" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg relative group transition-colors cursor-pointer', !showAccounts ? 'bg-gray-900 text-gray-50' : 'text-gray-400 hover:text-gray-50 hover:bg-gray-900/50']">
-          <div class="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-blue-600 rounded-r-md"></div>
+        <a href="#" @click="showAccounts = false" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', !showAccounts ? 'bg-gray-900' : 'text-gray-400']">
           <MessageSquare class="w-5 h-5 text-blue-500" />
-          <span class="font-medium text-sm">AI 助理对话</span>
+          <span>AI 助理对话</span>
         </a>
-        <a href="#" @click="showAccounts = true" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg relative group transition-colors cursor-pointer', showAccounts ? 'bg-gray-900 text-gray-50' : 'text-gray-400 hover:text-gray-50 hover:bg-gray-900/50']">
+        <a href="#" @click="showAccounts = true" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', showAccounts ? 'bg-gray-900' : 'text-gray-400']">
           <Users class="w-5 h-5" />
-          <span class="font-medium text-sm">账号管理</span>
-        </a>
-        <a href="#" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-gray-400 hover:text-gray-50 hover:bg-gray-900/50 transition-colors">
-          <TerminalSquare class="w-5 h-5" />
-          <span class="font-medium text-sm">自动化任务</span>
+          <span>账号管理</span>
         </a>
       </nav>
-
-      <!-- 底部系统设置与设备状态 -->
-      <div class="p-4 space-y-4">
-        <a href="#" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-gray-400 hover:text-gray-50 hover:bg-gray-900/50 transition-colors">
-          <Settings class="w-5 h-5" />
-          <span class="font-medium text-sm">⚙️ 系统全局设置</span>
-        </a>
-        
-        <div class="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <div class="flex items-center gap-2 mb-2">
-            <Smartphone class="w-4 h-4 text-gray-400" />
-            <span class="text-xs font-medium text-gray-300">📱 本地仿真器 #1</span>
-          </div>
-          <div class="text-[10px] text-gray-500 font-mono flex items-center justify-between">
-            <span>IP: 127.0.0.1:5555</span>
-            <span class="text-emerald-500 flex items-center gap-1"><div class="w-1.5 h-1.5 rounded-full bg-emerald-500"></div> Connected</span>
-          </div>
-        </div>
-      </div>
     </aside>
 
-    <!-- 2. 主内容栏：LLM 聊天交互区 -->
-    <main v-if="!showAccounts" class="flex flex-col flex-1 h-full bg-gray-950">
-      <!-- 聊天标题 -->
-      <div class="p-4 border-b border-gray-800 flex items-center justify-center shadow-sm z-10">
-        <h2 class="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <Bot class="w-4 h-4 text-emerald-500" />
-          智能体交互中心
-        </h2>
-      </div>
-
-      <!-- 聊天内容区 -->
-      <div class="flex-1 overflow-y-auto p-4 space-y-4 flex flex-col">
-        <div v-for="(msg, index) in chatHistory" :key="index" 
-             :class="['max-w-[85%] rounded-xl p-3 text-sm leading-relaxed', 
-                      msg.role === 'user' ? 'bg-blue-600 text-white self-end rounded-br-none' : 'bg-gray-900 border border-gray-800 text-gray-200 self-start rounded-bl-none']">
-          {{ msg.content }}
-        </div>
-        
-        <div v-if="isProcessing" class="self-start bg-gray-900 border border-gray-800 rounded-xl rounded-bl-none p-3 max-w-[85%]">
-          <div class="flex gap-1 items-center">
-            <div class="w-2 h-2 bg-gray-500 rounded-full animate-bounce"></div>
-            <div class="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
-            <div class="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 底部输入区 -->
-      <div class="p-4 border-t border-gray-800 bg-gray-950">
-        <div class="relative flex items-end gap-2 bg-gray-900 border border-gray-800 rounded-xl p-1 focus-within:ring-1 focus-within:ring-blue-600 focus-within:border-blue-600 transition-all">
-          <textarea 
-            v-model="inputQuery"
-            @keydown="handleKeydown"
-            placeholder="输入指令，如：帮我在小红书上查找相关内容..." 
-            class="w-full bg-transparent border-none px-3 py-2 text-sm text-gray-50 placeholder-gray-500 focus:outline-none resize-none min-h-[44px] max-h-32"
-            rows="1"
-          ></textarea>
-          <button 
-            @click="handleSend"
-            :disabled="!inputQuery.trim() || isProcessing"
-            class="mb-1 mr-1 p-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <Send class="w-4 h-4" />
-          </button>
-        </div>
-        <div class="text-center mt-2 text-[11px] text-gray-500">AutoCast AI 可自动唤起工具执行您的指令</div>
+    <!-- 主内容 -->
+    <main v-if="!showAccounts" class="flex flex-col flex-1 h-full bg-gray-950 p-4">
+      <div class="flex-1 flex items-center justify-center text-gray-500">
+        <p>AI 助理对话区域（开发中）</p>
       </div>
     </main>
 
     <!-- 账号管理面板 -->
     <main v-if="showAccounts" class="flex flex-col flex-1 h-full bg-gray-950 p-6 overflow-y-auto">
-      <div class="flex items-center justify-between mb-8">
-        <h2 class="text-xl font-bold text-gray-50">账号管理</h2>
+      <div class="flex justify-between items-center mb-8">
+        <h2 class="text-xl font-bold">账号管理</h2>
+        <div class="text-xs text-gray-500 bg-gray-900 px-3 py-1 rounded-full border border-gray-800 font-mono">
+          {{ debugMsg }}
+        </div>
       </div>
 
+      <!-- 账号列表 -->
       <div class="grid grid-cols-2 gap-6">
-        <!-- 小红书平台 -->
-        <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-          <div class="flex items-center justify-between mb-4 border-b border-gray-800 pb-4">
-            <h3 class="text-lg font-medium text-gray-50 flex items-center gap-2">
-              <span class="text-red-500">📕</span> 小红书
-            </h3>
-            <button @click="openLogin('xiaohongshu')" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg transition-colors cursor-pointer">
-              + 新增授权
-            </button>
+        <!-- 小红书 -->
+        <div class="bg-gray-900 p-5 rounded-xl">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg">📕 小红书</h3>
+            <button @click="startLogin('xiaohongshu')" class="text-xs bg-blue-600 px-3 py-1.5 rounded-lg hover:bg-blue-700 transition-colors">+ 新增授权</button>
           </div>
-          <div class="space-y-3">
-            <div v-for="acc in accounts.filter(a => a.platform === 'xiaohongshu')" :key="acc.id" class="flex items-center justify-between p-3 bg-gray-950 rounded-lg border border-gray-800">
+          <div v-if="accounts.filter(a => a.platform === 'xiaohongshu').length === 0" class="text-gray-500 text-sm py-8 text-center border border-dashed border-gray-800 rounded-lg">
+            暂无授权账号
+          </div>
+          <div v-for="acc in accounts.filter(a => a.platform === 'xiaohongshu')" :key="`${acc.platform}:${acc.name}`" class="p-3 bg-gray-950 rounded-lg border border-gray-800 mb-2">
+            <div class="flex items-center justify-between mb-2">
               <div class="flex items-center gap-3">
-                <div class="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-xs overflow-hidden">
-                  <img v-if="acc.avatar" :src="acc.avatar" class="w-full h-full object-cover"/>
-                  <span v-else>{{ acc.name.substring(0, 1) }}</span>
+                <div v-if="acc.meta?.avatar" class="w-8 h-8 rounded-full bg-gray-800 overflow-hidden flex-shrink-0">
+                  <img :src="acc.meta.avatar" class="w-full h-full object-cover" />
                 </div>
+                <div v-else class="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-sm flex-shrink-0">📕</div>
                 <div>
-                  <div class="text-sm font-medium text-gray-50">{{ acc.name }}</div>
-                  <div class="text-xs text-gray-500 font-mono">{{ acc.userId }}</div>
+                  <div class="text-sm font-medium flex items-center gap-2">
+                    {{ acc.name }}
+                    <!-- 验证状态徽章 -->
+                    <span v-if="acc.verify_status" :class="['inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-mono', statusBg(acc.verify_status)]">
+                      <component :is="statusIcon(acc.verify_status)" class="w-3 h-3" />
+                      {{ acc.verify_status }}
+                    </span>
+                  </div>
+                  <div class="text-xs text-gray-500">{{ acc.meta?.nickname || acc.meta?.user_id || '—' }}</div>
                 </div>
               </div>
-              <div :class="['text-xs px-2 py-1 rounded-md', acc.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500']">
-                {{ acc.status === 'active' ? '有效' : '已失效' }}
+              <div class="flex items-center gap-1">
+                <button @click="verifyAccount(acc)" :disabled="isVerifying(acc.platform, acc.name)" class="text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded flex items-center gap-1 transition-colors disabled:opacity-50">
+                  <RefreshCw class="w-3 h-3" :class="isVerifying(acc.platform, acc.name) ? 'animate-spin' : ''" />
+                  验证
+                </button>
+                <button @click="removeAccount(acc)" class="text-xs bg-red-900/30 hover:bg-red-800 text-red-400 px-2 py-1 rounded transition-colors">
+                  <Trash2 class="w-3 h-3" />
+                </button>
               </div>
-              <button @click="deleteAccount(acc.id)" class="text-gray-500 hover:text-red-500 transition-colors p-1 cursor-pointer">
-                <Trash2 class="w-4 h-4" />
-              </button>
+            </div>
+            <!-- 验证详情 -->
+            <div v-if="acc.verify_message" class="text-[10px] text-gray-500 font-mono mt-1 px-2">
+              {{ acc.verify_message }}
             </div>
           </div>
         </div>
 
-        <!-- 抖音平台 -->
-        <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-          <div class="flex items-center justify-between mb-4 border-b border-gray-800 pb-4">
-            <h3 class="text-lg font-medium text-gray-50 flex items-center gap-2">
-              <span class="text-black bg-white rounded-sm px-1 leading-tight font-bold">♪</span> 抖音
-            </h3>
-            <button @click="openLogin('douyin')" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg transition-colors cursor-pointer">
-              + 新增授权
-            </button>
+        <!-- 抖音 -->
+        <div class="bg-gray-900 p-5 rounded-xl">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg">♪ 抖音</h3>
+            <button @click="startLogin('douyin')" class="text-xs bg-blue-600 px-3 py-1.5 rounded-lg hover:bg-blue-700 transition-colors">+ 新增授权</button>
           </div>
-          <div class="space-y-3">
-            <div v-for="acc in accounts.filter(a => a.platform === 'douyin')" :key="acc.id" class="flex items-center justify-between p-3 bg-gray-950 rounded-lg border border-gray-800">
+          <div v-if="accounts.filter(a => a.platform === 'douyin').length === 0" class="text-gray-500 text-sm py-8 text-center border border-dashed border-gray-800 rounded-lg">
+            暂无授权账号
+          </div>
+          <div v-for="acc in accounts.filter(a => a.platform === 'douyin')" :key="`${acc.platform}:${acc.name}`" class="p-3 bg-gray-950 rounded-lg border border-gray-800 mb-2">
+            <div class="flex items-center justify-between mb-2">
               <div class="flex items-center gap-3">
-                <div class="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-xs overflow-hidden">
-                  <img v-if="acc.avatar" :src="acc.avatar" class="w-full h-full object-cover"/>
-                  <span v-else>{{ acc.name.substring(0, 1) }}</span>
+                <div v-if="acc.meta?.avatar" class="w-8 h-8 rounded-full bg-gray-800 overflow-hidden flex-shrink-0">
+                  <img :src="acc.meta.avatar" class="w-full h-full object-cover" />
                 </div>
+                <div v-else class="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-sm flex-shrink-0">♪</div>
                 <div>
-                  <div class="text-sm font-medium text-gray-50">{{ acc.name }}</div>
-                  <div class="text-xs text-gray-500 font-mono">{{ acc.userId }}</div>
+                  <div class="text-sm font-medium flex items-center gap-2">
+                    {{ acc.name }}
+                    <span v-if="acc.verify_status" :class="['inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-mono', statusBg(acc.verify_status)]">
+                      <component :is="statusIcon(acc.verify_status)" class="w-3 h-3" />
+                      {{ acc.verify_status }}
+                    </span>
+                  </div>
+                  <div class="text-xs text-gray-500">{{ acc.meta?.nickname || acc.meta?.user_id || '—' }}</div>
                 </div>
               </div>
-              <div :class="['text-xs px-2 py-1 rounded-md', acc.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500']">
-                {{ acc.status === 'active' ? '有效' : '已失效' }}
+              <div class="flex items-center gap-1">
+                <button @click="verifyAccount(acc)" :disabled="isVerifying(acc.platform, acc.name)" class="text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded flex items-center gap-1 transition-colors disabled:opacity-50">
+                  <RefreshCw class="w-3 h-3" :class="isVerifying(acc.platform, acc.name) ? 'animate-spin' : ''" />
+                  验证
+                </button>
+                <button @click="removeAccount(acc)" class="text-xs bg-red-900/30 hover:bg-red-800 text-red-400 px-2 py-1 rounded transition-colors">
+                  <Trash2 class="w-3 h-3" />
+                </button>
               </div>
-              <button @click="deleteAccount(acc.id)" class="text-gray-500 hover:text-red-500 transition-colors p-1 cursor-pointer">
-                <Trash2 class="w-4 h-4" />
-              </button>
+            </div>
+            <div v-if="acc.verify_message" class="text-[10px] text-gray-500 font-mono mt-1 px-2">
+              {{ acc.verify_message }}
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- 使用说明 -->
+      <div class="mt-8 p-4 bg-gray-900/50 rounded-xl border border-gray-800">
+        <h4 class="text-sm font-medium mb-2 text-gray-300">💡 使用说明</h4>
+        <ul class="text-xs text-gray-500 space-y-1">
+          <li>• 点击「新增授权」后会显示登录二维码</li>
+          <li>• 请使用对应 App 扫码登录</li>
+          <li>• 登录成功后请输入账号名称（用于区分多账号）</li>
+          <li>• 点击「验证」可检查 Cookie 是否有效（三层检测）</li>
+          <li>• 支持同一平台绑定多个账号</li>
+        </ul>
       </div>
     </main>
-  </div>
 
-  <!-- 扫码登录弹窗 -->
-  <div v-if="isLoginModalOpen" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center">
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 w-[400px] shadow-2xl relative">
-      <button @click="isLoginModalOpen = false" class="absolute top-4 right-4 text-gray-400 hover:text-white cursor-pointer">✕</button>
-      <h3 class="text-lg font-bold text-gray-50 mb-6 text-center">扫码登录 {{ currentLoginPlatform === 'douyin' ? '抖音' : '小红书' }}</h3>
-      <div class="bg-white rounded-xl p-4 flex flex-col items-center justify-center min-h-[250px] mb-6">
-        <div v-if="!qrcodeUrl" class="text-gray-400 flex flex-col items-center gap-2"><div class="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div><span class="text-sm mt-2">正在获取二维码...</span></div>
-        <img v-else :src="qrcodeUrl" class="w-48 h-48" alt="Login QR Code" />
+    <!-- 登录弹窗 -->
+    <div v-if="isLoginModalOpen" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center">
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 w-[360px] shadow-2xl relative">
+        <button @click="closeModal" class="absolute top-4 right-4 text-gray-400 hover:text-white text-xl leading-none">&times;</button>
+
+        <h3 class="text-lg font-bold mb-4 text-center">
+          {{ currentPlatform === 'xiaohongshu' ? '📕 小红书' : '♪ 抖音' }} 扫码登录
+        </h3>
+
+        <!-- 状态区域 -->
+        <div class="bg-gray-800 rounded-xl p-6 flex flex-col items-center justify-center min-h-[180px] mb-4">
+          <!-- 等待操作状态 -->
+          <div v-if="loginStep === 'init' || loginStep === 'waiting'" class="flex flex-col items-center gap-3">
+            <div class="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+            <span class="text-gray-400 text-sm">{{ loginStatus }}</span>
+          </div>
+          <!-- 成功状态 -->
+          <div v-else-if="loginStep === 'success'" class="flex flex-col items-center gap-3">
+            <CheckCircle class="w-12 h-12 text-green-500" />
+            <span class="text-green-400 text-sm font-medium">登录成功</span>
+          </div>
+          <!-- 错误状态 -->
+          <div v-else-if="loginStep === 'error'" class="flex flex-col items-center gap-3">
+            <XCircle class="w-12 h-12 text-red-500" />
+            <span class="text-red-400 text-sm">{{ loginStatus }}</span>
+          </div>
+        </div>
+
+        <!-- 底部操作 -->
+        <div class="flex flex-col gap-2">
+          <!-- 成功：确认保存 -->
+          <button v-if="loginStep === 'success'" @click="confirmAndSave" class="w-full bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-lg text-sm font-medium transition-colors">
+            确认并保存账号
+          </button>
+          <!-- 等待/错误：关闭 -->
+          <button v-if="loginStep === 'waiting' || loginStep === 'error'" @click="closeModal" class="w-full bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-lg text-sm font-medium transition-colors">
+            取消
+          </button>
+          <!-- 重试 -->
+          <button v-if="loginStep === 'error'" @click="retryLogin" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg text-sm font-medium transition-colors">
+            重试
+          </button>
+        </div>
       </div>
     </div>
   </div>
 </template>
-
-<style>
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #374151;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #4B5563;
-}
-</style>
