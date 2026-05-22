@@ -179,7 +179,21 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
     original_dir = os.getcwd()
     data_dir_abs = os.path.abspath(os.path.join(output_dir, 'data', sec_uid))
     os.makedirs(data_dir_abs, exist_ok=True)
+
+    # FieldConfig/Logger 在模块导入时就初始化了，chdir 后就找不到 config.yaml
+    # 在 output_dir 创建 symlink 指向真实配置文件，使相对路径查找仍有效
+    config_link = os.path.join(output_dir, 'config.yaml')
+    real_config = os.path.join(DOUYIN_COMMENT_DIR, 'config.yaml')
+    if not os.path.exists(config_link):
+        try:
+            os.symlink(real_config, config_link)
+        except OSError:
+            pass  # 忽略（文件系统不支持symlink等）
+
     os.chdir(output_dir)
+    # chdir 后重新加载配置（UserManager 是进程内单例，chdir 前初始化会导致配置路径失效）
+    from utils.field_config import UserManager
+    UserManager().reload_config()
     _log(f"[SCRAPER] 工作目录: {output_dir}")
     _log(f"[SCRAPER] data_dir: {data_dir_abs}")
 
