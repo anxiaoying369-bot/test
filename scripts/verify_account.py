@@ -22,7 +22,7 @@ from pathlib import Path
 PLATFORM_CONFIG = {
     "douyin": {
         # L1: 检查 storage_state 中关键 cookie 的 expires
-        "check_urls": ["https://creator.douyin.com/creator-micro/content/upload"],
+        "check_urls": ["https://www.douyin.com/creator-micro/content/upload"],
         "critical_cookies": ["sessionid", "sessionid_ss", "passport_auth_id"],
         "authed_selectors": [
             # 上传页面特有的元素
@@ -45,7 +45,7 @@ PLATFORM_CONFIG = {
         # L2 positive — HTTP API
         "http_check": {
             "method": "GET",
-            "url": "https://creator.douyin.com/creator-micro/home",
+            "url": "https://www.douyin.com",
             "auth_headers": ["cookie"],
             "success_status": [200],
         },
@@ -204,12 +204,15 @@ def check_playwright(platform: str, cookie_path: str) -> dict:
         return {"status": "unknown", "detail": "无检查 URL"}
 
     try:
-        from cloakbrowser import launch
+        from playwright.sync_api import sync_playwright
     except ImportError:
-        return {"status": "unknown", "detail": "cloakbrowser 未安装"}
+        return {"status": "unknown", "detail": "playwright 未安装"}
 
+    pw = None
+    browser = None
     try:
-        browser = launch(headless=True)
+        pw = sync_playwright().start()
+        browser = pw.chromium.launch(headless=True, channel="chrome")
         context = browser.new_context(storage_state=cookie_path)
         page = context.new_page()
 
@@ -250,6 +253,7 @@ def check_playwright(platform: str, cookie_path: str) -> dict:
                 results.append(("error", str(e)))
 
         browser.close()
+        pw.stop()
 
         # 解析结果
         has_authed = any(r[0] == "authed" for r in results)
@@ -266,6 +270,13 @@ def check_playwright(platform: str, cookie_path: str) -> dict:
             return {"status": "unknown", "detail": f"DOM 检测无结果: {results}"}
 
     except Exception as e:
+        try:
+            if browser:
+                browser.close()
+            if pw:
+                pw.stop()
+        except Exception:
+            pass
         return {"status": "unknown", "detail": f"Playwright 检测异常: {e}"}
 
 

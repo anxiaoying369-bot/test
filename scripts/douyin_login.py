@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-抖音扫码登录 - Playwright 直连版（新架构）
-参考 SynapseAutomation syn_backend/app_new/platforms/douyin.py
+抖音手动登录 - Playwright 版（手动确认模式）
 
-核心行为变更（vs 旧架构）：
-  - 登录成功后：设置 status=confirmed，返回 cookies + storage_state，然后退出
-  - 不再：while True + time.sleep(10) 永久阻塞浏览器
-  - 不再：自动保存到 scripts/douyin/storage_state.json
+流程：
+  1. 启动浏览器，跳转到抖音创作者中心登录页
+  2. 用户在浏览器里手动完成登录
+  3. 用户在 Tauri UI 上点"登录完成"
+  4. Tauri 调用 POST /finish?save_dir=... 触发本脚本抓 cookie 并保存
+  5. 关闭浏览器，进程退出
 
 用法：
   python3 douyin_login.py --port 18001 --session-id <uuid>
 
 HTTP API：
-  GET /status   -> {status, qrcode_base64, user_name, user_id}
-  GET /cookies -> {cookies, user_info, storage_state}
-  DELETE /cancel
+  GET  /status                    -> {status, error}
+  POST /finish?save_dir=<path>    -> {status, user_info, message}
+  DELETE /cancel                  -> 取消并退出
 """
 
 import argparse
-import base64
 import json
 import os
-import random
+import queue
 import re
 import signal
 import sys
@@ -29,35 +29,220 @@ import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
+from urllib.parse import urlparse, parse_qs
 
 try:
-    from cloakbrowser import launch
+    from playwright.sync_api import sync_playwright
 except ImportError:
-    print("ERROR: cloakbrowser 未安装")
+    print("ERROR: playwright 未安装", flush=True)
     sys.exit(1)
 
 
 # ============ 全局状态 ============
 class LoginState:
-    status: str = "pending"  # pending | qrcode | scanned | confirmed | failed | cancelled
-    qrcode_base64: Optional[str] = None
-    user_name: Optional[str] = None
-    user_id: Optional[str] = None
-    cookies: list = []
-    storage_state: Optional[dict] = None
-    user_info: Optional[dict] = None
+    status: str = "starting"   # starting | ready | saving | saved | failed | cancelled
     error_msg: Optional[str] = None
+    user_info: Optional[dict] = None
 
 
 state = LoginState()
 browser_obj = None
 _context_obj = None
+_pw_obj = None
+_page_obj = None
+
+# 主线程任务队列：HTTP handler → main thread
+# 每个任务是 (save_dir: str, result_queue: queue.Queue)
+_task_queue: queue.Queue = queue.Queue()
+
+
+# ============ 用户信息提取 ============
+def extract_user_info(page):
+    user_name, user_id, avatar = None, None, None
+    try:
+        try:
+            page.goto("https://www.douyin.com/user/self", timeout=15000)
+            page.wait_for_load_state("domcontentloaded", timeout=8000)
+            time.sleep(2)
+        except Exception as e:
+            print(f"[DY] navigate user/self failed (non-fatal): {e}", flush=True)
+
+        try:
+            js_info = page.evaluate("""() => {
+                if (window._ROUTER_DATA?.loaderData) {
+                    for (let key in window._ROUTER_DATA.loaderData) {
+                        const data = window._ROUTER_DATA.loaderData[key];
+                        if (data?.user) return data.user;
+                    }
+                }
+                if (window.userData) return window.userData;
+                return null;
+            }""")
+            if js_info and isinstance(js_info, dict):
+                user_id = js_info.get("uniqueId") or js_info.get("unique_id") or js_info.get("userId")
+                user_name = js_info.get("nickname") or js_info.get("name")
+                avatar = js_info.get("avatarUrl") or js_info.get("avatar_url")
+        except Exception as e:
+            print(f"[DY] js extract failed: {e}", flush=True)
+
+        if not user_id:
+            try:
+                body_text = page.evaluate("() => document.body.innerText")
+                m = re.search(r"(抖音号|抖音ID|抖音id)[:：]?\s*([A-Za-z0-9_.-]+)", body_text)
+                if m:
+                    user_id = m.group(2)
+            except Exception:
+                pass
+
+        if not user_name:
+            for sel in ['[data-e2e="user-info-name"]', 'h1', '.header-right-name']:
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=1000):
+                        user_name = (el.text_content() or "").strip().split("\n")[0]
+                        if user_name:
+                            break
+                except Exception:
+                    pass
+
+        if not avatar:
+            for sel in ["div[class*='avatar-'] img", ".semi-avatar img", "img[src*='aweme-avatar']"]:
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=1000):
+                        avatar = el.get_attribute("src")
+                        if avatar:
+                            break
+                except Exception:
+                    pass
+
+    except Exception as e:
+        print(f"[DY] extract_user_info error: {e}", flush=True)
+
+    return user_name, user_id, avatar
+
+
+# ============ Cookie 保存 ============
+def cookies_to_header_string(cookies: list) -> str:
+    parts = []
+    for c in cookies:
+        domain = (c.get("domain") or "").lstrip(".")
+        if not domain.endswith("douyin.com"):
+            continue
+        name = c.get("name")
+        value = c.get("value")
+        if name and value is not None:
+            parts.append(f"{name}={value}")
+    return "; ".join(parts)
+
+
+def save_cookie_files(save_dir: str, cookies: list, user_info: dict, storage_state: Optional[dict]) -> None:
+    os.makedirs(save_dir, exist_ok=True)
+
+    cookie_txt = cookies_to_header_string(cookies)
+    with open(os.path.join(save_dir, "cookie.txt"), "w", encoding="utf-8") as f:
+        f.write(cookie_txt)
+
+    cookie_json = {"cookies": cookies, "storage_state": storage_state}
+    with open(os.path.join(save_dir, "cookie.json"), "w", encoding="utf-8") as f:
+        json.dump(cookie_json, f, ensure_ascii=False, indent=2)
+
+    with open(os.path.join(save_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "platform": "douyin",
+            "user_info": user_info,
+            "saved_at": int(time.time()),
+        }, f, ensure_ascii=False, indent=2)
+
+
+def _do_finish_in_main_thread(save_dir: str) -> dict:
+    """
+    实际的 Playwright 操作，必须在主线程（创建浏览器的线程）中调用。
+    由主循环从 _task_queue 取出任务后调用。
+    """
+    global state
+
+    if state.status not in ("ready", "saving"):
+        return {"ok": False, "error": f"当前状态为 {state.status}，无法保存"}
+
+    state.status = "saving"
+    print(f"[DY] finish triggered in main thread, save_dir={save_dir}", flush=True)
+
+    if not _page_obj or not _context_obj:
+        state.status = "failed"
+        state.error_msg = "browser not running"
+        return {"ok": False, "error": state.error_msg}
+
+    try:
+        cookies = _context_obj.cookies()
+        cookie_names = {c["name"] for c in cookies}
+        login_markers = {"sessionid", "sessionid_ss", "sid_guard", "sid_tt", "passport_auth_id",
+                         "ttwid", "s_v_web_id", "LOGIN_STATUS"}
+        if not (cookie_names & login_markers):
+            state.status = "ready"
+            return {"ok": False, "error": "尚未检测到登录 Cookie，请先在浏览器里完成登录"}
+
+        user_name, user_id, avatar = extract_user_info(_page_obj)
+        user_info = {
+            "user_id": user_id or "",
+            "name": user_name or "",
+            "avatar": avatar or "",
+        }
+        state.user_info = user_info
+
+        storage_state = None
+        try:
+            storage_state = _context_obj.storage_state()
+        except Exception as e:
+            print(f"[DY] storage_state failed: {e}", flush=True)
+
+        try:
+            cookies = _context_obj.cookies()
+        except Exception:
+            pass
+
+        save_cookie_files(save_dir, cookies, user_info, storage_state)
+
+        state.status = "saved"
+        print(f"[DY] Saved to {save_dir}, user={user_name} uid={user_id}", flush=True)
+        return {"ok": True, "user_info": user_info, "save_dir": save_dir}
+
+    except Exception as e:
+        state.status = "failed"
+        state.error_msg = str(e)
+        print(f"[DY] finish error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return {"ok": False, "error": str(e)}
+
+
+def shutdown_browser():
+    global browser_obj, _context_obj, _pw_obj, _page_obj
+    try:
+        if _context_obj:
+            _context_obj.close()
+    except Exception:
+        pass
+    try:
+        if browser_obj:
+            browser_obj.close()
+    except Exception:
+        pass
+    try:
+        if _pw_obj:
+            _pw_obj.stop()
+    except Exception:
+        pass
+    browser_obj = None
+    _context_obj = None
+    _pw_obj = None
+    _page_obj = None
 
 
 # ============ HTTP Server ============
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass  # 静默
+        pass
 
     def send_json(self, data: dict, status: int = 200):
         self.send_response(status)
@@ -66,40 +251,44 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
     def do_GET(self):
-        if self.path == "/status":
+        if self.path.startswith("/status"):
             self.send_json({
                 "status": state.status,
-                "qrcode_base64": state.qrcode_base64,
-                "user_name": state.user_name,
-                "user_id": state.user_id,
                 "error": state.error_msg,
+                "user_info": state.user_info,
             })
-        elif self.path == "/cookies":
-            if state.status != "confirmed":
-                self.send_json({"error": "Login not confirmed"}, 400)
-            else:
-                self.send_json({
-                    "cookies": state.cookies,
-                    "user_info": state.user_info or {
-                        "user_id": state.user_id or "",
-                        "name": state.user_name or "",
-                        "avatar": "",
-                    },
-                    "storage_state": state.storage_state,
-                })
+        else:
+            self.send_json({"error": "Not found"}, 404)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/finish":
+            qs = parse_qs(parsed.query or "")
+            save_dir = (qs.get("save_dir") or [""])[0]
+            if not save_dir:
+                self.send_json({"ok": False, "error": "missing save_dir"}, 400)
+                return
+
+            # 把任务投递给主线程，等待结果（Playwright 不能跨线程调用）
+            result_q: queue.Queue = queue.Queue()
+            _task_queue.put((save_dir, result_q))
+
+            try:
+                result = result_q.get(timeout=60)
+            except queue.Empty:
+                result = {"ok": False, "error": "主线程处理超时"}
+
+            self.send_json(result, 200 if result.get("ok") else 400)
+
+            if result.get("ok"):
+                threading.Thread(target=shutdown_browser, daemon=True).start()
         else:
             self.send_json({"error": "Not found"}, 404)
 
     def do_DELETE(self):
         if self.path.startswith("/cancel"):
             state.status = "cancelled"
-            try:
-                if _context_obj:
-                    _context_obj.close()
-                if browser_obj:
-                    browser_obj.close()
-            except Exception:
-                pass
+            shutdown_browser()
             self.send_json({"status": "cancelled"})
         else:
             self.send_json({"error": "Not found"}, 404)
@@ -110,261 +299,55 @@ def run_server(port: int):
     srv.serve_forever()
 
 
-# ============ 辅助 ============
-def sleep_ms(ms):
-    time.sleep(ms / 1000.0)
-
-
-# ============ 用户信息提取 ============
-def extract_user_info(page):
-    user_name, user_id, avatar = None, None, None
-    try:
-        # 1. JS 内存
-        js_info = page.evaluate("""() => {
-            if (window._ROUTER_DATA?.loaderData) {
-                for (let key in window._ROUTER_DATA.loaderData) {
-                    const data = window._ROUTER_DATA.loaderData[key];
-                    if (data?.user) return data.user;
-                }
-            }
-            if (window.userData) return window.userData;
-            return null;
-        }""")
-        if js_info and isinstance(js_info, dict):
-            user_id = js_info.get("uniqueId") or js_info.get("unique_id") or js_info.get("userId")
-            user_name = js_info.get("nickname") or js_info.get("name")
-            avatar = js_info.get("avatarUrl") or js_info.get("avatar_url")
-
-        # 2. DOM 正则
-        if not user_id:
-            body_text = page.evaluate("() => document.body.innerText")
-            m = re.search(r"(抖音号|抖音ID|抖音id)[:：]?\s*([A-Za-z0-9_.-]+)", body_text)
-            if m:
-                user_id = m.group(2)
-
-        # 3. 视觉 Selector
-        if not user_name:
-            for sel in ['[data-e2e="user-info-name"]', 'h1', '.header-right-name', "div[class*='name-_lSSDc']"]:
-                try:
-                    el = page.locator(sel).first
-                    if el.is_visible(timeout=1000):
-                        user_name = el.text_content().strip().split("\n")[0]
-                        if user_name:
-                            break
-                except Exception:
-                    pass
-
-        if not user_id:
-            for sel in ['[data-e2e="user-info-id"]', "div[class*='unique_id-']"]:
-                try:
-                    el = page.locator(sel).first
-                    if el.is_visible(timeout=1000):
-                        txt = el.text_content().strip()
-                        user_id = txt.split("：")[-1].strip() if "：" in txt else txt
-                        break
-                except Exception:
-                    pass
-
-        # 4. 头像
-        for sel in ["div[class*='avatar-'] img", ".semi-avatar img", "img[src*='aweme-avatar']"]:
+# ============ 看门狗 ============
+def _parent_watchdog(initial_ppid: int):
+    while True:
+        time.sleep(1)
+        try:
+            current_ppid = os.getppid()
+        except Exception:
+            current_ppid = 1
+        if current_ppid != initial_ppid or current_ppid == 1:
+            print(f"[DY] Parent gone (ppid {initial_ppid}->{current_ppid}), self-terminating", flush=True)
             try:
-                el = page.locator(sel).first
-                if el.is_visible(timeout=1000):
-                    avatar = el.get_attribute("src")
-                    if avatar:
-                        break
+                os.kill(os.getpid(), signal.SIGTERM)
             except Exception:
                 pass
-
-    except Exception as e:
-        print(f"[DY] extract_user_info error: {e}", flush=True)
-
-    return user_name, user_id, avatar
+            time.sleep(5)
+            os._exit(0)
 
 
-# ============ 主登录流程 ============
-def run_login():
-    global browser_obj, _context_obj, state
+# ============ 主流程 ============
+def open_browser_and_wait():
+    global browser_obj, _context_obj, _pw_obj, _page_obj, state
 
-    state = LoginState()
     print("[DY] Launching browser...", flush=True)
-
     try:
-        browser_obj = launch(headless=False)
-        ctx = browser_obj.new_context(viewport={"width": 1280, "height": 800})
-        _context_obj = ctx
-        page = ctx.new_page()
+        _pw_obj = sync_playwright().start()
+        browser_obj = _pw_obj.chromium.launch(headless=False, channel="chrome")
+        _context_obj = browser_obj.new_context(viewport={"width": 1280, "height": 800})
+        _page_obj = _context_obj.new_page()
 
-        # 访问创作者登录页
-        try:
-            page.goto("https://creator.douyin.com/creator-micro/login?enter_from=qr", timeout=20000)
-        except Exception:
+        for url in ["https://www.douyin.com"]:
             try:
-                page.goto("https://creator.douyin.com/", timeout=15000)
-            except Exception:
-                page.goto("https://www.douyin.com", timeout=15000)
-
-        print("[DY] Page loaded, waiting for QR code...", flush=True)
-        sleep_ms(2000)
-
-        # 等待二维码
-        deadline = time.time() + 60
-        qr_found = False
-        while time.time() < deadline:
-            cookies_list = ctx.cookies()
-            cookies_dict = {c["name"]: c["value"] for c in cookies_list}
-            critical = ["sessionid", "sessionid_ss", "passport_auth_id", "sid_guard"]
-            has_auth = any(cookies_dict.get(n) for n in critical)
-
-            # 已登录（cookie 直接带过来了）
-            if has_auth and "login" not in page.url.lower():
-                print("[DY] Already logged in (cookies present)", flush=True)
+                _page_obj.goto(url, timeout=20000)
+                print(f"[DY] Page loaded: {url}", flush=True)
                 break
+            except Exception as e:
+                print(f"[DY] goto {url} failed: {e}", flush=True)
 
-            # JS 提取二维码
-            qr_data = page.evaluate("""() => {
-                // 1. 创作者中心专用容器
-                const q1 = document.querySelector('#animate_qrcode_container img.qrcode_img');
-                if (q1 && q1.src && q1.src.length > 500)
-                    return q1.src.startsWith('data:') ? q1.src : null;
-
-                // 2. aria-label
-                const q2 = document.querySelector('img[aria-label="二维码"]');
-                if (q2 && q2.src && q2.src.startsWith('data:image') && q2.src.length > 500)
-                    return q2.src;
-
-                // 3. 视觉特征扫描（正方形 + 大尺寸）
-                const imgs = Array.from(document.querySelectorAll('img'));
-                for (const img of imgs) {
-                    const src = img.src || "";
-                    if (src.startsWith('data:image') && src.length > 1000) {
-                        const r = img.getBoundingClientRect();
-                        if (Math.abs(r.width - r.height) < 10 && r.width > 120)
-                            return src;
-                    }
-                }
-                return null;
-            }""")
-
-            if qr_data:
-                if "," in qr_data:
-                    state.qrcode_base64 = qr_data.split(",", 1)[1]
-                else:
-                    state.qrcode_base64 = qr_data
-                state.status = "qrcode"
-                print("[DY] QR code captured", flush=True)
-                qr_found = True
-                break
-
-            # 兜底截图
-            for sel in ['#animate_qrcode_container img', 'img[aria-label="二维码"]']:
-                try:
-                    el = page.locator(sel).first
-                    if el.is_visible(timeout=100):
-                        src = el.get_attribute("src") or ""
-                        if "data:image" in src and len(src) > 1000:
-                            raw = src.split(",", 1)[1] if "," in src else src
-                            state.qrcode_base64 = base64.b64encode(base64.b64decode(raw)).decode() if len(raw) > 100 else raw
-                            # 直接用 screenshot 更可靠
-                            png = el.screenshot()
-                            state.qrcode_base64 = base64.b64encode(png).decode()
-                            state.status = "qrcode"
-                            qr_found = True
-                            print(f"[DY] QR via screenshot: {sel}", flush=True)
-                            break
-                except Exception:
-                    pass
-
-            if qr_found:
-                break
-            sleep_ms(300)
-
-        if not qr_found and state.status == "pending":
-            state.status = "failed"
-            state.error_msg = "二维码提取超时"
-            print("[DY] QR timeout", flush=True)
-            return
-
-        # 等待扫码确认
-        print("[DY] Waiting for scan...", flush=True)
-        scan_deadline = time.time() + 300
-        while time.time() < scan_deadline:
-            if state.status == "cancelled":
-                return
-            cookies_list = ctx.cookies()
-            ck = {c["name"]: c["value"] for c in cookies_list}
-            if ck.get("sessionid") or ck.get("passport_auth_id"):
-                state.status = "scanned"
-                print("[DY] Scan confirmed", flush=True)
-                break
-            sleep_ms(1000)
-
-        # 访问创作者上传页，触发 msToken 生成
-        try:
-            page.goto("https://creator.douyin.com/creator-micro/content/upload", timeout=20000)
-            page.wait_for_load_state("networkidle", timeout=15000)
-            sleep_ms(3000)
-        except Exception as e:
-            print(f"[DY] Upload page error (non-fatal): {e}", flush=True)
-
-        # 访问个人页提取信息
-        try:
-            page.goto("https://www.douyin.com/user/self", timeout=15000)
-            sleep_ms(2500)
-        except Exception:
-            pass
-
-        user_name, user_id, avatar = extract_user_info(page)
-        final_cookies = ctx.cookies()
-
-        state.cookies = [{
-            "name": c["name"],
-            "value": c["value"],
-            "domain": c["domain"],
-            "path": c.get("path", "/"),
-            "expires": c.get("expires"),
-            "http_only": c.get("httpOnly"),
-            "secure": c.get("secure"),
-            "same_site": c.get("sameSite"),
-        } for c in final_cookies]
-
-        state.user_name = user_name
-        state.user_id = user_id
-        state.user_info = {
-            "user_id": user_id or "",
-            "name": user_name or "",
-            "avatar": avatar or "",
-        }
-
-        # 获取 storage_state
-        try:
-            state.storage_state = ctx.storage_state()
-        except Exception as e:
-            print(f"[DY] storage_state error: {e}", flush=True)
-            state.storage_state = None
-
-        state.status = "confirmed"
-        print(f"[DY] Login confirmed: user={user_name} uid={user_id}", flush=True)
-
-        # ✅ 新架构：关闭浏览器（不再永久阻塞）
-        try:
-            ctx.close()
-            browser_obj.close()
-            print("[DY] Browser closed (new architecture)", flush=True)
-        except Exception as e:
-            print(f"[DY] Browser close error: {e}", flush=True)
-
-        # 进程保持运行，Rust 会通过 /cookies 取数据，然后 cleanup_login_session 杀进程
+        state.status = "ready"
+        print("[DY] Ready. Waiting for user to login and click '登录完成'...", flush=True)
 
     except Exception as e:
         state.status = "failed"
         state.error_msg = str(e)
-        print(f"[DY] run_login exception: {e}", flush=True)
+        print(f"[DY] open_browser failed: {e}", flush=True)
         import traceback
         traceback.print_exc()
+        shutdown_browser()
 
 
-# ============ 入口 ============
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
@@ -375,27 +358,41 @@ def main():
 
     def on_signal(sig, frame):
         print(f"[DY] Signal {sig}", flush=True)
-        try:
-            if _context_obj:
-                _context_obj.close()
-            if browser_obj:
-                browser_obj.close()
-        except Exception:
-            pass
+        state.status = "cancelled"
+        shutdown_browser()
         sys.exit(0)
+
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    # HTTP 服务器线程
+    threading.Thread(target=_parent_watchdog, args=(os.getppid(),), daemon=True).start()
+
     t = threading.Thread(target=run_server, args=(args.port,), daemon=True)
     t.start()
-    sleep_ms(300)
+    time.sleep(0.3)
 
-    # 登录流程（阻塞直到 confirmed/failed）
-    run_login()
+    open_browser_and_wait()
 
-    # 登录结束后保持运行（等待 Rust 调用 /cookies 或 cleanup）
-    t.join()
+    # 主循环：从 _task_queue 取任务，在主线程执行 Playwright 操作
+    while state.status not in ("cancelled",):
+        try:
+            task = _task_queue.get(timeout=1)
+        except queue.Empty:
+            if state.status == "saved":
+                time.sleep(3)
+                break
+            continue
+
+        save_dir, result_q = task
+        result = _do_finish_in_main_thread(save_dir)
+        result_q.put(result)
+
+        if result.get("ok"):
+            time.sleep(3)
+            break
+
+    shutdown_browser()
+    print("[DY] Exit", flush=True)
 
 
 if __name__ == "__main__":

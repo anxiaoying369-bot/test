@@ -16,7 +16,8 @@
         "width": 1280,
         "height": 800,
         "resizable": false,
-        "fullscreen": false
+        "fullscreen": false,
+        "devtools": true
       }
     ],
     "security": {

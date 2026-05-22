@@ -1,0 +1,3 @@
+[submodule "scripts/DouyinComment"]
+	path = scripts/DouyinComment
+	url = https://github.com/xhynice/DouyinComment.git

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 use uuid::Uuid;
 
 // ============ 状态管理 ============
@@ -62,12 +62,15 @@ pub struct LocalStorageEntry {
     pub value: String,
 }
 
+// 持久化存储结构
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Account {
     pub id: String,
     pub platform: String,
     pub user_id: Option<String>,
     pub name: String,
+    #[serde(default)]
+    pub nickname: Option<String>,
     pub status: String,
     pub cookie_file: String,
     pub avatar: Option<String>,
@@ -75,12 +78,50 @@ pub struct Account {
     pub updated_at: String,
 }
 
+// 前端返回结构（含 meta 嵌套）
+#[derive(Clone, Serialize)]
+pub struct AccountMeta {
+    pub user_id: Option<String>,
+    pub nickname: Option<String>,
+    pub avatar: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct AccountView {
+    pub id: String,
+    pub platform: String,
+    pub name: String,
+    pub status: String,
+    pub meta: AccountMeta,
+}
+
+fn account_to_view(a: &Account) -> AccountView {
+    AccountView {
+        id: a.id.clone(),
+        platform: a.platform.clone(),
+        name: a.name.clone(),
+        status: a.status.clone(),
+        meta: AccountMeta {
+            user_id: a.user_id.clone(),
+            nickname: a.nickname.clone(),
+            avatar: a.avatar.clone(),
+        },
+    }
+}
+
+#[derive(Serialize)]
+pub struct VerifyResult {
+    pub status: String,
+    pub method: String,
+    pub message: String,
+}
+
 #[derive(Serialize, Deserialize)]
-struct AccountsStore {
+struct AccountsStoreFile {
     accounts: Vec<Account>,
 }
 
-impl Default for AccountsStore {
+impl Default for AccountsStoreFile {
     fn default() -> Self {
         Self { accounts: Vec::new() }
     }
@@ -94,19 +135,6 @@ struct PyLoginStatus {
     qrcode_base64: Option<String>,
     user_name: Option<String>,
     user_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct PyCookies {
-    cookies: Vec<CookieEntry>,
-    user_info: Option<PyUserInfo>,
-}
-
-#[derive(Deserialize)]
-struct PyUserInfo {
-    user_id: String,
-    name: String,
-    avatar: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -135,30 +163,26 @@ fn get_cookies_dir() -> PathBuf {
     get_data_dir().join("cookies")
 }
 
-fn load_accounts() -> AccountsStore {
+fn get_account_dir(platform: &str, account_name: &str) -> PathBuf {
+    get_cookies_dir().join(platform).join(account_name)
+}
+
+fn load_accounts() -> AccountsStoreFile {
     let path = get_accounts_db_path();
     if path.exists() {
         let content = fs::read_to_string(&path).unwrap_or_default();
         serde_json::from_str(&content).unwrap_or_default()
     } else {
-        AccountsStore::default()
+        AccountsStoreFile::default()
     }
 }
 
-fn save_accounts(store: &AccountsStore) -> Result<(), String> {
+fn save_accounts(store: &AccountsStoreFile) -> Result<(), String> {
     let path = get_accounts_db_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let content = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    fs::write(&path, content).map_err(|e| e.to_string())
-}
-
-fn save_cookies(cookie_file: &str, data: &CookieData) -> Result<(), String> {
-    let dir = get_cookies_dir();
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(cookie_file);
-    let content = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
     fs::write(&path, content).map_err(|e| e.to_string())
 }
 
@@ -168,49 +192,91 @@ fn chrono_now() -> String {
     format!("{}", duration.as_secs())
 }
 
+// 从磁盘的 meta.json 读用户信息
+fn read_meta_json(platform: &str, name: &str) -> Option<UserInfo> {
+    let path = get_account_dir(platform, name).join("meta.json");
+    let content = fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let ui = v.get("user_info")?;
+    Some(UserInfo {
+        user_id: ui.get("user_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        name: ui.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        avatar: ui.get("avatar").and_then(|x| x.as_str()).map(|s| s.to_string()),
+    })
+}
+
+// 注册账号到 accounts.json（cookie 文件已由 Python 写好）
+fn register_account_on_disk(platform: &str, name: &str) -> Result<Account, String> {
+    let user_info = read_meta_json(platform, name);
+    let user_id = user_info.as_ref().map(|u| u.user_id.clone()).filter(|s| !s.is_empty());
+    let nickname = user_info.as_ref().map(|u| u.name.clone()).filter(|s| !s.is_empty());
+    let avatar = user_info.as_ref().and_then(|u| u.avatar.clone());
+
+    let now = chrono_now();
+    let account = Account {
+        id: Uuid::new_v4().to_string(),
+        platform: platform.to_string(),
+        user_id,
+        name: name.to_string(),
+        nickname,
+        status: "active".to_string(),
+        cookie_file: name.to_string(),  // 现在存的是目录名（=account_name）
+        avatar,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    let mut store = load_accounts();
+    store.accounts.retain(|a| !(a.platform == platform && a.name == name));
+    store.accounts.push(account.clone());
+    save_accounts(&store)?;
+    Ok(account)
+}
+
 // ============ Tauri 命令 ============
 
 #[tauri::command]
-async fn get_accounts() -> Result<Vec<Account>, String> {
+async fn list_accounts(platform: Option<String>) -> Result<Vec<AccountView>, String> {
     let _ = sync_local_accounts().await;
     let store = load_accounts();
-    Ok(store.accounts)
+    let views = match platform {
+        Some(p) => store.accounts.iter().filter(|a| a.platform == p).map(account_to_view).collect(),
+        None => store.accounts.iter().map(account_to_view).collect(),
+    };
+    Ok(views)
 }
 
+// 扫描 cookies/{platform}/*/cookie.txt，把磁盘上存在但 accounts.json 没记录的账号补回
 #[tauri::command]
 async fn sync_local_accounts() -> Result<usize, String> {
-    let platforms = vec!["douyin", "xiaohongshu"];
+    let platforms = vec!["douyin"];
     let mut sync_count = 0;
-    let script_dir = PathBuf::from("..").join("scripts");
 
     for platform in platforms {
-        let cookie_path = script_dir.join(platform).join("cookie.json");
-        if !cookie_path.exists() { continue; }
+        let dir = get_cookies_dir().join(platform);
+        if !dir.exists() { continue; }
 
-        let validator_path = script_dir.join("validator.py");
-        let output = tokio::process::Command::new("python3")
-            .arg(&validator_path).arg(platform).arg(&cookie_path)
-            .output().await.map_err(|e| e.to_string())?;
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let store = load_accounts();
+        let known: std::collections::HashSet<String> = store.accounts.iter()
+            .filter(|a| a.platform == platform)
+            .map(|a| a.name.clone())
+            .collect();
 
-        if !output.status.success() { continue; }
-        let result_str = String::from_utf8_lossy(&output.stdout);
-        let validation: serde_json::Value = serde_json::from_str(&result_str).map_err(|e| e.to_string())?;
-
-        let status = validation["status"].as_str().unwrap_or("error");
-        if status == "valid" || status == "expired" {
-            let user_id = validation["user_id"].as_str().unwrap_or("unknown").to_string();
-            let name = validation["name"].as_str().unwrap_or("未知用户").to_string();
-            let avatar = validation["avatar"].as_str().map(|s| s.to_string());
-            let py_data = &validation["data"];
-            let cookies: Vec<CookieEntry> = serde_json::from_value(py_data["cookies"].clone()).unwrap_or_default();
-            
-            let cookie_data = CookieData {
-                cookies,
-                origins: None,
-                user_info: Some(UserInfo { user_id: user_id.clone(), name: name.clone(), avatar: avatar.clone() }),
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() { continue; }
+            let cookie_file = path.join("cookie.txt");
+            if !cookie_file.exists() { continue; }
+            let name = match path.file_name().and_then(|s| s.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
             };
-
-            save_new_account(platform.to_string(), name, Some(UserInfo { user_id, name: "".to_string(), avatar }), cookie_data, Some(status.to_string())).await?;
+            if known.contains(&name) { continue; }
+            register_account_on_disk(platform, &name)?;
             sync_count += 1;
         }
     }
@@ -223,15 +289,24 @@ async fn init_login_session(platform: String, state: State<'_, AppState>) -> Res
     let port: u16 = 18000 + (Uuid::new_v4().as_u128() as u16 % 10000);
 
     let script_name = match platform.as_str() {
-        "xiaohongshu" => "xiaohongshu_login.py",
         "douyin" => "douyin_login.py",
         _ => return Err("不支持的平台".to_string()),
     };
 
     let script_path = PathBuf::from("..").join("scripts").join(script_name);
+
+    // 把 Python 子进程的 stdout/stderr 重定向到日志文件，方便排查
+    let log_dir = get_data_dir().join("logs");
+    fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+    let log_path = log_dir.join(format!("login_{}_{}.log", platform, &session_id[..8]));
+    let log_file = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
+    let stderr_file = log_file.try_clone().map_err(|e| e.to_string())?;
+
     let child = tokio::process::Command::new("python3")
         .arg(&script_path).arg("--port").arg(port.to_string()).arg("--session-id").arg(&session_id)
-        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log_file))
+        .stderr(std::process::Stdio::from(stderr_file))
+        .kill_on_drop(true)
         .spawn().map_err(|e| e.to_string())?;
 
     {
@@ -253,10 +328,11 @@ async fn init_login_session(platform: String, state: State<'_, AppState>) -> Res
 }
 
 #[tauri::command]
-async fn get_login_status(session_id: String, platform: String, state: State<'_, AppState>) -> Result<LoginSession, String> {
-    let port = {
+async fn get_login_status(session_id: String, state: State<'_, AppState>) -> Result<LoginSession, String> {
+    let (port, platform) = {
         let flows = state.login_flows.lock().map_err(|e| e.to_string())?;
-        flows.get(&session_id).map(|f| f.port).ok_or("Session not found")?
+        let flow = flows.get(&session_id).ok_or("Session not found")?;
+        (flow.port, flow.platform.clone())
     };
 
     let client = reqwest::Client::new();
@@ -271,53 +347,91 @@ async fn get_login_status(session_id: String, platform: String, state: State<'_,
     })
 }
 
+#[derive(Deserialize)]
+struct PyFinishResult {
+    ok: bool,
+    error: Option<String>,
+    user_info: Option<UserInfo>,
+}
+
+// 用户点"登录完成"时调用：通知 Python 抓 cookie 写文件，然后注册账号
 #[tauri::command]
-async fn get_cookies(session_id: String, state: State<'_, AppState>) -> Result<CookieData, String> {
-    let port = {
+async fn finish_login(
+    session_id: String,
+    account_name: String,
+    state: State<'_, AppState>,
+) -> Result<AccountView, String> {
+    if account_name.trim().is_empty() {
+        return Err("账号名称不能为空".to_string());
+    }
+    // 路径里的非法字符（防 traversal）
+    if account_name.contains('/') || account_name.contains('\\') || account_name.contains("..") {
+        return Err("账号名称不能包含 / \\ ..".to_string());
+    }
+
+    let (port, platform) = {
         let flows = state.login_flows.lock().map_err(|e| e.to_string())?;
-        flows.get(&session_id).map(|f| f.port).ok_or("Session not found")?
+        let flow = flows.get(&session_id).ok_or("Session not found")?;
+        (flow.port, flow.platform.clone())
     };
 
-    let client = reqwest::Client::new();
-    let py_cookies: PyCookies = client.get(format!("http://127.0.0.1:{}/cookies", port))
-        .send().await.map_err(|e| e.to_string())?
-        .json().await.map_err(|e| e.to_string())?;
+    let save_dir = get_account_dir(&platform, &account_name);
+    fs::create_dir_all(&save_dir).map_err(|e| e.to_string())?;
+    let save_dir_str = save_dir.to_string_lossy().to_string();
 
-    Ok(CookieData {
-        cookies: py_cookies.cookies,
-        origins: None,
-        user_info: py_cookies.user_info.map(|u| UserInfo { user_id: u.user_id, name: u.name, avatar: u.avatar }),
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://127.0.0.1:{}/finish", port))
+        .query(&[("save_dir", &save_dir_str)])
+        .send().await.map_err(|e| e.to_string())?;
+
+    let body: PyFinishResult = resp.json().await.map_err(|e| e.to_string())?;
+    if !body.ok {
+        return Err(body.error.unwrap_or_else(|| "finish 失败".to_string()));
+    }
+
+    // 此时 Python 已写好 cookie.txt/cookie.json/meta.json，直接注册
+    let account = register_account_on_disk(&platform, &account_name)?;
+    let _ = body.user_info;  // 已存进 meta.json，这里只是文档化
+    Ok(account_to_view(&account))
+}
+
+#[tauri::command]
+async fn verify_account(platform: String, name: String) -> Result<VerifyResult, String> {
+    let store = load_accounts();
+    let _account = store.accounts.iter()
+        .find(|a| a.platform == platform && a.name == name)
+        .ok_or_else(|| "账号不存在".to_string())?;
+
+    let cookie_json = get_account_dir(&platform, &name).join("cookie.json");
+    let script_path = PathBuf::from("..").join("scripts").join("verify_account.py");
+
+    let output = tokio::process::Command::new("python3")
+        .arg(&script_path)
+        .arg(&platform)
+        .arg(&cookie_json)
+        .output().await.map_err(|e| e.to_string())?;
+
+    let result_str = String::from_utf8_lossy(&output.stdout);
+    let result: serde_json::Value = serde_json::from_str(&result_str)
+        .map_err(|_| format!("验证结果解析失败: {}", result_str))?;
+
+    Ok(VerifyResult {
+        status: result["status"].as_str().unwrap_or("unknown").to_string(),
+        method: result["method"].as_str().unwrap_or("unknown").to_string(),
+        message: result["message"].as_str().unwrap_or("").to_string(),
     })
 }
 
 #[tauri::command]
-async fn save_new_account(platform: String, name: String, user_info: Option<UserInfo>, cookie_data: CookieData, status: Option<String>) -> Result<Account, String> {
-    let user_id = user_info.as_ref().map(|u| u.user_id.clone()).unwrap_or_else(|| Uuid::new_v4().to_string());
-    let cookie_file = format!("{}_{}.json", platform, &user_id[..8.min(user_id.len())]);
-    save_cookies(&cookie_file, &cookie_data)?;
-
-    let now = chrono_now();
-    let account = Account {
-        id: Uuid::new_v4().to_string(), platform: platform.clone(), user_id: Some(user_id),
-        name, status: status.unwrap_or_else(|| "active".to_string()),
-        cookie_file, avatar: user_info.as_ref().and_then(|u| u.avatar.clone()),
-        created_at: now.clone(), updated_at: now,
-    };
-
+async fn delete_account(platform: String, name: String) -> Result<(), String> {
     let mut store = load_accounts();
-    store.accounts.retain(|a| a.platform != platform);
-    store.accounts.push(account.clone());
-    save_accounts(&store)?;
-    Ok(account)
-}
-
-#[tauri::command]
-async fn delete_account(accountId: String) -> Result<(), String> {
-    let mut store = load_accounts();
-    if let Some(pos) = store.accounts.iter().position(|a| a.id == accountId) {
-        let account = store.accounts.remove(pos);
-        let _ = fs::remove_file(get_cookies_dir().join(&account.cookie_file));
-        let _ = fs::remove_file(PathBuf::from("..").join("scripts").join(&account.platform).join("cookie.json"));
+    if let Some(pos) = store.accounts.iter().position(|a| a.platform == platform && a.name == name) {
+        store.accounts.remove(pos);
+        let dir = get_account_dir(&platform, &name);
+        if dir.exists() {
+            let _ = fs::remove_dir_all(&dir);
+        }
         save_accounts(&store)?;
     }
     Ok(())
@@ -335,10 +449,36 @@ async fn cleanup_login_session(session_id: String, state: State<'_, AppState>) -
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState { login_flows: Mutex::new(std::collections::HashMap::new()), process_handles: Mutex::new(std::collections::HashMap::new()) })
+        .manage(AppState {
+            login_flows: Mutex::new(std::collections::HashMap::new()),
+            process_handles: Mutex::new(std::collections::HashMap::new()),
+        })
         .invoke_handler(tauri::generate_handler![
-            get_accounts, sync_local_accounts, init_login_session, get_login_status, get_cookies, save_new_account, delete_account, cleanup_login_session
+            list_accounts, verify_account, delete_account,
+            sync_local_accounts, init_login_session, get_login_status,
+            finish_login, cleanup_login_session
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                let app_state = app_handle.state::<AppState>();
+                let lock_result = app_state.process_handles.lock();
+                if let Ok(mut handles) = lock_result {
+                    // 先 SIGTERM 通知 Python 优雅关闭浏览器
+                    #[cfg(unix)]
+                    for (_, child) in handles.iter() {
+                        if let Some(pid) = child.id() {
+                            unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+                        }
+                    }
+                    // 给 Python 时间关 Chrome（异步 playwright close 通常 ~1s）
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    // 兜底 SIGKILL（drop Child 会触发 kill_on_drop）
+                    for (_, mut child) in handles.drain() {
+                        let _ = child.start_kill();
+                    }
+                }
+            }
+        });
 }
