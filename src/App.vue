@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio } from 'lucide-vue-next';
+import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio, MessageCircle } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import ResultsView from './components/ResultsView.vue';
 import LiveMonitorView from './components/LiveMonitorView.vue';
+import DouyinIMView from './components/DouyinIMView.vue';
 
-type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor';
+type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im';
 const currentPage = ref<PageKey>('accounts');
 const accounts = ref<any[]>([]);
 const isLoginModalOpen = ref(false);
@@ -268,6 +269,10 @@ function isVerifying(platform: string, name: string) {
           <FileText class="w-5 h-5 text-green-500" />
           <span>采集结果</span>
         </a>
+        <a href="#" @click="currentPage = 'douyin_im'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'douyin_im' ? 'bg-gray-900' : 'text-gray-400']">
+          <MessageCircle class="w-5 h-5 text-pink-500" />
+          <span>私信监控</span>
+        </a>
         <a href="#" @click="currentPage = 'live_monitor'" :class="['flex items-center justify-between px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'live_monitor' ? 'bg-gray-900' : 'text-gray-400']">
           <div class="flex items-center gap-3">
             <Radio class="w-5 h-5 text-red-500" />
@@ -363,6 +368,11 @@ function isVerifying(platform: string, name: string) {
     <!-- 主内容：采集结果 -->
     <main v-if="currentPage === 'results'" class="flex flex-col flex-1 h-full bg-gray-950">
       <ResultsView />
+    </main>
+
+    <!-- 主内容：私信监控 -->
+    <main v-if="currentPage === 'douyin_im'" class="flex flex-col flex-1 h-full bg-gray-950">
+      <DouyinIMView />
     </main>
 
     <!-- 主内容：直播监控 -->

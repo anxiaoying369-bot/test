@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Optional
+from typing import Optional, Any
 from urllib.parse import urlparse, parse_qs
 
 try:
@@ -249,28 +249,89 @@ def get_cookies_from_page(page) -> list:
 
 
 def get_storage_state(page) -> Optional[dict]:
-    """从 DrissionPage 获取 localStorage 等存储状态"""
-    try:
-        origins = []
-        local_storage = page.run_js("""() => {
-            const items = [];
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                items.push({name: key, value: localStorage.getItem(key)});
+    """从 DrissionPage 获取 localStorage 等存储状态。
+
+    注意：extract_user_info() 会跳到 /user/self。抖音 security-sdk 的 IM 发送认证材料
+    可能只在首页/私信页初始化，所以这里不能只读当前页 localStorage；要额外访问
+    www.douyin.com 和 /chat，把目标 localStorage key 保存下来。
+    """
+    targets = [
+        "security-sdk/s_sdk_crypt_sdk",
+        "security-sdk/s_sdk_sign_data_key/web_protect",
+    ]
+    origins_by_url: dict[str, dict[str, Any]] = {}
+
+    def read_current_page(label: str) -> None:
+        try:
+            # 使用 async function + JSON.stringify，与 DrissionPage 兼容性最好
+            # （DrissionPage 会自动调用 async function，并将返回值序列化为字符串）
+            raw = page.run_js("""
+            async function() {
+                const items = [];
+                try {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        items.push({name: key, value: localStorage.getItem(key)});
+                    }
+                } catch(e) {}
+                return JSON.stringify({url: location.href, origin: location.origin, items: items});
             }
-            return items;
-        }""")
-        if local_storage:
-            # 取 origin
-            url = page.url or ""
-            origin = "/".join(url.split("/")[:3]) if url else ""
-            origins.append({
-                "origin": origin,
-                "localStorage": local_storage,
-            })
-        return {"origins": origins} if origins else None
-    except Exception as e:
-        print(f"[DY] get_storage_state failed: {e}", flush=True)
+            """)
+            if raw is None:
+                print(f"[DY] localStorage scan {label}: run_js 返回 None（页面可能未完全加载）", flush=True)
+                return
+            result = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(result, dict):
+                print(f"[DY] localStorage scan {label}: 意外结果类型 type={type(raw).__name__} val={str(raw)[:80]}", flush=True)
+                return
+            items = result.get("items") or []
+            origin = result.get("origin") or "https://www.douyin.com"
+            if origin not in origins_by_url:
+                origins_by_url[origin] = {"origin": origin, "localStorage": []}
+            known = {x.get("name") for x in origins_by_url[origin]["localStorage"]}
+            for item in items:
+                name = item.get("name") if isinstance(item, dict) else None
+                if name and name not in known:
+                    origins_by_url[origin]["localStorage"].append({
+                        "name": name,
+                        "value": item.get("value"),
+                    })
+                    known.add(name)
+            found = sorted(name for name in targets if name in known)
+            print(f"[DY] localStorage scan {label}: origin={origin}, count={len(items)}, auth_keys={found}", flush=True)
+        except Exception as e:
+            print(f"[DY] localStorage scan {label} failed: {e}", flush=True)
+
+    read_current_page("current")
+
+    # 主动触发 security-sdk 初始化；只发生在登录保存阶段，不发生在私信发送动作里。
+    original_url = ""
+    try:
+        original_url = page.url or ""
+    except Exception:
+        pass
+    for label, url in [("home", "https://www.douyin.com/"), ("chat", "https://www.douyin.com/chat")]:
+        try:
+            page.get(url)
+            time.sleep(5)
+            read_current_page(label)
+        except Exception as e:
+            print(f"[DY] navigate {label} for localStorage failed: {e}", flush=True)
+
+    if original_url and original_url.startswith("http"):
+        try:
+            page.get(original_url)
+            time.sleep(1)
+        except Exception:
+            pass
+
+    origins = list(origins_by_url.values())
+    if origins:
+        all_names = {item.get("name") for origin in origins for item in origin.get("localStorage") or []}
+        missing = [name for name in targets if name not in all_names]
+        if missing:
+            print(f"[DY] auth localStorage missing after scan: {missing}", flush=True)
+        return {"origins": origins}
     return None
 
 
@@ -327,7 +388,7 @@ def _do_finish_in_main_thread(save_dir: str) -> dict:
 
         storage_state = get_storage_state(_page_obj)
 
-        # 再取一次 cookie（extract_user_info 可能刷新了页面）
+        # 再取一次 cookie（extract_user_info/get_storage_state 可能刷新了页面）
         cookies = get_cookies_from_page(_page_obj)
 
         save_cookie_files(save_dir, cookies, user_info, storage_state)

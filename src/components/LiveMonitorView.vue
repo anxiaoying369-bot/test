@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue';
+import { ref, onMounted, computed, nextTick, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { 
   Radio, StopCircle, Play, Users, MessageSquare, 
-  Heart, Gift, Trash2, ChevronRight, LayoutGrid,
-  AlertCircle, ShieldAlert, Monitor, Hash, ExternalLink
+  Heart, Gift, Trash2,
+  AlertCircle, Monitor, Hash, ExternalLink
 } from 'lucide-vue-next';
 
 interface Account {

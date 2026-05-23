@@ -4,7 +4,7 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { 
   Users, Video, MessageSquare, ChevronRight, 
   Calendar, Heart, MessageCircle, ArrowLeft,
-  Search, Filter, RefreshCw, ExternalLink, AlertCircle,
+  RefreshCw, ExternalLink, AlertCircle,
   Wand2, Sparkles, X, BarChart3, PieChart, Info
 } from 'lucide-vue-next';
 

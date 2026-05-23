@@ -720,6 +720,340 @@ async fn open_video_in_browser(aweme_id: String, account_name: String) -> Result
     Ok(())
 }
 
+// ============ 抖音私信命令 ============
+
+fn run_douyin_im_bridge(args: Vec<String>) -> Result<serde_json::Value, String> {
+    let script_path = PathBuf::from("..").join("scripts").join("douyin_im_bridge.py");
+    let output = std::process::Command::new("python3")
+        .arg(&script_path)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let stderr_str = String::from_utf8_lossy(&output.stderr);
+    if !stderr_str.is_empty() {
+        eprintln!("[douyin_im_bridge] Python stderr:\n{}", stderr_str);
+    }
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if result_str.is_empty() {
+        return Err(format!("抖音私信脚本无输出，退出码: {:?}", output.status.code()));
+    }
+
+    let result: serde_json::Value = serde_json::from_str(&result_str)
+        .map_err(|_| format!("抖音私信结果解析失败: {}", result_str))?;
+
+    if !output.status.success() || result.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        // 把完整 JSON 作为错误字符串传回，让前端可以解析出 needs_refresh 等额外字段。
+        // 格式：JSON_ERR:<json>  前端通过前缀区分普通错误和结构化错误。
+        let json_err = serde_json::to_string(&result).unwrap_or_default();
+        let message = result.get("error").and_then(|v| v.as_str()).unwrap_or("抖音私信命令执行失败");
+        return Err(format!("JSON_ERR:{}\n{}", json_err, message));
+    }
+
+    Ok(result)
+}
+
+fn append_optional_arg(args: &mut Vec<String>, name: &str, value: Option<String>) {
+    if let Some(value) = value {
+        if !value.trim().is_empty() {
+            args.push(name.to_string());
+            args.push(value);
+        }
+    }
+}
+
+fn get_douyin_cookie_path(account_name: &str) -> Result<PathBuf, String> {
+    let store = load_accounts();
+    let _account = store.accounts.iter()
+        .find(|a| a.platform == "douyin" && a.name == account_name)
+        .ok_or_else(|| format!("抖音账号不存在: {}", account_name))?;
+    let cookie_path = get_account_dir("douyin", account_name).join("cookie.txt");
+    if !cookie_path.exists() {
+        return Err(format!("账号 {} 的 Cookie 文件不存在", account_name));
+    }
+    Ok(cookie_path)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn douyin_im_check(accountName: String) -> Result<serde_json::Value, String> {
+    let cookie_path = get_douyin_cookie_path(&accountName)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        run_douyin_im_bridge(vec![
+            "check".to_string(),
+            "--cookie-path".to_string(),
+            cookie_path.to_string_lossy().to_string(),
+        ])
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn douyin_im_my_uid(accountName: String) -> Result<serde_json::Value, String> {
+    let cookie_path = get_douyin_cookie_path(&accountName)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        run_douyin_im_bridge(vec![
+            "my_uid".to_string(),
+            "--cookie-path".to_string(),
+            cookie_path.to_string_lossy().to_string(),
+        ])
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn douyin_im_contacts(accountName: String, uid: Option<String>, limit: Option<i64>) -> Result<serde_json::Value, String> {
+    let cookie_path = get_douyin_cookie_path(&accountName)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut args = vec![
+            "contacts".to_string(),
+            "--cookie-path".to_string(),
+            cookie_path.to_string_lossy().to_string(),
+            "--limit".to_string(),
+            limit.unwrap_or(50).to_string(),
+        ];
+        append_optional_arg(&mut args, "--uid", uid);
+        run_douyin_im_bridge(args)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn douyin_im_messages(
+    accountName: String,
+    conversationId: Option<String>,
+    peerUid: Option<String>,
+    uid: Option<String>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let cookie_path = get_douyin_cookie_path(&accountName)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut args = vec![
+            "messages".to_string(),
+            "--cookie-path".to_string(),
+            cookie_path.to_string_lossy().to_string(),
+            "--limit".to_string(),
+            limit.unwrap_or(50).to_string(),
+        ];
+        append_optional_arg(&mut args, "--conversation-id", conversationId);
+        append_optional_arg(&mut args, "--peer-uid", peerUid);
+        append_optional_arg(&mut args, "--uid", uid);
+        run_douyin_im_bridge(args)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn douyin_im_create_conversation(
+    accountName: String,
+    toUserId: String,
+    webProtect: Option<String>,
+    keys: Option<String>,
+    uid: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if toUserId.trim().is_empty() {
+        return Err("对方 UID 不能为空".to_string());
+    }
+    let cookie_path = get_douyin_cookie_path(&accountName)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut args = vec![
+            "create_conversation".to_string(),
+            "--cookie-path".to_string(),
+            cookie_path.to_string_lossy().to_string(),
+            "--to-user-id".to_string(),
+            toUserId,
+        ];
+        if let Some(web_protect_value) = webProtect {
+            if !web_protect_value.trim().is_empty() {
+                args.push("--web-protect".to_string());
+                args.push(web_protect_value);
+            }
+        }
+        if let Some(keys_value) = keys {
+            if !keys_value.trim().is_empty() {
+                args.push("--keys".to_string());
+                args.push(keys_value);
+            }
+        }
+        if let Some(uid_value) = uid {
+            if !uid_value.trim().is_empty() {
+                args.push("--uid".to_string());
+                args.push(uid_value);
+            }
+        }
+        run_douyin_im_bridge(args)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn douyin_im_send(
+    accountName: String,
+    content: String,
+    toUserId: Option<String>,
+    conversationId: Option<String>,
+    conversationShortId: Option<i64>,
+    ticket: Option<String>,
+    webProtect: Option<String>,
+    keys: Option<String>,
+    uid: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if content.trim().is_empty() {
+        return Err("消息内容不能为空".to_string());
+    }
+    let cookie_path = get_douyin_cookie_path(&accountName)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut args = vec![
+            "send".to_string(),
+            "--cookie-path".to_string(),
+            cookie_path.to_string_lossy().to_string(),
+            "--content".to_string(),
+            content,
+        ];
+        if let Some(web_protect_value) = webProtect {
+            if !web_protect_value.trim().is_empty() {
+                args.push("--web-protect".to_string());
+                args.push(web_protect_value);
+            }
+        }
+        if let Some(keys_value) = keys {
+            if !keys_value.trim().is_empty() {
+                args.push("--keys".to_string());
+                args.push(keys_value);
+            }
+        }
+        if let Some(uid_value) = uid {
+            if !uid_value.trim().is_empty() {
+                args.push("--uid".to_string());
+                args.push(uid_value);
+            }
+        }
+        if let Some(to_user_id) = toUserId {
+            if !to_user_id.trim().is_empty() {
+                args.push("--to-user-id".to_string());
+                args.push(to_user_id);
+            }
+        } else {
+            if let Some(conversation_id) = conversationId {
+                args.push("--conversation-id".to_string());
+                args.push(conversation_id);
+            }
+            if let Some(short_id) = conversationShortId {
+                args.push("--conversation-short-id".to_string());
+                args.push(short_id.to_string());
+            }
+            if let Some(ticket_value) = ticket {
+                args.push("--ticket".to_string());
+                args.push(ticket_value);
+            }
+        }
+        run_douyin_im_bridge(args)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn douyin_im_refresh_credentials(
+    accountName: String,
+) -> Result<serde_json::Value, String> {
+    let cookie_path = get_douyin_cookie_path(&accountName)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        run_douyin_im_bridge(vec![
+            "refresh_credentials".to_string(),
+            "--cookie-path".to_string(),
+            cookie_path.to_string_lossy().to_string(),
+        ])
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn douyin_im_start_monitor(
+    accountName: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let cookie_path = get_douyin_cookie_path(&accountName)?;
+    let key = format!("douyin_im_{}", accountName);
+    let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+    if handles.contains_key(&key) {
+        return Err("该账号私信监控已在运行".to_string());
+    }
+
+    let script_path = PathBuf::from("..").join("scripts").join("douyin_im_bridge.py");
+    let mut child = tokio::process::Command::new("python3")
+        .arg(&script_path)
+        .arg("monitor")
+        .arg("--cookie-path").arg(&cookie_path)
+        .arg("--account-name").arg(&accountName)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn().map_err(|e| e.to_string())?;
+
+    let stdout = child.stdout.take().ok_or("无法打开 Python stdout")?;
+    let app_handle = app.clone();
+    let key_clone = key.clone();
+    let account_name_clone = accountName.clone();
+
+    tauri::async_runtime::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut reader = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                let _ = app_handle.emit("douyin-im-event", val);
+            }
+        }
+        if let Ok(mut h) = app_handle.state::<AppState>().process_handles.lock() {
+            h.remove(&key_clone);
+        }
+        let _ = app_handle.emit("douyin-im-event", serde_json::json!({
+            "type": "status",
+            "status": "stopped",
+            "account": account_name_clone
+        }));
+    });
+
+    handles.insert(key, child);
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_active_douyin_im_monitors(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+    let monitors: Vec<serde_json::Value> = handles.keys()
+        .filter(|k| k.starts_with("douyin_im_"))
+        .map(|k| {
+            let account = k.replacen("douyin_im_", "", 1);
+            serde_json::json!({
+                "account": account,
+                "status": "running"
+            })
+        })
+        .collect();
+    Ok(monitors)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn douyin_im_stop_monitor(accountName: String, state: State<'_, AppState>) -> Result<(), String> {
+    let key = format!("douyin_im_{}", accountName);
+    let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+    if let Some(child) = handles.remove(&key) {
+        #[cfg(unix)]
+        {
+            if let Some(pid) = child.id() {
+                unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.start_kill();
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn start_live_monitor(
     room_id: String,
@@ -787,7 +1121,7 @@ async fn start_live_monitor(
 async fn stop_live_monitor(room_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let key = format!("live_{}", room_id);
     let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
-    if let Some(mut child) = handles.remove(&key) {
+    if let Some(child) = handles.remove(&key) {
         #[cfg(unix)]
         {
             if let Some(pid) = child.id() {
@@ -853,6 +1187,12 @@ pub fn run() {
             get_current_task, clear_current_task,
             list_scraped_users, get_scraped_videos, get_scraped_comments,
             open_video_in_browser,
+            douyin_im_check, douyin_im_my_uid,
+            douyin_im_contacts, douyin_im_messages,
+            douyin_im_create_conversation, douyin_im_send,
+            douyin_im_refresh_credentials,
+            douyin_im_start_monitor, douyin_im_stop_monitor,
+            get_active_douyin_im_monitors,
             start_live_monitor, stop_live_monitor, get_active_monitors,
             get_live_history
         ])
