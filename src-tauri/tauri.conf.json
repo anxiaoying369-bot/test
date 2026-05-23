@@ -21,7 +21,11 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/Library/Application Support/AutoCastAI/scraper_data/**"]
+      }
     }
   },
   "bundle": {

@@ -34,7 +34,7 @@ const selectedAccount = ref('');
 const secUid = ref('');
 const scrapeType = ref('all');
 const limit = ref(0);
-const skipExisting = ref(false);
+const skipExisting = ref(true);
 const isRunning = ref(false);
 const currentTaskId = ref('');
 const progress = ref<ScraperProgress | null>(null);
@@ -156,9 +156,11 @@ function startPolling() {
       if (p.status !== 'running') {
         stopPolling();
         isRunning.value = false;
+        // 任务结束，清除后端全局 ID
+        await invoke('clear_current_task');
       }
     } catch (e) {
-      // 进度文件可能还没创建，忽略
+      // 忽略
     }
   }, 1500);
 }
@@ -179,8 +181,20 @@ function resetForm() {
 
 // ============ 生命周期 ============
 
-onMounted(() => {
+onMounted(async () => {
   loadAccounts();
+  
+  // 恢复正在运行的任务
+  try {
+    const activeTaskId = await invoke('get_current_task') as string | null;
+    if (activeTaskId) {
+      currentTaskId.value = activeTaskId;
+      isRunning.value = true;
+      startPolling();
+    }
+  } catch (e) {
+    console.error('任务恢复失败:', e);
+  }
 });
 
 onUnmounted(() => {
@@ -199,14 +213,14 @@ onUnmounted(() => {
     </div>
 
     <!-- 配置区域 -->
-    <div class="bg-gray-900 p-5 rounded-xl mb-6" v-if="!isRunning && progress?.status !== 'completed'">
+    <div class="bg-gray-900 p-5 rounded-xl mb-6">
       <div class="grid grid-cols-2 gap-4">
         <!-- 选择账号 -->
         <div>
           <label class="text-xs text-gray-400 block mb-1.5">使用账号（Cookie 来源）</label>
           <div class="relative">
-            <select v-model="selectedAccount"
-              class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white appearance-none focus:outline-none focus:border-blue-500 pr-8">
+            <select v-model="selectedAccount" :disabled="isRunning"
+              class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white appearance-none focus:outline-none focus:border-blue-500 pr-8 disabled:opacity-50">
               <option value="" disabled>选择已授权的抖音账号</option>
               <option v-for="acc in douyinAccounts" :key="acc.name" :value="acc.name">
                 {{ acc.name }}{{ acc.meta?.nickname ? ` (${acc.meta.nickname})` : '' }}
@@ -219,8 +233,8 @@ onUnmounted(() => {
         <!-- 目标 sec_uid -->
         <div>
           <label class="text-xs text-gray-400 block mb-1.5">目标用户 sec_uid</label>
-          <input v-model="secUid" type="text"
-            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+          <input v-model="secUid" type="text" :disabled="isRunning"
+            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
             placeholder="从抖音主页 URL 获取，如 MS4wLjAB..." />
         </div>
 
@@ -228,8 +242,8 @@ onUnmounted(() => {
         <div>
           <label class="text-xs text-gray-400 block mb-1.5">采集类型</label>
           <div class="relative">
-            <select v-model="scrapeType"
-              class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white appearance-none focus:outline-none focus:border-blue-500 pr-8">
+            <select v-model="scrapeType" :disabled="isRunning"
+              class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white appearance-none focus:outline-none focus:border-blue-500 pr-8 disabled:opacity-50">
               <option v-for="opt in typeOptions" :key="opt.value" :value="opt.value">
                 {{ opt.label }}
               </option>
@@ -241,21 +255,26 @@ onUnmounted(() => {
         <!-- 限制数量 -->
         <div>
           <label class="text-xs text-gray-400 block mb-1.5">采集数量限制（0=不限）</label>
-          <input v-model.number="limit" type="number" min="0"
-            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+          <input v-model.number="limit" type="number" min="0" :disabled="isRunning"
+            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50" />
         </div>
       </div>
 
       <!-- 选项行 -->
       <div class="flex items-center justify-between mt-4">
         <label class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
-          <input type="checkbox" v-model="skipExisting" class="rounded bg-gray-950 border-gray-700" />
+          <input type="checkbox" v-model="skipExisting" :disabled="isRunning" class="rounded bg-gray-950 border-gray-700 disabled:opacity-50" />
           跳过已采集的数据
         </label>
-        <button @click="startScrape"
+        <button v-if="!isRunning" @click="startScrape"
           class="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors">
           <Play class="w-4 h-4" />
           开始采集
+        </button>
+        <button v-else @click="cancelScrape"
+          class="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors">
+          <Square class="w-4 h-4" />
+          停止采集
         </button>
       </div>
 

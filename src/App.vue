@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search } from 'lucide-vue-next';
+import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
+import ResultsView from './components/ResultsView.vue';
+import LiveMonitorView from './components/LiveMonitorView.vue';
 
-type PageKey = 'chat' | 'accounts' | 'scraper';
+type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor';
 const currentPage = ref<PageKey>('accounts');
 const accounts = ref<any[]>([]);
 const isLoginModalOpen = ref(false);
@@ -163,8 +165,66 @@ async function retryLogin() {
 
 // ============ 生命周期 ============
 
+// ============ 直播监控全局状态 ============
+interface LiveMessage {
+  time: string;
+  user_name: string;
+  user_id: string;
+  content?: string;
+  gift_name?: string;
+  gift_count?: number;
+  count?: number;
+  gender?: string;
+}
+
+interface LiveRoom {
+  id: string;
+  anchor_name: string;
+  status: 'connecting' | 'running' | 'stopped' | 'error';
+  messages: { type: string; payload: LiveMessage }[];
+  error?: string;
+}
+
+const liveMonitorRooms = ref<Record<string, LiveRoom>>({});
+const activeLiveEventUnlisten = ref<any>(null);
+
+import { listen } from '@tauri-apps/api/event';
+
+async function initLiveEventListener() {
+  if (activeLiveEventUnlisten.value) return;
+  activeLiveEventUnlisten.value = await listen('live-event', (event: any) => {
+    const data = event.payload;
+    const rid = data.live_id;
+    
+    if (!liveMonitorRooms.value[rid]) {
+      // 忽略已删除或未初始化的房间的迟到事件
+      return;
+    }
+
+    const room = liveMonitorRooms.value[rid];
+
+    if (data.type === 'status') {
+      if (data.status === 'starting') room.status = 'connecting';
+      if (data.status === 'running') room.status = 'running';
+      if (data.status === 'stopped') room.status = 'stopped';
+      if (data.anchor_name) room.anchor_name = data.anchor_name;
+    } else if (data.type === 'init') {
+      room.status = 'running';
+      if (data.anchor_name) room.anchor_name = data.anchor_name;
+    } else if (data.type === 'data') {
+      if (data.anchor_name && !room.anchor_name) room.anchor_name = data.anchor_name;
+      room.messages.push({ type: data.data_type, payload: data.payload });
+      if (room.messages.length > 1000) room.messages.shift();
+    } else if (data.type === 'error') {
+      room.status = 'error';
+      room.error = data.message;
+    }
+  });
+}
+
 onMounted(() => {
   loadAccounts();
+  initLiveEventListener();
 });
 
 // ============ 辅助 ============
@@ -203,6 +263,19 @@ function isVerifying(platform: string, name: string) {
         <a href="#" @click="currentPage = 'scraper'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'scraper' ? 'bg-gray-900' : 'text-gray-400']">
           <Search class="w-5 h-5 text-purple-500" />
           <span>评论采集</span>
+        </a>
+        <a href="#" @click="currentPage = 'results'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'results' ? 'bg-gray-900' : 'text-gray-400']">
+          <FileText class="w-5 h-5 text-green-500" />
+          <span>采集结果</span>
+        </a>
+        <a href="#" @click="currentPage = 'live_monitor'" :class="['flex items-center justify-between px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'live_monitor' ? 'bg-gray-900' : 'text-gray-400']">
+          <div class="flex items-center gap-3">
+            <Radio class="w-5 h-5 text-red-500" />
+            <span>直播监控</span>
+          </div>
+          <span v-if="Object.keys(liveMonitorRooms).length > 0" class="text-[10px] bg-red-600 text-white px-1.5 py-0.5 rounded-full font-bold">
+            {{ Object.values(liveMonitorRooms).filter(r => r.status === 'running').length }}
+          </span>
         </a>
       </nav>
     </aside>
@@ -285,6 +358,16 @@ function isVerifying(platform: string, name: string) {
     <!-- 主内容：评论采集 -->
     <main v-if="currentPage === 'scraper'" class="flex flex-col flex-1 h-full bg-gray-950">
       <ScraperView />
+    </main>
+
+    <!-- 主内容：采集结果 -->
+    <main v-if="currentPage === 'results'" class="flex flex-col flex-1 h-full bg-gray-950">
+      <ResultsView />
+    </main>
+
+    <!-- 主内容：直播监控 -->
+    <main v-if="currentPage === 'live_monitor'" class="flex flex-col flex-1 h-full bg-gray-950">
+      <LiveMonitorView :globalRooms="liveMonitorRooms" />
     </main>
 
     <!-- 登录弹窗 -->

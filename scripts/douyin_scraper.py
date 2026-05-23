@@ -203,39 +203,63 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
     all_stats = {}
 
     try:
+        # 在采集作品前，尝试获取并保存用户信息
         if scrape_type in ('video', 'all'):
             _log(f"[SCRAPER] ===== 开始采集作品 =====")
-            progress.update(current_type="作品", current_user=sec_uid[:12])
+            progress.update(current_type="作品", current_user=sec_uid[:12], progress=10)
 
             service = VideoService(sec_uid, cookie_str)
+            # 我们先运行一次 fetch 来拿数据，以此提取用户信息
+            raw_videos = await service.fetch(page_size=1, limit=1)
+            if raw_videos:
+                author = raw_videos[0].get('author', {})
+                nickname = author.get('nickname', '未知用户')
+                user_info = {
+                    'sec_uid': sec_uid,
+                    'nickname': nickname,
+                    'avatar_url': author.get('avatar_thumb', {}).get('url_list', [None])[0]
+                }
+                # 保存到用户数据目录
+                user_json_path = os.path.join(data_dir_abs, 'user.json')
+                with open(user_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(user_info, f, ensure_ascii=False, indent=2)
+                _log(f"[SCRAPER] 已保存用户信息: {nickname}")
+            
+            # 接着正式运行采集
             stats = await service.run(delay=delay, limit=limit)
             all_stats['video'] = stats
             _log(f"[SCRAPER] 作品采集完成: {stats}")
 
+            current_progress = 33 if scrape_type == 'all' else 100
             progress.update(
-                progress=33 if scrape_type == 'all' else 100,
+                progress=current_progress,
                 stats=all_stats,
             )
 
         if scrape_type in ('comment', 'all'):
             _log(f"[SCRAPER] ===== 开始采集评论 =====")
-            progress.update(current_type="评论", current_user=sec_uid[:12])
+            start_p = 35 if scrape_type == 'all' else 10
+            progress.update(current_type="评论", current_user=sec_uid[:12], progress=start_p)
 
             service = CommentService(sec_uid, cookie_str)
+            _log(f"[SCRAPER] 正在初始化评论服务...")
             stats = await service.run(delay=delay, limit=limit, skip_existing=skip_existing)
             all_stats['comment'] = stats
             _log(f"[SCRAPER] 评论采集完成: {stats}")
 
+            current_progress = 66 if scrape_type == 'all' else 100
             progress.update(
-                progress=66 if scrape_type == 'all' else 100,
+                progress=current_progress,
                 stats=all_stats,
             )
 
         if scrape_type in ('reply', 'all'):
             _log(f"[SCRAPER] ===== 开始采集回复 =====")
-            progress.update(current_type="回复", current_user=sec_uid[:12])
+            start_p = 68 if scrape_type == 'all' else 20
+            progress.update(current_type="回复", current_user=sec_uid[:12], progress=start_p)
 
             service = ReplyService(sec_uid, cookie_str)
+            _log(f"[SCRAPER] 正在初始化回复服务...")
             stats = await service.run(delay=delay, limit=limit, skip_existing=skip_existing)
             all_stats['reply'] = stats
             _log(f"[SCRAPER] 回复采集完成: {stats}")
@@ -295,6 +319,16 @@ def main():
     # 初始化进度
     progress = ProgressWriter(args.task_id)
 
+    # 信号处理：确保取消时更新状态
+    def handle_signal(sig, frame):
+        _log(f"[SCRAPER] 收到信号 {sig}，正在取消任务...")
+        progress.finish(status="cancelled")
+        sys.exit(1)
+
+    import signal
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
     # 加载 cookie
     try:
         cookie_str = load_cookie_string(args.cookie_path)
@@ -316,15 +350,20 @@ def main():
     _log(f"[SCRAPER] 数据输出到: {output_dir}")
 
     # 执行采集
-    result = asyncio.run(run_scrape(
-        cookie_str=cookie_str,
-        sec_uid=args.sec_uid,
-        scrape_type=args.type,
-        limit=args.limit,
-        skip_existing=args.skip_existing,
-        output_dir=output_dir,
-        progress=progress,
-    ))
+    try:
+        result = asyncio.run(run_scrape(
+            cookie_str=cookie_str,
+            sec_uid=args.sec_uid,
+            scrape_type=args.type,
+            limit=args.limit,
+            skip_existing=args.skip_existing,
+            output_dir=output_dir,
+            progress=progress,
+        ))
+    except Exception as e:
+        _log(f"[SCRAPER] 严重错误: {e}")
+        progress.finish(status="error", stats={"error": str(e)})
+        result = {"status": "error", "error": str(e)}
 
     # stdout 只输出最终 JSON
     print(json.dumps(result, ensure_ascii=False))

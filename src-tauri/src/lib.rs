@@ -2,13 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
 // ============ 状态管理 ============
 pub struct AppState {
     pub login_flows: Mutex<std::collections::HashMap<String, LoginFlow>>,
     pub process_handles: Mutex<std::collections::HashMap<String, tokio::process::Child>>,
+    pub current_task_id: Mutex<Option<String>>,
 }
 
 pub struct LoginFlow {
@@ -498,6 +499,14 @@ async fn start_scrape(
     skip_existing: bool,
     state: State<'_, AppState>,
 ) -> Result<ScraperTask, String> {
+    // 检查是否有任务正在运行
+    {
+        let current = state.current_task_id.lock().unwrap();
+        if current.is_some() {
+            return Err("已有任务正在运行中，请先停止或等待完成".to_string());
+        }
+    }
+
     if sec_uid.trim().is_empty() {
         return Err("sec_uid 不能为空".to_string());
     }
@@ -541,6 +550,11 @@ async fn start_scrape(
         handles.insert(format!("scrape_{}", task_id), child);
     }
 
+    {
+        let mut current = state.current_task_id.lock().unwrap();
+        *current = Some(task_id.clone());
+    }
+
     let task = ScraperTask {
         task_id: task_id.clone(),
         account_name,
@@ -574,19 +588,253 @@ async fn get_scrape_progress(task_id: String) -> Result<ScraperProgress, String>
 async fn cancel_scrape(task_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let key = format!("scrape_{}", task_id);
     let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
-    if let Some(mut child) = handles.remove(&key) {
-        let _ = child.start_kill();
+    if let Some(child) = handles.remove(&key) {
+        #[cfg(unix)]
+        {
+            if let Some(pid) = child.id() {
+                unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let mut child = child;
+            let _ = child.start_kill();
+        }
     }
-    // 更新进度文件状态为 cancelled
+    // 即使进程没关掉，也强制更新进度文件状态为 cancelled
     let progress_path = get_scraper_dir().join(format!("{}.json", task_id));
     if progress_path.exists() {
         let content = fs::read_to_string(&progress_path).unwrap_or_default();
         if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
             val["status"] = serde_json::Value::String("cancelled".to_string());
+            val["finished_at"] = serde_json::Value::Number(serde_json::Number::from_f64(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64()).unwrap());
             let _ = fs::write(&progress_path, serde_json::to_string_pretty(&val).unwrap_or_default());
         }
     }
+
+    {
+        let mut current = state.current_task_id.lock().unwrap();
+        if let Some(id) = current.as_ref() {
+            if id == &task_id {
+                *current = None;
+            }
+        }
+    }
+
     Ok(())
+}
+
+#[tauri::command]
+async fn get_current_task(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let current = state.current_task_id.lock().unwrap();
+    Ok(current.clone())
+}
+
+#[tauri::command]
+async fn clear_current_task(state: State<'_, AppState>) -> Result<(), String> {
+    let mut current = state.current_task_id.lock().unwrap();
+    *current = None;
+    Ok(())
+}
+
+// ============ 结果查询命令 ============
+
+#[tauri::command]
+async fn list_scraped_users() -> Result<serde_json::Value, String> {
+    let script_path = PathBuf::from("..").join("scripts").join("query_data.py");
+    let output = tokio::process::Command::new("python3")
+        .arg(&script_path)
+        .arg("list_users")
+        .output().await.map_err(|e| e.to_string())?;
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let result: serde_json::Value = serde_json::from_str(&result_str)
+        .map_err(|_| format!("结果解析失败: {}", result_str))?;
+    Ok(result)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn get_scraped_videos(secUid: String, limit: i32, offset: i32) -> Result<serde_json::Value, String> {
+    let script_path = PathBuf::from("..").join("scripts").join("query_data.py");
+    let output = tokio::process::Command::new("python3")
+        .arg(&script_path)
+        .arg("get_videos")
+        .arg("--sec-uid").arg(&secUid)
+        .arg("--limit").arg(limit.to_string())
+        .arg("--offset").arg(offset.to_string())
+        .output().await.map_err(|e| e.to_string())?;
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let result: serde_json::Value = serde_json::from_str(&result_str)
+        .map_err(|_| format!("结果解析失败: {}", result_str))?;
+    Ok(result)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn get_scraped_comments(secUid: String, awemeId: Option<String>, limit: i32, offset: i32) -> Result<serde_json::Value, String> {
+    let script_path = PathBuf::from("..").join("scripts").join("query_data.py");
+    let mut cmd = tokio::process::Command::new("python3");
+    cmd.arg(&script_path)
+        .arg("get_comments")
+        .arg("--sec-uid").arg(&secUid)
+        .arg("--limit").arg(limit.to_string())
+        .arg("--offset").arg(offset.to_string());
+    
+    if let Some(id) = awemeId {
+        cmd.arg("--aweme-id").arg(id);
+    }
+
+    let output = cmd.output().await.map_err(|e| e.to_string())?;
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let result: serde_json::Value = serde_json::from_str(&result_str)
+        .map_err(|_| format!("结果解析失败: {}", result_str))?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn open_video_in_browser(aweme_id: String, account_name: String) -> Result<(), String> {
+    let platform = "douyin";
+    let cookie_json = get_account_dir(platform, &account_name).join("cookie.json");
+    
+    if !cookie_json.exists() {
+        return Err(format!("账号 {} 的 Cookie 文件不存在", account_name));
+    }
+
+    let script_path = PathBuf::from("..").join("scripts").join("open_video.py");
+    
+    let mut cmd = tokio::process::Command::new("python3");
+    cmd.arg(&script_path)
+        .arg("--cookie-path").arg(&cookie_json)
+        .arg("--video-id").arg(&aweme_id);
+
+    let output = cmd.output().await.map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("打开视频失败: {}", err));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_live_monitor(
+    room_id: String,
+    account_name: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+    let key = format!("live_{}", room_id);
+    
+    if handles.contains_key(&key) {
+        return Err("该直播间已在监控中".to_string());
+    }
+
+    // 检查监控数量限制
+    let live_count = handles.keys().filter(|k| k.starts_with("live_")).count();
+    if live_count >= 10 {
+        return Err("最多只能同时监控 10 个直播间".to_string());
+    }
+
+    let script_path = PathBuf::from("..").join("scripts").join("douyin_live_monitor.py");
+    
+    let mut child = tokio::process::Command::new("python3")
+        .arg(&script_path)
+        .arg("--room-id").arg(&room_id)
+        .arg("--account-name").arg(&account_name)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn().map_err(|e| e.to_string())?;
+
+    let stdout = child.stdout.take().ok_or("无法打开 Python stdout")?;
+    let room_id_clone = room_id.clone();
+    let app_handle = app.clone();
+    
+    // 在后台读取输出并发送事件
+    tauri::async_runtime::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut reader = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                let _ = app_handle.emit("live-event", val);
+            }
+        }
+
+        // 进程结束，从 handles 中移除自己
+        {
+            if let Ok(mut h) = app_handle.state::<AppState>().process_handles.lock() {
+                h.remove(&format!("live_{}", room_id_clone));
+            }
+        }
+
+        // 发送状态事件
+        let _ = app_handle.emit("live-event", serde_json::json!({
+            "type": "status",
+            "status": "stopped",
+            "live_id": room_id_clone
+        }));
+    });
+
+    handles.insert(key, child);
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_live_monitor(room_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let key = format!("live_{}", room_id);
+    let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+    if let Some(mut child) = handles.remove(&key) {
+        #[cfg(unix)]
+        {
+            if let Some(pid) = child.id() {
+                unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.start_kill();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_active_monitors(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+    let ids: Vec<String> = handles.keys()
+        .filter(|k| k.starts_with("live_"))
+        .map(|k| k.replace("live_", ""))
+        .collect();
+    Ok(ids)
+}
+
+#[tauri::command]
+async fn get_live_history(room_id: String) -> Result<Vec<serde_json::Value>, String> {
+    let data_dir = get_data_dir().join("live_data").join(&room_id);
+    let history_path = data_dir.join("history.jsonl");
+    
+    if !history_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = fs::read_to_string(&history_path).map_err(|e| e.to_string())?;
+    let mut history = vec![];
+    
+    // 取最后 100 条
+    let lines: Vec<&str> = content.lines().collect();
+    let start = if lines.len() > 100 { lines.len() - 100 } else { 0 };
+    
+    for line in &lines[start..] {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            history.push(val);
+        }
+    }
+    
+    Ok(history)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -595,12 +843,18 @@ pub fn run() {
         .manage(AppState {
             login_flows: Mutex::new(std::collections::HashMap::new()),
             process_handles: Mutex::new(std::collections::HashMap::new()),
+            current_task_id: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             list_accounts, verify_account, delete_account,
             sync_local_accounts, init_login_session, get_login_status,
             finish_login, cleanup_login_session,
-            start_scrape, get_scrape_progress, cancel_scrape
+            start_scrape, get_scrape_progress, cancel_scrape,
+            get_current_task, clear_current_task,
+            list_scraped_users, get_scraped_videos, get_scraped_comments,
+            open_video_in_browser,
+            start_live_monitor, stop_live_monitor, get_active_monitors,
+            get_live_history
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
