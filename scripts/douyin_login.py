@@ -158,22 +158,36 @@ def extract_user_info(page):
         except Exception as e:
             print(f"[DY] navigate user/self failed (non-fatal): {e}", flush=True)
 
-        # 尝试从 JS 全局变量提取
+        # 尝试从 JS 全局变量提取（_ROUTER_DATA / NEXT_DATA 等）
         try:
             js_info = page.run_js("""() => {
+                // 方式1: _ROUTER_DATA（抖音 PC 端常见）
                 if (window._ROUTER_DATA?.loaderData) {
                     for (let key in window._ROUTER_DATA.loaderData) {
                         const data = window._ROUTER_DATA.loaderData[key];
                         if (data?.user) return data.user;
+                        if (data?.userInfo?.user) return data.userInfo.user;
                     }
                 }
+                // 方式2: __NEXT_DATA__
+                try {
+                    const nd = JSON.parse(document.getElementById('__NEXT_DATA__')?.textContent || 'null');
+                    const u = nd?.props?.pageProps?.userInfo?.user || nd?.props?.pageProps?.user;
+                    if (u) return u;
+                } catch(e) {}
+                // 方式3: window.userData
                 if (window.userData) return window.userData;
                 return null;
             }""")
             if js_info and isinstance(js_info, dict):
-                user_id = js_info.get("uniqueId") or js_info.get("unique_id") or js_info.get("userId")
+                user_id = (js_info.get("uniqueId") or js_info.get("unique_id")
+                           or js_info.get("userId") or js_info.get("uid"))
                 user_name = js_info.get("nickname") or js_info.get("name")
-                avatar = js_info.get("avatarUrl") or js_info.get("avatar_url")
+                # 头像优先取大图
+                avatar = (js_info.get("avatarLarger") or js_info.get("avatarMedium")
+                          or js_info.get("avatarThumb") or js_info.get("avatarUrl")
+                          or js_info.get("avatar_url") or js_info.get("avatar_300x300"))
+                print(f"[DY] js extract: uid={user_id} name={user_name} avatar={'yes' if avatar else 'no'}", flush=True)
         except Exception as e:
             print(f"[DY] js extract failed: {e}", flush=True)
 
@@ -199,14 +213,28 @@ def extract_user_info(page):
                 except Exception:
                     pass
 
-        # 从 DOM 提取头像
+        # 从 DOM 提取头像（按优先级逐一尝试）
         if not avatar:
-            for sel in ["div[class*='avatar-'] img", ".semi-avatar img", "img[src*='aweme-avatar']"]:
+            avatar_selectors = [
+                # 精确匹配个人主页头像区域（XPath //*[@id="user_detail_element"]/div/div[2]/div[1]/span/img）
+                "css:#user_detail_element img",
+                # data-e2e 属性
+                'css:[data-e2e="user-avatar"] img',
+                'css:[data-e2e="avatar"] img',
+                # 常见 class 片段
+                "css:div[class*='avatar'] img",
+                "css:.semi-avatar img",
+                # src 包含 aweme-avatar 路径
+                "css:img[src*='aweme-avatar']",
+            ]
+            for sel in avatar_selectors:
                 try:
-                    el = page.ele(f"css:{sel}", timeout=2)
+                    el = page.ele(sel, timeout=2)
                     if el:
-                        avatar = el.attr("src")
-                        if avatar:
+                        src = el.attr("src") or ""
+                        if src and src.startswith("http"):
+                            avatar = src
+                            print(f"[DY] avatar found via '{sel}': {avatar[:80]}...", flush=True)
                             break
                 except Exception:
                     pass
