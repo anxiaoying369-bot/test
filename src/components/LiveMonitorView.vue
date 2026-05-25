@@ -95,15 +95,29 @@ async function loadHistory(rid: string) {
 }
 
 async function addRoom() {
-  const rid = newRoomId.value.trim();
-  if (!rid) return;
+  const input = newRoomId.value.trim();
+  if (!input) return;
+
+  let rid = input;
+  
+  // 如果不是纯数字，则尝试从 URL 解析
+  if (!/^\d+$/.test(input)) {
+    try {
+      rid = await invoke('resolve_live_url', { url: input });
+    } catch (e: any) {
+      alert(e);
+      return;
+    }
+  }
+  
   if (!/^\d+$/.test(rid)) {
-    alert('请输入纯数字的直播间 ID (web_rid)');
+    alert('无法获取有效的直播间 ID');
     return;
   }
   
   if (props.globalRooms[rid] && props.globalRooms[rid].status === 'running') {
     selectedRoomId.value = rid;
+    newRoomId.value = '';
     return;
   }
   
@@ -230,7 +244,7 @@ watch(() => selectedRoom.value?.messages.length, () => {
           
           <!-- 添加房间 -->
           <div class="flex gap-2">
-            <input v-model="newRoomId" @keyup.enter="addRoom" type="text" placeholder="直播间 ID"
+            <input v-model="newRoomId" @keyup.enter="addRoom" type="text" placeholder="直播间 ID 或链接"
               class="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500" />
             <button @click="addRoom" class="bg-blue-600 hover:bg-blue-700 p-1.5 rounded-lg transition-colors">
               <Play class="w-4 h-4" />

@@ -185,6 +185,12 @@ fn get_data_dir() -> PathBuf {
         .join("AutoCastAI")
 }
 
+/// 跨平台 Python 可执行文件名。
+/// Windows 上通常只有 `python`；macOS / Linux 用 `python3` 避免误调 Python 2。
+fn python_executable() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
 fn get_accounts_db_path() -> PathBuf {
     get_data_dir().join("accounts.json")
 }
@@ -1055,6 +1061,47 @@ async fn douyin_im_stop_monitor(accountName: String, state: State<'_, AppState>)
 }
 
 #[tauri::command]
+async fn resolve_live_url(url: String) -> Result<String, String> {
+    let url = url.trim();
+    // 1. 如果 url 已经是纯数字 ID，直接返回
+    if !url.is_empty() && url.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(url.to_string());
+    }
+
+    // 2. 如果包含 v.douyin.com 或 live.douyin.com
+    let target_url = if url.contains("douyin.com") {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .build()
+            .map_err(|e| e.to_string())?;
+        
+        let res = client.get(url)
+            .send()
+            .await
+            .map_err(|e| format!("请求失败: {}", e))?;
+        
+        res.url().to_string()
+    } else {
+        return Err("请输入有效的直播间 ID 或抖音链接".to_string());
+    };
+
+    // 3. 从最终 URL 中提取 ID
+    // 匹配 live.douyin.com/xxxx
+    if target_url.contains("live.douyin.com/") {
+        let parts: Vec<&str> = target_url.split("live.douyin.com/").collect();
+        if parts.len() > 1 {
+            let id_part = parts[1].split('?').next().unwrap_or("").split('/').next().unwrap_or("");
+            if !id_part.is_empty() && id_part.chars().all(|c| c.is_ascii_digit()) {
+                return Ok(id_part.to_string());
+            }
+        }
+    }
+
+    Err(format!("无法从链接解析到直播间 ID，最终跳转地址: {}", target_url))
+}
+
+#[tauri::command]
 async fn start_live_monitor(
     room_id: String,
     account_name: String,
@@ -1194,7 +1241,7 @@ pub fn run() {
             douyin_im_start_monitor, douyin_im_stop_monitor,
             get_active_douyin_im_monitors,
             start_live_monitor, stop_live_monitor, get_active_monitors,
-            get_live_history
+            get_live_history, resolve_live_url
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
