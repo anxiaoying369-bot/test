@@ -6,6 +6,9 @@ import sys
 import ast
 import base64
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from compat import get_data_dir  # noqa: E402
+
 def parse_url(url_str):
     if not url_str:
         return ""
@@ -30,7 +33,7 @@ def get_image_base64(path):
         return None
 
 def get_data_base():
-    return os.path.expanduser("~/Library/Application Support/AutoCastAI/scraper_data")
+    return str(get_data_dir() / "scraper_data")
 
 def list_scraped_users():
     base = get_data_base()

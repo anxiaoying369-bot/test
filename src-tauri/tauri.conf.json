@@ -24,7 +24,7 @@
       "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost",
       "assetProtocol": {
         "enable": true,
-        "scope": ["$HOME/Library/Application Support/AutoCastAI/scraper_data/**"]
+        "scope": ["$LOCALAPPDATA/AutoCastAI/scraper_data/**"]
       }
     }
   },

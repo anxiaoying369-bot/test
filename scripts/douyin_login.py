@@ -39,15 +39,18 @@ from urllib.parse import urlparse, parse_qs
 try:
     from DrissionPage import ChromiumPage, ChromiumOptions
 except ImportError:
-    print("ERROR: DrissionPage 未安装，请运行: pip3 install DrissionPage", flush=True)
+    print("ERROR: DrissionPage 未安装，请运行: pip install DrissionPage", flush=True)
     sys.exit(1)
 
+# compat 与脚本同目录
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from compat import get_chrome_path, get_chrome_user_data_dir, safe_signal, safe_kill_self  # noqa: E402
 
 # ============ 配置 ============
 
 CDP_PORT = 9222
-CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-CHROME_USER_DATA_DIR = os.path.expanduser("~/chrome-debug-profile")
+CHROME_PATH = get_chrome_path()
+CHROME_USER_DATA_DIR = get_chrome_user_data_dir()
 
 
 # ============ 全局状态 ============
@@ -503,10 +506,7 @@ def _parent_watchdog(initial_ppid: int):
             current_ppid = 1
         if current_ppid != initial_ppid or current_ppid == 1:
             print(f"[DY] Parent gone (ppid {initial_ppid}->{current_ppid}), self-terminating", flush=True)
-            try:
-                os.kill(os.getpid(), signal.SIGTERM)
-            except Exception:
-                pass
+            safe_kill_self()
             time.sleep(5)
             os._exit(0)
 
@@ -582,8 +582,8 @@ def main():
         shutdown_browser()
         sys.exit(0)
 
-    signal.signal(signal.SIGINT, on_signal)
-    signal.signal(signal.SIGTERM, on_signal)
+    safe_signal(signal.SIGINT, on_signal)
+    safe_signal(signal.SIGTERM, on_signal)
 
     threading.Thread(target=_parent_watchdog, args=(os.getppid(),), daemon=True).start()
 

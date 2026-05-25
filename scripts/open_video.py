@@ -13,9 +13,12 @@ import sys
 import time
 from DrissionPage import ChromiumPage, ChromiumOptions
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from compat import get_chrome_path, get_chrome_user_data_dir  # noqa: E402
+
 CDP_PORT = 9222
-CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-CHROME_USER_DATA_DIR = os.path.expanduser("~/chrome-debug-profile")
+CHROME_PATH = get_chrome_path()
+CHROME_USER_DATA_DIR = get_chrome_user_data_dir()
 
 def is_port_in_use(port: int) -> bool:
     import socket

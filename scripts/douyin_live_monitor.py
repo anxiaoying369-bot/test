@@ -15,10 +15,13 @@ import time
 import tempfile
 import ssl
 
-# 将 DouyinBarrage 加入路径
+# 将 DouyinBarrage 及 compat 加入路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BARRAGE_DIR = os.path.join(SCRIPT_DIR, 'DouyinBarrage')
 sys.path.insert(0, BARRAGE_DIR)
+sys.path.insert(0, SCRIPT_DIR)
+
+from compat import get_data_dir, safe_signal  # noqa: E402
 
 # 禁用全局 SSL 验证（针对某些环境下的证书问题）
 try:
@@ -45,7 +48,7 @@ class BridgeRecorder(DataRecorder):
         self.live_id = live_id
         self.anchor_name = ""
         # 准备持久化目录
-        self.data_dir = os.path.expanduser(f"~/Library/Application Support/AutoCastAI/live_data/{live_id}")
+        self.data_dir = str(get_data_dir() / "live_data" / live_id)
         os.makedirs(self.data_dir, exist_ok=True)
         self.history_path = os.path.join(self.data_dir, "history.jsonl")
 
@@ -76,7 +79,7 @@ class BridgeRecorder(DataRecorder):
 
 def load_cookie_string(account_name):
     # 复用 AutoCastAI 的 cookie 路径
-    data_dir = os.path.expanduser("~/Library/Application Support/AutoCastAI/cookies/douyin")
+    data_dir = str(get_data_dir() / "cookies" / "douyin")
     cookie_path = os.path.join(data_dir, account_name, "cookie.txt")
     if not os.path.exists(cookie_path):
         return None
@@ -137,7 +140,7 @@ def main():
             except:
                 pass
             sys.exit(0)
-        signal.signal(signal.SIGTERM, handle_term)
+        safe_signal(signal.SIGTERM, handle_term)
 
         # 定义回调来实时更新主播名
         def on_room_info(rid, name):

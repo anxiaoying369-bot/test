@@ -25,6 +25,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # DouyinComment 是 git submodule，位于 scripts/DouyinComment/
 DOUYIN_COMMENT_DIR = os.path.join(SCRIPT_DIR, 'DouyinComment')
 sys.path.insert(0, os.path.abspath(DOUYIN_COMMENT_DIR))
+sys.path.insert(0, SCRIPT_DIR)
+
+from compat import get_data_dir, safe_signal  # noqa: E402
 
 
 def _log(msg: str):
@@ -57,11 +60,11 @@ def load_cookie_string(cookie_path: str) -> str:
 class ProgressWriter:
     """
     将采集进度写入 JSON 文件，供 Rust 端轮询读取。
-    文件路径: ~/Library/Application Support/AutoCastAI/scraper/{task_id}.json
+    文件路径: <data_dir>/scraper/{task_id}.json
     """
 
     def __init__(self, task_id: str):
-        data_dir = os.path.expanduser("~/Library/Application Support/AutoCastAI/scraper")
+        data_dir = str(get_data_dir() / "scraper")
         os.makedirs(data_dir, exist_ok=True)
         self.path = os.path.join(data_dir, f"{task_id}.json")
         self.data = {
@@ -326,8 +329,8 @@ def main():
         sys.exit(1)
 
     import signal
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+    safe_signal(signal.SIGTERM, handle_signal)
+    safe_signal(signal.SIGINT, handle_signal)
 
     # 加载 cookie
     try:
@@ -342,8 +345,7 @@ def main():
 
     # 确定输出目录
     if not args.output_dir:
-        data_base = os.path.expanduser("~/Library/Application Support/AutoCastAI/scraper_data")
-        output_dir = os.path.join(data_base, args.sec_uid)
+        output_dir = str(get_data_dir() / "scraper_data" / args.sec_uid)
     else:
         output_dir = args.output_dir
 

@@ -191,6 +191,21 @@ fn python_executable() -> &'static str {
     if cfg!(windows) { "python" } else { "python3" }
 }
 
+/// 创建已预置 AUTOCAST_DATA_DIR 环境变量的 tokio Python 子进程 Command。
+/// Python 脚本通过 compat.get_data_dir() 优先读取该变量，确保路径与 Rust 端严格一致。
+fn python_cmd() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(python_executable());
+    cmd.env("AUTOCAST_DATA_DIR", get_data_dir().to_string_lossy().to_string());
+    cmd
+}
+
+/// 同步版（std::process）Python Command，用于需要阻塞等待输出的场景。
+fn python_cmd_sync() -> std::process::Command {
+    let mut cmd = std::process::Command::new(python_executable());
+    cmd.env("AUTOCAST_DATA_DIR", get_data_dir().to_string_lossy().to_string());
+    cmd
+}
+
 fn get_accounts_db_path() -> PathBuf {
     get_data_dir().join("accounts.json")
 }
@@ -338,7 +353,7 @@ async fn init_login_session(platform: String, state: State<'_, AppState>) -> Res
     let log_file = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
     let stderr_file = log_file.try_clone().map_err(|e| e.to_string())?;
 
-    let child = tokio::process::Command::new("python3")
+    let child = python_cmd()
         .arg(&script_path).arg("--port").arg(port.to_string()).arg("--session-id").arg(&session_id)
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(stderr_file))
@@ -442,7 +457,7 @@ async fn verify_account(platform: String, name: String) -> Result<VerifyResult, 
     let cookie_json = get_account_dir(&platform, &name).join("cookie.json");
     let script_path = PathBuf::from("..").join("scripts").join("verify_account.py");
 
-    let output = tokio::process::Command::new("python3")
+    let output = python_cmd()
         .arg(&script_path)
         .arg(&platform)
         .arg(&cookie_json)
@@ -535,7 +550,7 @@ async fn start_scrape(
     let stderr_file = log_file.try_clone().map_err(|e| e.to_string())?;
 
     // 启动 Python 子进程
-    let mut cmd = tokio::process::Command::new("python3");
+    let mut cmd = python_cmd();
     cmd.arg(&script_path)
         .arg("--task-id").arg(&task_id)
         .arg("--cookie-path").arg(&cookie_file)
@@ -648,7 +663,7 @@ async fn clear_current_task(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 async fn list_scraped_users() -> Result<serde_json::Value, String> {
     let script_path = PathBuf::from("..").join("scripts").join("query_data.py");
-    let output = tokio::process::Command::new("python3")
+    let output = python_cmd()
         .arg(&script_path)
         .arg("list_users")
         .output().await.map_err(|e| e.to_string())?;
@@ -663,7 +678,7 @@ async fn list_scraped_users() -> Result<serde_json::Value, String> {
 #[allow(non_snake_case)]
 async fn get_scraped_videos(secUid: String, limit: i32, offset: i32) -> Result<serde_json::Value, String> {
     let script_path = PathBuf::from("..").join("scripts").join("query_data.py");
-    let output = tokio::process::Command::new("python3")
+    let output = python_cmd()
         .arg(&script_path)
         .arg("get_videos")
         .arg("--sec-uid").arg(&secUid)
@@ -681,7 +696,7 @@ async fn get_scraped_videos(secUid: String, limit: i32, offset: i32) -> Result<s
 #[allow(non_snake_case)]
 async fn get_scraped_comments(secUid: String, awemeId: Option<String>, limit: i32, offset: i32) -> Result<serde_json::Value, String> {
     let script_path = PathBuf::from("..").join("scripts").join("query_data.py");
-    let mut cmd = tokio::process::Command::new("python3");
+    let mut cmd = python_cmd();
     cmd.arg(&script_path)
         .arg("get_comments")
         .arg("--sec-uid").arg(&secUid)
@@ -711,7 +726,7 @@ async fn open_video_in_browser(aweme_id: String, account_name: String) -> Result
 
     let script_path = PathBuf::from("..").join("scripts").join("open_video.py");
     
-    let mut cmd = tokio::process::Command::new("python3");
+    let mut cmd = python_cmd();
     cmd.arg(&script_path)
         .arg("--cookie-path").arg(&cookie_json)
         .arg("--video-id").arg(&aweme_id);
@@ -730,7 +745,7 @@ async fn open_video_in_browser(aweme_id: String, account_name: String) -> Result
 
 fn run_douyin_im_bridge(args: Vec<String>) -> Result<serde_json::Value, String> {
     let script_path = PathBuf::from("..").join("scripts").join("douyin_im_bridge.py");
-    let output = std::process::Command::new("python3")
+    let output = python_cmd_sync()
         .arg(&script_path)
         .args(args)
         .output()
@@ -988,7 +1003,7 @@ async fn douyin_im_start_monitor(
     }
 
     let script_path = PathBuf::from("..").join("scripts").join("douyin_im_bridge.py");
-    let mut child = tokio::process::Command::new("python3")
+    let mut child = python_cmd()
         .arg(&script_path)
         .arg("monitor")
         .arg("--cookie-path").arg(&cookie_path)
@@ -1123,7 +1138,7 @@ async fn start_live_monitor(
 
     let script_path = PathBuf::from("..").join("scripts").join("douyin_live_monitor.py");
     
-    let mut child = tokio::process::Command::new("python3")
+    let mut child = python_cmd()
         .arg(&script_path)
         .arg("--room-id").arg(&room_id)
         .arg("--account-name").arg(&account_name)
