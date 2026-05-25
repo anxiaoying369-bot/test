@@ -455,21 +455,6 @@ async function fetchMyUid(accountName = selectedAccount.value) {
   }
 }
 
-async function refreshContactMap(accountName = selectedAccount.value) {
-  if (!accountName) return;
-  try {
-    const result: any = await invoke('douyin_im_contacts', {
-      accountName,
-      uid: accountName === selectedAccount.value ? (myUid.value.trim() || null) : null,
-      limit: 120,
-    });
-    contactMaps.value[accountName] = result.contacts || [];
-    if (result.uid && accountName === selectedAccount.value && !myUid.value) myUid.value = String(result.uid);
-  } catch (e) {
-    console.warn('刷新私信联系人映射失败:', e);
-  }
-}
-
 async function startMonitor() {
   const account = selectedAccount.value;
   if (!account) return;

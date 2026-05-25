@@ -18,6 +18,7 @@ const loginStep = ref<'init' | 'waiting' | 'saving' | 'success' | 'error'>('init
 const accountNameInput = ref('抖音账号');
 const debugMsg = ref('系统就绪');
 const verifyingIds = ref<Set<string>>(new Set());
+const confirmDeleteKey = ref<string | null>(null); // "platform:name" 待确认删除
 
 // ============ 账号列表 ============
 
@@ -91,10 +92,20 @@ async function verifyAccount(account: any) {
 
 // ============ 删除账号 ============
 
-async function removeAccount(account: any) {
-  const confirmed = confirm(`确认删除账号「${account.name}」？`);
-  if (!confirmed) return;
+function accountKey(account: any) {
+  return `${account.platform}:${account.name}`;
+}
 
+function requestDeleteAccount(account: any) {
+  confirmDeleteKey.value = accountKey(account);
+}
+
+function cancelDeleteAccount() {
+  confirmDeleteKey.value = null;
+}
+
+async function confirmDeleteAccount(account: any) {
+  confirmDeleteKey.value = null;
   try {
     await invoke('delete_account', {
       platform: account.platform,
@@ -331,13 +342,20 @@ function isVerifying(platform: string, name: string) {
                 </div>
               </div>
               <div class="flex items-center gap-1">
-                <button @click="verifyAccount(acc)" :disabled="isVerifying(acc.platform, acc.name)" class="text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded flex items-center gap-1 transition-colors disabled:opacity-50">
-                  <RefreshCw class="w-3 h-3" :class="isVerifying(acc.platform, acc.name) ? 'animate-spin' : ''" />
-                  验证
-                </button>
-                <button @click="removeAccount(acc)" class="text-xs bg-red-900/30 hover:bg-red-800 text-red-400 px-2 py-1 rounded transition-colors">
-                  <Trash2 class="w-3 h-3" />
-                </button>
+                <template v-if="confirmDeleteKey === accountKey(acc)">
+                  <span class="text-xs text-red-400 mr-1">确认删除?</span>
+                  <button @click.stop="confirmDeleteAccount(acc)" class="text-xs bg-red-700 hover:bg-red-600 text-white px-2 py-1 rounded transition-colors">确认</button>
+                  <button @click.stop="cancelDeleteAccount()" class="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition-colors">取消</button>
+                </template>
+                <template v-else>
+                  <button @click="verifyAccount(acc)" :disabled="isVerifying(acc.platform, acc.name)" class="text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded flex items-center gap-1 transition-colors disabled:opacity-50">
+                    <RefreshCw class="w-3 h-3" :class="isVerifying(acc.platform, acc.name) ? 'animate-spin' : ''" />
+                    验证
+                  </button>
+                  <button @click.stop="requestDeleteAccount(acc)" class="text-xs bg-red-900/30 hover:bg-red-800 text-red-400 px-2 py-1 rounded transition-colors">
+                    <Trash2 class="w-3 h-3" />
+                  </button>
+                </template>
               </div>
             </div>
             <div v-if="acc.verify_message" class="text-[10px] text-gray-500 font-mono mt-1 px-2">
