@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio, MessageCircle } from 'lucide-vue-next';
+import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio, MessageCircle, Settings, Database } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import ResultsView from './components/ResultsView.vue';
 import LiveMonitorView from './components/LiveMonitorView.vue';
 import DouyinIMView from './components/DouyinIMView.vue';
+import SettingsView from './components/SettingsView.vue';
+import ChatView from './components/ChatView.vue';
+import KnowledgeBaseView from './components/KnowledgeBaseView.vue';
 
-type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im';
+type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb';
 const currentPage = ref<PageKey>('accounts');
 const accounts = ref<any[]>([]);
 const isLoginModalOpen = ref(false);
@@ -284,6 +287,10 @@ function isVerifying(platform: string, name: string) {
           <MessageCircle class="w-5 h-5 text-pink-500" />
           <span>私信监控</span>
         </a>
+        <a href="#" @click="currentPage = 'kb'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'kb' ? 'bg-gray-900' : 'text-gray-400']">
+          <Database class="w-5 h-5 text-blue-500" />
+          <span>企业知识库</span>
+        </a>
         <a href="#" @click="currentPage = 'live_monitor'" :class="['flex items-center justify-between px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'live_monitor' ? 'bg-gray-900' : 'text-gray-400']">
           <div class="flex items-center gap-3">
             <Radio class="w-5 h-5 text-red-500" />
@@ -293,14 +300,18 @@ function isVerifying(platform: string, name: string) {
             {{ Object.values(liveMonitorRooms).filter(r => r.status === 'running').length }}
           </span>
         </a>
+        <div class="pt-4 mt-4 border-t border-gray-900">
+          <a href="#" @click="currentPage = 'settings'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'settings' ? 'bg-gray-900' : 'text-gray-400']">
+            <Settings class="w-5 h-5" />
+            <span>系统设置</span>
+          </a>
+        </div>
       </nav>
     </aside>
 
     <!-- 主内容：AI 助理 -->
-    <main v-if="currentPage === 'chat'" class="flex flex-col flex-1 h-full bg-gray-950 p-4">
-      <div class="flex-1 flex items-center justify-center text-gray-500">
-        <p>AI 助理对话区域（开发中）</p>
-      </div>
+    <main v-if="currentPage === 'chat'" class="flex flex-col flex-1 h-full bg-gray-950">
+      <ChatView />
     </main>
 
     <!-- 主内容：账号管理 -->
@@ -393,9 +404,19 @@ function isVerifying(platform: string, name: string) {
       <DouyinIMView />
     </main>
 
+    <!-- 主内容：企业知识库 -->
+    <main v-if="currentPage === 'kb'" class="flex flex-col flex-1 h-full bg-gray-950">
+      <KnowledgeBaseView />
+    </main>
+
     <!-- 主内容：直播监控 -->
     <main v-if="currentPage === 'live_monitor'" class="flex flex-col flex-1 h-full bg-gray-950">
       <LiveMonitorView :globalRooms="liveMonitorRooms" />
+    </main>
+
+    <!-- 主内容：系统设置 -->
+    <main v-if="currentPage === 'settings'" class="flex flex-col flex-1 h-full bg-gray-950">
+      <SettingsView />
     </main>
 
     <!-- 登录弹窗 -->

@@ -14,6 +14,10 @@ import threading
 import time
 import tempfile
 import ssl
+import urllib3
+
+# 禁用 InsecureRequestWarning (针对 verify=False)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 将 DouyinBarrage 及 compat 加入路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

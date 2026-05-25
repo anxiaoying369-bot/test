@@ -4,8 +4,44 @@ import { invoke } from '@tauri-apps/api/core';
 import { 
   Radio, StopCircle, Play, Users, MessageSquare, 
   Heart, Gift, Trash2,
-  AlertCircle, Monitor, Hash, ExternalLink
+  AlertCircle, Monitor, Hash, ExternalLink, Check,
+  Wand2, Cpu
 } from 'lucide-vue-next';
+
+// ... (existing code)
+
+const aiReplies = ref<Record<string, { content: string, loading: boolean }>>({});
+
+async function generateAiReply(msgIdx: number, user_name: string, content: string) {
+  const replyKey = `${selectedRoomId.value}_${msgIdx}`;
+  aiReplies.value[replyKey] = { content: '', loading: true };
+
+  try {
+    const reply = await invoke('generate_live_reply', { 
+      userName: user_name, 
+      content: content 
+    }) as string;
+    aiReplies.value[replyKey] = { content: reply, loading: false };
+  } catch (e) {
+    console.error('生成回复失败:', e);
+    aiReplies.value[replyKey] = { content: '生成失败: ' + e, loading: false };
+  }
+}
+
+
+const copiedId = ref<string | null>(null);
+
+async function copyToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    copiedId.value = text;
+    setTimeout(() => {
+      if (copiedId.value === text) copiedId.value = null;
+    }, 2000);
+  } catch (err) {
+    console.error('复制失败:', err);
+  }
+}
 
 interface Account {
   id: string;
@@ -44,9 +80,29 @@ const accounts = ref<Account[]>([]);
 const selectedAccount = ref('');
 const messageContainer = ref<HTMLElement | null>(null);
 
+// 消息过滤器状态
+const filters = ref({
+  chat: true,
+  like: true,
+  gift: true,
+  member: true
+});
+
 const douyinAccounts = computed(() => accounts.value.filter(a => a.platform === 'douyin'));
 const activeRoomsCount = computed(() => Object.keys(props.globalRooms).length);
 const selectedRoom = computed(() => selectedRoomId.value ? props.globalRooms[selectedRoomId.value] : null);
+
+// 过滤后的消息列表
+const filteredMessages = computed(() => {
+  if (!selectedRoom.value) return [];
+  return selectedRoom.value.messages.filter(msg => {
+    if ((msg.type === 'chat' || msg.type === 'emoji') && !filters.value.chat) return false;
+    if (msg.type === 'like' && !filters.value.like) return false;
+    if (msg.type === 'gift' && !filters.value.gift) return false;
+    if (msg.type === 'member' && !filters.value.member) return false;
+    return true;
+  });
+});
 
 // 监听房间列表变化，如果有新房间加入且当前没选中，或者只有一个房间，自动选中
 watch(() => Object.keys(props.globalRooms).length, (newCount, oldCount) => {
@@ -177,9 +233,16 @@ function removeRoom(rid: string) {
   }
 }
 
-function scrollToBottom() {
+function scrollToBottom(force = false) {
   if (messageContainer.value) {
-    messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
+    const el = messageContainer.value;
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    
+    if (force || isAtBottom) {
+      nextTick(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+    }
   }
 }
 
@@ -207,17 +270,17 @@ onMounted(async () => {
     console.error('恢复活跃监控失败:', e);
   }
   
-  setTimeout(scrollToBottom, 100);
+  setTimeout(() => scrollToBottom(true), 150);
 });
 
 watch(selectedRoomId, () => {
-  setTimeout(scrollToBottom, 50);
+  setTimeout(() => scrollToBottom(true), 100);
 }, { immediate: true });
 
 // 监听消息长度变化，自动滚动
 watch(() => selectedRoom.value?.messages.length, () => {
   if (selectedRoomId.value) {
-    nextTick(scrollToBottom);
+    scrollToBottom();
   }
 });
 </script>
@@ -243,12 +306,19 @@ watch(() => selectedRoom.value?.messages.length, () => {
           </div>
           
           <!-- 添加房间 -->
-          <div class="flex gap-2">
-            <input v-model="newRoomId" @keyup.enter="addRoom" type="text" placeholder="直播间 ID 或链接"
-              class="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500" />
-            <button @click="addRoom" class="bg-blue-600 hover:bg-blue-700 p-1.5 rounded-lg transition-colors">
-              <Play class="w-4 h-4" />
-            </button>
+          <div class="space-y-1.5">
+            <div class="flex gap-2">
+              <input v-model="newRoomId" @keyup.enter="addRoom" type="text" placeholder="输入 ID 或链接..."
+                class="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500" />
+              <button @click="addRoom" class="bg-blue-600 hover:bg-blue-700 p-1.5 rounded-lg transition-colors">
+                <Play class="w-4 h-4" />
+              </button>
+            </div>
+            <div class="px-1">
+              <p class="text-[10px] text-gray-500 leading-relaxed">
+                支持纯数字 ID (如 371206...) 或标准直播链接 (live.douyin.com/...)
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -285,34 +355,68 @@ watch(() => selectedRoom.value?.messages.length, () => {
     <!-- 右侧：监控面板 -->
     <main class="flex-1 flex flex-col min-w-0 bg-gray-950">
       <template v-if="selectedRoom">
-        <header class="p-4 border-b border-gray-800 flex items-center justify-between bg-gray-900/20">
-          <div class="flex items-center gap-3">
-            <div class="w-10 h-10 rounded-xl bg-gray-800 flex items-center justify-center text-blue-400">
-              <Radio class="w-6 h-6" />
-            </div>
-            <div>
-              <h3 class="font-bold flex items-center gap-2">
-                直播间: {{ selectedRoom.anchor_name || selectedRoomId }}
-                <a :href="'https://live.douyin.com/' + selectedRoomId" target="_blank" class="text-gray-500 hover:text-blue-400">
-                  <ExternalLink class="w-3.5 h-3.5" />
-                </a>
-              </h3>
-              <div class="text-xs text-gray-500 flex items-center gap-2">
-                <span :class="selectedRoom.status === 'running' ? 'text-green-500' : 'text-gray-500'">
-                  ● {{ selectedRoom.status === 'running' ? '正在监控' : '连接中断' }}
-                </span>
-                <span>• {{ selectedRoom.messages.length }} 条实时数据</span>
+        <header class="p-4 border-b border-gray-800 flex flex-col gap-4 bg-gray-900/20">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-xl bg-gray-800 flex items-center justify-center text-blue-400">
+                <Radio class="w-6 h-6" />
+              </div>
+              <div>
+                <h3 class="font-bold flex items-center gap-2">
+                  直播间: {{ selectedRoom.anchor_name || selectedRoomId }}
+                  <a :href="'https://live.douyin.com/' + selectedRoomId" target="_blank" class="text-gray-500 hover:text-blue-400">
+                    <ExternalLink class="w-3.5 h-3.5" />
+                  </a>
+                </h3>
+                <div class="text-xs text-gray-500 flex items-center gap-2">
+                  <span :class="selectedRoom.status === 'running' ? 'text-green-500' : 'text-gray-500'">
+                    ● {{ selectedRoom.status === 'running' ? '正在监控' : '连接中断' }}
+                  </span>
+                  <span>• {{ selectedRoom.messages.length }} 条实时数据</span>
+                </div>
               </div>
             </div>
+            <div class="flex items-center gap-2">
+              <button v-if="selectedRoom.status === 'running'" @click="stopMonitor(selectedRoomId!)" 
+                class="flex items-center gap-1.5 px-3 py-1.5 bg-red-900/20 hover:bg-red-900/40 text-red-400 rounded-lg text-xs font-medium transition-all border border-red-800/30">
+                <StopCircle class="w-3.5 h-3.5" /> 停止监控
+              </button>
+              <button v-else-if="selectedRoom.status !== 'connecting'" @click="newRoomId = String(selectedRoomId); addRoom()" 
+                class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-all">
+                <Play class="w-3.5 h-3.5" /> 重新连接
+              </button>
+            </div>
           </div>
-          <div class="flex items-center gap-2">
-            <button v-if="selectedRoom.status === 'running'" @click="stopMonitor(selectedRoomId!)" 
-              class="flex items-center gap-1.5 px-3 py-1.5 bg-red-900/20 hover:bg-red-900/40 text-red-400 rounded-lg text-xs font-medium transition-all border border-red-800/30">
-              <StopCircle class="w-3.5 h-3.5" /> 停止监控
+
+          <!-- 过滤器 -->
+          <div class="flex items-center gap-2 bg-gray-950/50 p-1 rounded-xl border border-gray-800 w-fit">
+            <button 
+              @click="filters.chat = !filters.chat"
+              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all', 
+                        filters.chat ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'text-gray-500 hover:text-gray-300']"
+            >
+              <MessageSquare class="w-3.5 h-3.5" /> 弹幕
             </button>
-            <button v-else-if="selectedRoom.status !== 'connecting'" @click="newRoomId = String(selectedRoomId); addRoom()" 
-              class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-all">
-              <Play class="w-3.5 h-3.5" /> 重新连接
+            <button 
+              @click="filters.like = !filters.like"
+              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all', 
+                        filters.like ? 'bg-red-600 text-white shadow-lg shadow-red-900/20' : 'text-gray-500 hover:text-gray-300']"
+            >
+              <Heart class="w-3.5 h-3.5" /> 点赞
+            </button>
+            <button 
+              @click="filters.gift = !filters.gift"
+              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all', 
+                        filters.gift ? 'bg-purple-600 text-white shadow-lg shadow-purple-900/20' : 'text-gray-500 hover:text-gray-300']"
+            >
+              <Gift class="w-3.5 h-3.5" /> 送礼
+            </button>
+            <button 
+              @click="filters.member = !filters.member"
+              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all', 
+                        filters.member ? 'bg-gray-700 text-white shadow-lg shadow-gray-900/20' : 'text-gray-500 hover:text-gray-300']"
+            >
+              <Users class="w-3.5 h-3.5" /> 进场
             </button>
           </div>
         </header>
@@ -329,15 +433,15 @@ watch(() => selectedRoom.value?.messages.length, () => {
 
         <!-- 消息列表 -->
         <div ref="messageContainer" class="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
-          <div v-if="selectedRoom.messages.length === 0" class="h-full flex flex-col items-center justify-center text-gray-600">
+          <div v-if="filteredMessages.length === 0" class="h-full flex flex-col items-center justify-center text-gray-600">
             <div class="w-16 h-16 rounded-full bg-gray-900 flex items-center justify-center mb-4">
               <MessageSquare class="w-8 h-8 opacity-20" />
             </div>
-            <p class="text-sm">等待直播间消息...</p>
-            <p class="text-[10px] mt-2 opacity-50 uppercase tracking-widest">Listening for events...</p>
+            <p class="text-sm">没有符合当前过滤条件的消息...</p>
+            <p class="text-[10px] mt-2 opacity-50 uppercase tracking-widest">Adjust filters to see more data</p>
           </div>
 
-          <div v-for="(msg, i) in selectedRoom.messages" :key="i" 
+          <div v-for="(msg, i) in filteredMessages" :key="i" 
             class="animate-in fade-in slide-in-from-bottom-1 duration-300">
             <!-- 聊天消息 -->
             <div v-if="msg.type === 'chat' || msg.type === 'emoji'" class="flex gap-3">
@@ -346,11 +450,43 @@ watch(() => selectedRoom.value?.messages.length, () => {
               </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-baseline gap-2 mb-0.5">
-                  <span class="text-xs font-bold text-blue-400">{{ msg.payload.user_name }}</span>
+                  <span class="text-xs font-bold text-blue-400">
+                    {{ msg.payload.user_name }}
+                    <span @click="copyToClipboard(msg.payload.user_id)" 
+                      class="text-[10px] opacity-60 font-mono ml-0.5 cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1">
+                      ({{ msg.payload.user_id }})
+                      <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
+                    </span>
+                  </span>
                   <span class="text-[10px] text-gray-600">{{ msg.payload.time }}</span>
                 </div>
-                <div class="text-sm text-gray-300 leading-relaxed bg-gray-900/50 p-2 rounded-lg border border-gray-800 inline-block">
+                <div class="text-sm text-gray-300 leading-relaxed bg-gray-900/50 p-2 rounded-lg border border-gray-800 inline-block relative group/msg max-w-[85%] break-words">
                   {{ msg.payload.content }}
+                  
+                  <!-- AI 回复按钮 -->
+                  <button 
+                    @click="generateAiReply(i, msg.payload.user_name, msg.payload.content || '')"
+                    class="absolute -right-10 top-0 p-1.5 bg-gray-900 border border-gray-800 rounded-lg text-gray-500 hover:text-blue-400 opacity-0 group-hover/msg:opacity-100 transition-all shadow-xl"
+                    title="AI 生成回复建议"
+                  >
+                    <Wand2 class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <!-- AI 生成的内容展示 -->
+                <div v-if="aiReplies[`${selectedRoomId}_${i}`]" 
+                  class="mt-1.5 bg-blue-600/10 border border-blue-500/20 rounded-lg p-2 max-w-sm animate-in fade-in slide-in-from-top-1">
+                  <div class="flex items-center gap-1.5 mb-1">
+                    <Cpu class="w-3 h-3 text-blue-400" />
+                    <span class="text-[10px] font-bold text-blue-400 uppercase tracking-tighter">AI 建议回复</span>
+                    <div v-if="aiReplies[`${selectedRoomId}_${i}`].loading" class="flex gap-1 ml-1">
+                      <div class="w-1 h-1 bg-blue-500 rounded-full animate-bounce"></div>
+                      <div class="w-1 h-1 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
+                    </div>
+                  </div>
+                  <p v-if="!aiReplies[`${selectedRoomId}_${i}`].loading" class="text-xs text-gray-200 leading-relaxed italic">
+                    “{{ aiReplies[`${selectedRoomId}_${i}`].content }}”
+                  </p>
                 </div>
               </div>
             </div>
@@ -362,7 +498,14 @@ watch(() => selectedRoom.value?.messages.length, () => {
               </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-baseline gap-2 mb-0.5">
-                  <span class="text-xs font-bold text-purple-400">{{ msg.payload.user_name }}</span>
+                  <span class="text-xs font-bold text-purple-400">
+                    {{ msg.payload.user_name }}
+                    <span @click="copyToClipboard(msg.payload.user_id)" 
+                      class="text-[10px] opacity-60 font-mono ml-0.5 cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1">
+                      ({{ msg.payload.user_id }})
+                      <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
+                    </span>
+                  </span>
                   <span class="text-[10px] text-gray-600">{{ msg.payload.time }}</span>
                 </div>
                 <div class="text-sm bg-purple-500/10 border border-purple-500/30 text-purple-200 px-3 py-1.5 rounded-lg flex items-center gap-2">
@@ -379,7 +522,14 @@ watch(() => selectedRoom.value?.messages.length, () => {
               </div>
               <div class="flex-1 min-w-0">
                 <div class="text-xs">
-                  <span class="font-bold text-red-400">{{ msg.payload.user_name }}</span>
+                  <span class="font-bold text-red-400">
+                    {{ msg.payload.user_name }}
+                    <span @click="copyToClipboard(msg.payload.user_id)" 
+                      class="text-[10px] opacity-60 font-mono ml-0.5 cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1">
+                      ({{ msg.payload.user_id }})
+                      <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
+                    </span>
+                  </span>
                   <span class="text-gray-500"> 连点 {{ msg.payload.count }} 个赞</span>
                   <span class="text-[10px] text-gray-600 ml-2">{{ msg.payload.time }}</span>
                 </div>
@@ -393,7 +543,13 @@ watch(() => selectedRoom.value?.messages.length, () => {
               </div>
               <div class="flex-1 min-w-0">
                 <div class="text-xs italic text-gray-500">
-                  {{ msg.payload.user_name }} 来了
+                  {{ msg.payload.user_name }}
+                  <span @click="copyToClipboard(msg.payload.user_id)" 
+                    class="text-[10px] opacity-60 font-mono cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1 not-italic">
+                    ({{ msg.payload.user_id }})
+                    <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
+                  </span>
+                  来了
                   <span class="text-[10px] text-gray-700 ml-2">{{ msg.payload.time }}</span>
                 </div>
               </div>

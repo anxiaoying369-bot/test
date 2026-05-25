@@ -63,6 +63,60 @@ pub struct LocalStorageEntry {
     pub value: String,
 }
 
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct LLMConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+    #[serde(default)]
+    pub kb_api_key: String,
+    #[serde(default)]
+    pub kb_base_url: String,
+    #[serde(default = "default_embedding_model")]
+    pub embedding_model: String,
+    #[serde(default = "default_analysis_prompt")]
+    pub analysis_prompt: String,
+    #[serde(default = "default_live_reply_prompt")]
+    pub live_reply_prompt: String,
+    #[serde(default)]
+    pub live_theme: String,
+    #[serde(default)]
+    pub live_content: String,
+}
+
+fn default_embedding_model() -> String {
+    "text-embedding-3-small".to_string()
+}
+
+fn default_live_reply_prompt() -> String {
+    "你是一位正在直播的主播。请根据直播主题和直播内容，简短地回复用户的弹幕。回复必须非常简短（20字以内），语气亲切自然，像真人在直播间说话一样。".to_string()
+}
+
+fn default_analysis_prompt() -> String {
+    "你是一位资深的社交媒体数据分析师。我会为你提供一组短视频评论数据，请从以下几个维度进行深度分析：\n1. 舆情氛围：整体情绪倾向（积极、消极、中立）及其占比。\n2. 核心热点：用户最关心的前3个话题或痛点。\n3. 用户意图：是否存在高潜力的咨询、购买意向或反馈建议。\n4. 互动建议：针对当前评论区，建议运营人员如何进行回复或引导。\n请用专业且简洁的 Markdown 格式输出分析报告。".to_string()
+}
+
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct AppConfig {
+    pub llm: LLMConfig,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+    pub timestamp: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ChatSession {
+    pub id: String,
+    pub title: String,
+    pub messages: Vec<ChatMessage>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
 // 持久化存储结构
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Account {
@@ -185,10 +239,22 @@ fn get_data_dir() -> PathBuf {
         .join("AutoCastAI")
 }
 
-/// 跨平台 Python 可执行文件名。
-/// Windows 上通常只有 `python`；macOS / Linux 用 `python3` 避免误调 Python 2。
-fn python_executable() -> &'static str {
-    if cfg!(windows) { "python" } else { "python3" }
+/// 跨平台 Python 可执行文件路径。
+/// 优先使用项目根目录下的 `.venv`，如果不存在则回退到系统 Python。
+fn python_executable() -> String {
+    let venv_path = if cfg!(windows) {
+        PathBuf::from("..").join(".venv").join("Scripts").join("python.exe")
+    } else {
+        PathBuf::from("..").join(".venv").join("bin").join("python3")
+    };
+
+    if venv_path.exists() {
+        venv_path.to_string_lossy().to_string()
+    } else if cfg!(windows) {
+        "python".to_string()
+    } else {
+        "python3".to_string()
+    }
 }
 
 /// 创建已预置 AUTOCAST_DATA_DIR 环境变量的 tokio Python 子进程 Command。
@@ -282,6 +348,520 @@ fn register_account_on_disk(platform: &str, name: &str) -> Result<Account, Strin
     store.accounts.push(account.clone());
     save_accounts(&store)?;
     Ok(account)
+}
+
+fn get_chats_dir() -> PathBuf {
+    get_data_dir().join("chats")
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+#[tauri::command]
+async fn list_chat_sessions() -> Result<Vec<ChatSession>, String> {
+    let dir = get_chats_dir();
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut sessions = vec![];
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
+            let content = fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
+            if let Ok(session) = serde_json::from_str::<ChatSession>(&content) {
+                sessions.push(session);
+            }
+        }
+    }
+    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(sessions)
+}
+
+#[tauri::command]
+async fn create_chat_session(title: String) -> Result<ChatSession, String> {
+    let id = Uuid::new_v4().to_string();
+    let now = now_secs();
+    let session = ChatSession {
+        id: id.clone(),
+        title,
+        messages: vec![],
+        created_at: now,
+        updated_at: now,
+    };
+
+    let dir = get_chats_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.json", id));
+    let content = serde_json::to_string_pretty(&session).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())?;
+
+    Ok(session)
+}
+
+#[tauri::command]
+async fn delete_chat_session(id: String) -> Result<(), String> {
+    let path = get_chats_dir().join(format!("{}.json", id));
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn generate_live_reply(user_name: String, content: String) -> Result<String, String> {
+    let config = get_config().await?;
+    if config.llm.api_key.is_empty() {
+        return Err("请先在设置中配置 LLM API Key".to_string());
+    }
+
+    let system_prompt = if config.llm.live_reply_prompt.is_empty() {
+        default_live_reply_prompt()
+    } else {
+        config.llm.live_reply_prompt.clone()
+    };
+
+    // 1. 从知识库搜索相关背景
+    let kb_context = match search_kb_internal(content.clone()).await {
+        Ok(res_str) => {
+            let res: serde_json::Value = serde_json::from_str(&res_str).unwrap_or(serde_json::json!([]));
+            let mut context_text = String::from("\n相关背景知识：\n");
+            if let Some(arr) = res.as_array() {
+                for item in arr.iter().take(3) {
+                    if let Some(text) = item["text"].as_str() {
+                        context_text.push_str(&format!("- {}\n", text));
+                    }
+                }
+            }
+            if context_text.len() < 20 { String::new() } else { context_text }
+        },
+        Err(_) => String::new(),
+    };
+
+    let user_context = format!(
+        "直播主题：{}\n直播内容：{}\n{}\n\n请回复用户 {} 的弹幕：{}",
+        config.llm.live_theme,
+        config.llm.live_content,
+        kb_context,
+        user_name,
+        content
+    );
+
+    let client = reqwest::Client::new();
+    let url = if config.llm.base_url.ends_with("/chat/completions") {
+        config.llm.base_url.clone()
+    } else {
+        format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/'))
+    };
+
+    let payload = serde_json::json!({
+        "model": config.llm.model,
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_context }
+        ],
+        "temperature": 0.8,
+        "max_tokens": 50
+    });
+
+    let response = client.post(&url)
+        .header("Authorization", format!("Bearer {}", config.llm.api_key))
+        .json(&payload)
+        .send().await.map_err(|e| format!("请求失败: {}", e))?;
+
+    if !response.status().is_success() {
+        let err_text = response.text().await.unwrap_or_default();
+        return Err(format!("LLM API 错误: {}", err_text));
+    }
+
+    let resp_data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let reply = resp_data["choices"][0]["message"]["content"]
+        .as_str().ok_or("LLM 返回格式错误")?.trim().to_string();
+
+    Ok(reply)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+async fn delete_scraped_user(secUid: String) -> Result<(), String> {
+    println!("[Backend] Deleting user data for sec_uid: {}", secUid);
+    let path = get_data_dir().join("scraper_data").join(&secUid);
+    if path.exists() {
+        fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+        println!("[Backend] User data deleted successfully");
+    } else {
+        println!("[Backend] User data path not found: {:?}", path);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn analyze_comments(comments: Vec<serde_json::Value>) -> Result<String, String> {
+    let config = get_config().await?;
+    if config.llm.api_key.is_empty() {
+        return Err("请先在设置中配置 LLM API Key".to_string());
+    }
+
+    if comments.is_empty() {
+        return Err("没有可分析的评论内容".to_string());
+    }
+
+    // 提取评论文本并格式化，限制长度防止超长
+    let mut text_to_analyze = String::new();
+    for (idx, c) in comments.iter().take(50).enumerate() {
+        let content = c["text"].as_str().unwrap_or("");
+        if !content.is_empty() {
+            text_to_analyze.push_str(&format!("{}. {}\n", idx + 1, content));
+        }
+    }
+
+    let system_prompt = if config.llm.analysis_prompt.is_empty() {
+        default_analysis_prompt()
+    } else {
+        config.llm.analysis_prompt.clone()
+    };
+
+    // 1. 从知识库搜索企业相关背景（基于前几条评论或关键词）
+    let query_for_kb = comments.get(0).and_then(|c| c["text"].as_str()).unwrap_or("产品评价").to_string();
+    let kb_context = match search_kb_internal(query_for_kb).await {
+        Ok(res_str) => {
+            let res: serde_json::Value = serde_json::from_str(&res_str).unwrap_or(serde_json::json!([]));
+            let mut context_text = String::from("\n相关背景/产品手册知识：\n");
+            if let Some(arr) = res.as_array() {
+                for item in arr.iter().take(5) {
+                    if let Some(text) = item["text"].as_str() {
+                        context_text.push_str(&format!("- {}\n", text));
+                    }
+                }
+            }
+            if context_text.len() < 20 { String::new() } else { context_text }
+        },
+        Err(_) => String::new(),
+    };
+
+    let client = reqwest::Client::new();
+    let url = if config.llm.base_url.ends_with("/chat/completions") {
+        config.llm.base_url.clone()
+    } else {
+        format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/'))
+    };
+
+    let payload = serde_json::json!({
+        "model": config.llm.model,
+        "messages": [
+            { "role": "system", "content": format!("{}\n\n以下是与当前内容相关的企业知识库信息作为参考：\n{}", system_prompt, kb_context) },
+            { "role": "user", "content": format!("请分析以下评论：\n\n{}", text_to_analyze) }
+        ],
+        "temperature": 0.7
+    });
+
+    let response = client.post(&url)
+        .header("Authorization", format!("Bearer {}", config.llm.api_key))
+        .json(&payload)
+        .send().await.map_err(|e| format!("请求失败: {}", e))?;
+
+    if !response.status().is_success() {
+        let err_text = response.text().await.unwrap_or_default();
+        return Err(format!("LLM API 错误: {}", err_text));
+    }
+
+    let resp_data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let report = resp_data["choices"][0]["message"]["content"]
+        .as_str().ok_or("LLM 返回格式错误")?.to_string();
+
+    Ok(report)
+}
+
+#[tauri::command]
+async fn send_chat_message(
+    session_id: String,
+    content: String,
+    state: State<'_, AppState>,
+    _app: tauri::AppHandle,
+) -> Result<ChatMessage, String> {
+    let config = get_config().await?;
+    if config.llm.api_key.is_empty() {
+        return Err("请先在设置中配置 LLM API Key".to_string());
+    }
+
+    let dir = get_chats_dir();
+    let path = dir.join(format!("{}.json", session_id));
+    let mut session: ChatSession = if path.exists() {
+        let s = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&s).map_err(|e| e.to_string())?
+    } else {
+        return Err("回话不存在".to_string());
+    };
+
+    // 添加用户消息
+    let user_msg = ChatMessage {
+        role: "user".to_string(),
+        content: content.clone(),
+        timestamp: now_secs(),
+    };
+    session.messages.push(user_msg);
+
+    // 定义工具
+    let tools = serde_json::json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "list_accounts",
+                "description": "获取当前已登录的账号列表",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "platform": { "type": "string", "description": "平台名称，如 douyin" }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "start_scrape",
+                "description": "启动评论或视频采集任务",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "account_name": { "type": "string", "description": "执行任务的账号名称" },
+                        "platform": { "type": "string", "description": "平台，目前仅支持 douyin" },
+                        "sec_uid": { "type": "string", "description": "目标用户的 sec_uid" },
+                        "scrape_type": { "type": "string", "enum": ["video", "comment", "reply", "all"], "description": "采集类型" },
+                        "limit": { "type": "integer", "description": "采集数量限制" }
+                    },
+                    "required": ["account_name", "platform", "sec_uid", "scrape_type"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_scraped_users",
+                "description": "列出已采集数据的用户信息",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "send_im_message",
+                "description": "向指定用户发送私信",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "account_name": { "type": "string", "description": "发送者的账号名称" },
+                        "to_user_id": { "type": "string", "description": "接收者的 UID" },
+                        "content": { "type": "string", "description": "私信内容" }
+                    },
+                    "required": ["account_name", "to_user_id", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_knowledge_base",
+                "description": "从本地知识库中搜索相关背景知识、产品说明、企业规则等。在回答用户专业问题或背景知识时应优先使用此工具。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "搜索关键词或问题短语" }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }
+    ]);
+
+    let client = reqwest::Client::new();
+    let url = if config.llm.base_url.ends_with("/chat/completions") {
+        config.llm.base_url.clone()
+    } else {
+        format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/'))
+    };
+
+    let mut current_messages: Vec<serde_json::Value> = session.messages.iter().map(|m| {
+        serde_json::json!({
+            "role": m.role,
+            "content": m.content
+        })
+    }).collect();
+
+    // 循环处理工具调用（支持多轮调用）
+    let mut max_iterations = 5;
+    let mut final_assistant_msg: Option<ChatMessage> = None;
+
+    while max_iterations > 0 {
+        max_iterations -= 1;
+
+        let payload = serde_json::json!({
+            "model": config.llm.model,
+            "messages": current_messages,
+            "tools": tools,
+            "tool_choice": "auto"
+        });
+
+        let response = client.post(&url)
+            .header("Authorization", format!("Bearer {}", config.llm.api_key))
+            .json(&payload)
+            .send().await.map_err(|e| format!("请求失败: {}", e))?;
+
+        if !response.status().is_success() {
+            let err_text = response.text().await.unwrap_or_default();
+            return Err(format!("LLM API 错误: {}", err_text));
+        }
+
+        let resp_data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+        let choice = &resp_data["choices"][0];
+        let message = &choice["message"];
+
+        if let Some(tool_calls) = message["tool_calls"].as_array() {
+            // 将助手的工具调用消息加入上下文
+            current_messages.push(message.clone());
+
+            for tool_call in tool_calls {
+                let call_id = tool_call["id"].as_str().unwrap_or_default();
+                let func_name = tool_call["function"]["name"].as_str().unwrap_or_default();
+                let func_args_str = tool_call["function"]["arguments"].as_str().unwrap_or("{}");
+                let func_args: serde_json::Value = serde_json::from_str(func_args_str).unwrap_or_default();
+
+                println!("[Tool Call] {} with args: {}", func_name, func_args_str);
+
+                // 执行工具逻辑
+                let tool_result = match func_name {
+                    "list_accounts" => {
+                        let platform = func_args["platform"].as_str().map(|s| s.to_string());
+                        let res = list_accounts(platform).await?;
+                        serde_json::to_string(&res).unwrap_or_default()
+                    },
+                    "start_scrape" => {
+                        let acc = func_args["account_name"].as_str().unwrap_or_default().to_string();
+                        let plat = func_args["platform"].as_str().unwrap_or("douyin").to_string();
+                        let uid = func_args["sec_uid"].as_str().unwrap_or_default().to_string();
+                        let stype = func_args["scrape_type"].as_str().unwrap_or("comment").to_string();
+                        let lim = func_args["limit"].as_i64().unwrap_or(100) as i32;
+                        
+                        let res = start_scrape(acc, plat, uid, stype, lim, true, state.clone()).await?;
+                        serde_json::to_string(&res).unwrap_or_default()
+                    },
+                    "list_scraped_users" => {
+                        let res = list_scraped_users().await?;
+                        serde_json::to_string(&res).unwrap_or_default()
+                    },
+                    "send_im_message" => {
+                        let acc = func_args["account_name"].as_str().unwrap_or_default().to_string();
+                        let to = func_args["to_user_id"].as_str().unwrap_or_default().to_string();
+                        let msg = func_args["content"].as_str().unwrap_or_default().to_string();
+                        
+                        let res = douyin_im_send(acc, msg, Some(to), None, None, None, None, None, None).await?;
+                        serde_json::to_string(&res).unwrap_or_default()
+                    },
+                    "search_knowledge_base" => {
+                        let query = func_args["query"].as_str().unwrap_or_default().to_string();
+                        search_kb_internal(query).await?
+                    },
+                    _ => format!("未知工具: {}", func_name)
+                };
+
+                // 将工具结果加入上下文
+                current_messages.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": func_name,
+                    "content": tool_result
+                }));
+            }
+            // 继续循环，让 LLM 根据工具结果生成下一条消息
+            continue;
+        } else {
+            // 没有工具调用，获取最终内容
+            let assistant_content = message["content"].as_str().unwrap_or_default().to_string();
+            let assistant_msg = ChatMessage {
+                role: "assistant".to_string(),
+                content: assistant_content,
+                timestamp: now_secs(),
+            };
+            final_assistant_msg = Some(assistant_msg);
+            break;
+        }
+    }
+
+    let assistant_msg = final_assistant_msg.ok_or("LLM 未返回有效回复")?;
+    session.messages.push(assistant_msg.clone());
+    session.updated_at = now_secs();
+
+    // 自动更新标题
+    if session.title == "新对话" && session.messages.len() >= 2 {
+        let first_user_content = session.messages.iter()
+            .find(|m| m.role == "user")
+            .map(|m| m.content.clone())
+            .unwrap_or_else(|| "新对话".to_string());
+        session.title = first_user_content.chars().take(20).collect::<String>();
+        if first_user_content.len() > 20 {
+            session.title.push_str("...");
+        }
+    }
+
+    // 保存回话
+    let content = serde_json::to_string_pretty(&session).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())?;
+
+    Ok(assistant_msg)
+}
+
+#[tauri::command]
+async fn get_chat_messages(session_id: String) -> Result<Vec<ChatMessage>, String> {
+    let path = get_chats_dir().join(format!("{}.json", session_id));
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let session: ChatSession = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(session.messages)
+}
+
+#[tauri::command]
+async fn get_default_config() -> Result<AppConfig, String> {
+    Ok(AppConfig {
+        llm: LLMConfig {
+            api_key: "".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            kb_api_key: "".to_string(),
+            kb_base_url: "https://api.openai.com/v1".to_string(),
+            embedding_model: "text-embedding-3-small".to_string(),
+            analysis_prompt: default_analysis_prompt(),
+            live_reply_prompt: default_live_reply_prompt(),
+            live_theme: "".to_string(),
+            live_content: "".to_string(),
+        }
+    })
+}
+
+#[tauri::command]
+async fn get_config() -> Result<AppConfig, String> {
+    let path = get_data_dir().join("config.json");
+    if path.exists() {
+        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).map_err(|e| e.to_string())
+    } else {
+        Ok(AppConfig::default())
+    }
+}
+
+#[tauri::command]
+async fn save_config(config: AppConfig) -> Result<(), String> {
+    let path = get_data_dir().join("config.json");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    fs::write(&path, content).map_err(|e| e.to_string())
 }
 
 // ============ Tauri 命令 ============
@@ -687,6 +1267,105 @@ async fn clear_current_task(state: State<'_, AppState>) -> Result<(), String> {
     let mut current = state.current_task_id.lock().unwrap();
     *current = None;
     Ok(())
+}
+
+#[tauri::command]
+async fn list_kb_files() -> Result<serde_json::Value, String> {
+    let script_path = PathBuf::from("..").join("scripts").join("kb_manager.py");
+    let output = python_cmd()
+        .arg(&script_path)
+        .arg("list")
+        .output().await.map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("脚本执行失败: {}", err));
+    }
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let result: serde_json::Value = serde_json::from_str(&result_str)
+        .map_err(|_| format!("结果解析失败: {}, stderr: {}", result_str, String::from_utf8_lossy(&output.stderr)))?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn add_to_kb(file_path: String) -> Result<serde_json::Value, String> {
+    let config = get_config().await?;
+    let config_str = serde_json::to_string(&config).unwrap();
+
+    let script_path = PathBuf::from("..").join("scripts").join("kb_manager.py");
+    let output = python_cmd()
+        .arg(&script_path)
+        .arg("add")
+        .arg("--file").arg(file_path)
+        .arg("--config").arg(config_str)
+        .output().await.map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("脚本执行失败: {}", err));
+    }
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let result: serde_json::Value = serde_json::from_str(&result_str)
+        .map_err(|_| format!("结果解析失败: {}, stderr: {}", result_str, String::from_utf8_lossy(&output.stderr)))?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn get_kb_file_details(filename: String) -> Result<serde_json::Value, String> {
+    let script_path = PathBuf::from("..").join("scripts").join("kb_manager.py");
+    let output = python_cmd()
+        .arg(&script_path)
+        .arg("details")
+        .arg("--filename").arg(filename)
+        .output().await.map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("脚本执行失败: {}", err));
+    }
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let result: serde_json::Value = serde_json::from_str(&result_str)
+        .map_err(|_| format!("结果解析失败: {}, stderr: {}", result_str, String::from_utf8_lossy(&output.stderr)))?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn delete_kb_file(filename: String) -> Result<serde_json::Value, String> {
+    let script_path = PathBuf::from("..").join("scripts").join("kb_manager.py");
+    let output = python_cmd()
+        .arg(&script_path)
+        .arg("delete")
+        .arg("--filename").arg(filename)
+        .output().await.map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("脚本执行失败: {}", err));
+    }
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let result: serde_json::Value = serde_json::from_str(&result_str)
+        .map_err(|_| format!("结果解析失败: {}, stderr: {}", result_str, String::from_utf8_lossy(&output.stderr)))?;
+    Ok(result)
+}
+
+async fn search_kb_internal(query: String) -> Result<String, String> {
+    let config = get_config().await?;
+    let config_str = serde_json::to_string(&config).unwrap();
+
+    let script_path = PathBuf::from("..").join("scripts").join("kb_manager.py");
+    let output = python_cmd()
+        .arg(&script_path)
+        .arg("search")
+        .arg("--query").arg(query)
+        .arg("--config").arg(config_str)
+        .output().await.map_err(|e| e.to_string())?;
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(result_str)
 }
 
 // ============ 结果查询命令 ============
@@ -1269,12 +1948,19 @@ async fn get_live_history(room_id: String) -> Result<Vec<serde_json::Value>, Str
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             login_flows: Mutex::new(std::collections::HashMap::new()),
             process_handles: Mutex::new(std::collections::HashMap::new()),
             current_task_id: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
+            get_config, save_config, get_default_config,
+            list_kb_files, add_to_kb, delete_kb_file, get_kb_file_details,
+            analyze_comments, generate_live_reply, delete_scraped_user,
+            list_chat_sessions, create_chat_session, delete_chat_session,
+            send_chat_message, get_chat_messages,
             list_accounts, verify_account, delete_account,
             sync_local_accounts, init_login_session, get_login_status,
             finish_login, cleanup_login_session,

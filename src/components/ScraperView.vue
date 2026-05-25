@@ -109,8 +109,9 @@ async function startScrape() {
     error.value = '请选择一个账号';
     return;
   }
-  if (!secUid.value.trim()) {
-    error.value = '请输入目标用户的 sec_uid';
+  const input = secUid.value.trim();
+  if (!input) {
+    error.value = '请输入目标用户的 sec_uid 或主页链接';
     return;
   }
 
@@ -119,10 +120,13 @@ async function startScrape() {
   progress.value = null;
 
   try {
+    // 解析 sec_uid
+    const resolvedSecUid = await invoke('resolve_user_sec_uid', { input }) as string;
+    
     const task: any = await invoke('start_scrape', {
       accountName: selectedAccount.value,
       platform: 'douyin',
-      secUid: secUid.value.trim(),
+      secUid: resolvedSecUid,
       scrapeType: scrapeType.value,
       limit: limit.value,
       skipExisting: skipExisting.value,
@@ -230,13 +234,17 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 目标 sec_uid -->
+        <!-- 目标用户 -->
         <div>
-          <label class="text-xs text-gray-400 block mb-1.5">目标用户 sec_uid</label>
+          <label class="text-xs text-gray-400 block mb-1.5">目标用户 ID 或主页</label>
           <input v-model="secUid" type="text" :disabled="isRunning"
             class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
-            placeholder="从抖音主页 URL 获取，如 MS4wLjAB..." />
+            placeholder="sec_uid 或主页链接..." />
+          <p class="text-[10px] text-gray-500 mt-1 px-0.5">
+            支持 sec_uid (MS4wLj...) 或主页链接 (douyin.com/user/...)
+          </p>
         </div>
+
 
         <!-- 采集类型 -->
         <div>

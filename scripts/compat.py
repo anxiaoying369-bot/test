@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 from pathlib import Path
 
 
@@ -35,6 +36,27 @@ def get_data_dir() -> Path:
         xdg = os.environ.get("XDG_DATA_HOME")
         base = xdg if xdg else str(Path.home() / ".local" / "share")
         return Path(base) / "AutoCastAI"
+
+
+def get_config() -> dict:
+    """
+    读取 AutoCastAI 配置文 (config.json)。
+    如果不存在则返回包含默认值的字典。
+    """
+    config_path = get_data_dir() / "config.json"
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "llm": {
+            "api_key": "",
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-4o"
+        }
+    }
 
 
 # ─── Chrome 路径 ─────────────────────────────────────────────────────────────

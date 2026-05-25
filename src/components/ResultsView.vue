@@ -5,8 +5,9 @@ import {
   Users, Video, MessageSquare, ChevronRight, 
   Calendar, Heart, MessageCircle, ArrowLeft,
   RefreshCw, ExternalLink, AlertCircle,
-  Wand2, Sparkles, X, BarChart3, PieChart, Info
+  Wand2, Sparkles, X, BarChart3, PieChart, Info, Trash2
 } from 'lucide-vue-next';
+import { marked } from 'marked';
 
 interface ScrapedUser {
   sec_uid: string;
@@ -69,12 +70,17 @@ const selectedAccount = ref('');
 const isLoading = ref(false);
 const errorMsg = ref('');
 const viewMode = ref<'users' | 'videos' | 'comments'>('users');
+const confirmingDeleteId = ref<string | null>(null);
 
 // AI 分析相关状态
 const isAnalysisModalOpen = ref(false);
 const isAnalyzing = ref(false);
-const analysisResult = ref<AIAnalysisResult | null>(null);
+const analysisReport = ref('');
 const analyzingVideo = ref<ScrapedVideo | null>(null);
+
+const renderedReport = computed(() => {
+  return marked(analysisReport.value);
+});
 
 const douyinAccounts = computed(() => accounts.value.filter(a => a.platform === 'douyin'));
 
@@ -100,6 +106,31 @@ async function loadUsers() {
     errorMsg.value = String(e);
   } finally {
     isLoading.value = false;
+  }
+}
+
+async function deleteUser(sec_uid: string, event: Event) {
+  event.stopPropagation();
+  
+  if (confirmingDeleteId.value !== sec_uid) {
+    confirmingDeleteId.value = sec_uid;
+    // 3秒后自动重置状态
+    setTimeout(() => {
+      if (confirmingDeleteId.value === sec_uid) {
+        confirmingDeleteId.value = null;
+      }
+    }, 3000);
+    return;
+  }
+  
+  try {
+    confirmingDeleteId.value = null;
+    console.log('[Frontend] Invoking delete_scraped_user for:', sec_uid);
+    await invoke('delete_scraped_user', { secUid: sec_uid });
+    await loadUsers();
+  } catch (e: any) {
+    console.error('[Frontend] Failed to delete user:', e);
+    errorMsg.value = '删除失败: ' + String(e);
   }
 }
 
@@ -162,30 +193,40 @@ async function openVideo(awemeId: string) {
 }
 
 async function analyzeVideoWithAI(video: ScrapedVideo) {
+  if (!selectedUser.value) return;
+  
   analyzingVideo.value = video;
   isAnalysisModalOpen.value = true;
   isAnalyzing.value = true;
-  analysisResult.value = null;
+  analysisReport.value = '';
+  errorMsg.value = '';
 
-  // 模拟 AI 分析过程
-  setTimeout(() => {
-    analysisResult.value = {
-      summary: `这部作品「${video.desc}」在评论区引发了热烈讨论。视频内容主要围绕${video.desc.includes('#') ? video.desc.split('#')[1] : '核心主题'}展开，观众对其展现出的视觉风格和叙事节奏表示高度认可。`,
-      sentiment: {
-        positive: 65,
-        neutral: 25,
-        negative: 10
-      },
-      key_themes: ["内容创意独特", "背景音乐加分", "情感共鸣强", "拍摄手法专业"],
-      top_comments_summary: "大部分评论在夸赞博主的创意和后期剪辑，少数人提出了关于拍摄器材的疑问，还有一部分观众在评论区自发进行二次创作。总体讨论氛围非常和谐。",
-      suggestions: [
-        "可以尝试在下一期中对观众提出的器材问题进行简短回应",
-        "建议保持目前的剪辑风格，这是吸引核心粉丝的关键",
-        "可以利用评论中的热门梗进行下一次互动"
-      ]
-    };
+  try {
+    // 1. 先获取该视频的评论
+    const videoComments = await invoke('get_scraped_comments', { 
+      secUid: selectedUser.value.sec_uid,
+      awemeId: String(video.aweme_id),
+      limit: 100, // 抓取前 100 条进行分析
+      offset: 0 
+    }) as ScrapedComment[];
+
+    if (videoComments.length === 0) {
+      throw new Error('该视频暂无评论，无法分析');
+    }
+
+    // 2. 调用后端 AI 分析接口
+    const report = await invoke('analyze_comments', { 
+      comments: videoComments.map(c => ({ text: c.text })) 
+    }) as string;
+    
+    analysisReport.value = report;
+  } catch (e: any) {
+    console.error('AI 分析失败:', e);
+    errorMsg.value = 'AI 分析失败: ' + String(e);
+    isAnalysisModalOpen.value = false;
+  } finally {
     isAnalyzing.value = false;
-  }, 2000);
+  }
 }
 
 function goBack() {
@@ -294,7 +335,24 @@ onMounted(() => {
               <div class="text-[10px] text-gray-500 truncate">{{ user.sec_uid }}</div>
               <div class="text-[10px] text-gray-400 font-mono mt-0.5">最后采集: {{ formatDate(user.last_scrape) }}</div>
             </div>
-            <ChevronRight class="w-5 h-5 text-gray-700 group-hover:text-blue-500 transition-colors" />
+            <div class="flex flex-col items-end justify-between self-stretch">
+              <div class="flex items-center">
+                <button 
+                  @click.stop="deleteUser(user.sec_uid, $event)"
+                  :class="[
+                    'px-2 py-1.5 rounded-lg transition-all flex items-center gap-1.5 text-xs font-bold whitespace-nowrap',
+                    confirmingDeleteId === user.sec_uid 
+                      ? 'bg-red-600 text-white opacity-100' 
+                      : 'text-gray-500 hover:text-red-500 hover:bg-red-500/10 opacity-0 group-hover:opacity-100'
+                  ]"
+                  title="删除记录"
+                >
+                  <Trash2 class="w-4 h-4" />
+                  <span v-if="confirmingDeleteId === user.sec_uid">确定删除?</span>
+                </button>
+              </div>
+              <ChevronRight class="w-5 h-5 text-gray-700 group-hover:text-blue-500 transition-colors" />
+            </div>
           </div>
           
           <div class="grid grid-cols-2 gap-2">
@@ -404,7 +462,7 @@ onMounted(() => {
         </header>
 
         <!-- 弹窗内容 -->
-        <div class="flex-1 overflow-y-auto p-6 custom-scrollbar">
+        <div class="flex-1 overflow-y-auto p-6 custom-scrollbar bg-gray-950/30">
           <!-- 正在分析状态 -->
           <div v-if="isAnalyzing" class="flex flex-col items-center justify-center py-20">
             <div class="relative w-16 h-16 mb-6">
@@ -412,78 +470,15 @@ onMounted(() => {
               <div class="absolute inset-0 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
               <Wand2 class="absolute inset-0 m-auto w-6 h-6 text-blue-400 animate-pulse" />
             </div>
-            <p class="text-gray-400 animate-pulse">正在调动 LLM 分析作品标题及 {{ analyzingVideo?.comment_count }} 条评论内容...</p>
-            <div class="mt-4 flex gap-1">
-              <div v-for="i in 3" :key="i" class="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" :style="{ animationDelay: `${(i-1)*0.2}s` }"></div>
-            </div>
+            <p class="text-gray-400 animate-pulse text-sm">正在调动 LLM 分析作品及 {{ analyzingVideo?.comment_count }} 条评论内容...</p>
           </div>
 
           <!-- 分析结果展示 -->
-          <div v-else-if="analysisResult" class="space-y-8">
-            <!-- 核心摘要 -->
-            <section>
-              <div class="flex items-center gap-2 text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">
-                <Info class="w-3.5 h-3.5" />
-                舆情摘要
-              </div>
-              <div class="bg-blue-500/5 border border-blue-500/20 p-4 rounded-xl text-gray-200 leading-relaxed italic">
-                “ {{ analysisResult.summary }} ”
-              </div>
-            </section>
-
-            <!-- 情感分布 -->
-            <section>
-              <div class="flex items-center gap-2 text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">
-                <PieChart class="w-3.5 h-3.5" />
-                情感倾向分布
-              </div>
-              <div class="flex gap-2 h-3 rounded-full overflow-hidden bg-gray-800">
-                <div :style="{ width: `${analysisResult.sentiment.positive}%` }" class="bg-green-500" title="正面"></div>
-                <div :style="{ width: `${analysisResult.sentiment.neutral}%` }" class="bg-yellow-500" title="中立"></div>
-                <div :style="{ width: `${analysisResult.sentiment.negative}%` }" class="bg-red-500" title="负面"></div>
-              </div>
-              <div class="flex justify-between mt-3 text-xs text-gray-500">
-                <span class="flex items-center gap-1.5"><div class="w-2 h-2 bg-green-500 rounded-full"></div> 正面 {{ analysisResult.sentiment.positive }}%</span>
-                <span class="flex items-center gap-1.5"><div class="w-2 h-2 bg-yellow-500 rounded-full"></div> 中立 {{ analysisResult.sentiment.neutral }}%</span>
-                <span class="flex items-center gap-1.5"><div class="w-2 h-2 bg-red-500 rounded-full"></div> 负面 {{ analysisResult.sentiment.negative }}%</span>
-              </div>
-            </section>
-
-            <!-- 关键词云/主题 -->
-            <section>
-              <div class="flex items-center gap-2 text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">
-                <BarChart3 class="w-3.5 h-3.5" />
-                热议主题
-              </div>
-              <div class="flex flex-wrap gap-2">
-                <span v-for="theme in analysisResult.key_themes" :key="theme" 
-                  class="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-full text-sm text-gray-300 hover:border-blue-500/50 transition-colors">
-                  # {{ theme }}
-                </span>
-              </div>
-            </section>
-
-            <!-- 深度洞察 -->
-            <section>
-              <div class="flex items-center gap-2 text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">
-                <MessageSquare class="w-3.5 h-3.5" />
-                评论核心内容总结
-              </div>
-              <p class="text-sm text-gray-400 leading-relaxed">
-                {{ analysisResult.top_comments_summary }}
-              </p>
-            </section>
-
-            <!-- 运营建议 -->
-            <section class="bg-gray-800/50 border border-gray-700 p-4 rounded-xl">
-              <div class="text-xs font-bold text-yellow-500 uppercase tracking-widest mb-3">💡 AI 运营建议</div>
-              <ul class="space-y-2">
-                <li v-for="(suggestion, i) in analysisResult.suggestions" :key="i" class="text-sm text-gray-300 flex gap-2">
-                  <span class="text-yellow-600 font-bold">{{ i + 1 }}.</span>
-                  {{ suggestion }}
-                </li>
-              </ul>
-            </section>
+          <div v-else-if="analysisReport" class="prose prose-invert max-w-none">
+            <div 
+              class="markdown-content text-gray-300 leading-relaxed text-sm font-sans bg-gray-900/50 p-6 rounded-2xl border border-gray-800 shadow-inner"
+              v-html="renderedReport"
+            ></div>
           </div>
         </div>
 
@@ -524,4 +519,36 @@ onMounted(() => {
 @keyframes zoom-in { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .animate-in { animation: fade-in 0.2s ease-out; }
 .zoom-in { animation: zoom-in 0.2s ease-out; }
+
+/* Markdown 样式覆盖 */
+:deep(.markdown-content) h1,
+:deep(.markdown-content) h2,
+:deep(.markdown-content) h3 {
+  color: #f3f4f6;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+}
+:deep(.markdown-content) h1 { font-size: 1.25rem; border-bottom: 1px solid #374151; padding-bottom: 0.5rem; }
+:deep(.markdown-content) h2 { font-size: 1.1rem; }
+:deep(.markdown-content) h3 { font-size: 1rem; }
+:deep(.markdown-content) p { margin-bottom: 1rem; }
+:deep(.markdown-content) ul, 
+:deep(.markdown-content) ol { margin-bottom: 1rem; padding-left: 1.25rem; }
+:deep(.markdown-content) li { margin-bottom: 0.25rem; }
+:deep(.markdown-content) strong { color: #60a5fa; font-weight: 600; }
+:deep(.markdown-content) blockquote {
+  border-left: 4px solid #3b82f6;
+  padding-left: 1rem;
+  font-style: italic;
+  color: #9ca3af;
+  margin: 1rem 0;
+}
+:deep(.markdown-content) code {
+  background-color: #1f2937;
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.25rem;
+  font-family: monospace;
+  font-size: 0.875rem;
+}
 </style>
