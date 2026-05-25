@@ -132,3 +132,56 @@ class DouyinIMClient:
             "create_response": create_resp,
             "send_response": send_resp,
         }
+
+    def get_user_info(self, user_id: int | str) -> dict[str, Any]:
+        """
+        根据数字 uid 获取用户信息（昵称、头像、sec_uid 等）。
+
+        使用 /aweme/v1/web/user/profile/other/?user_id=<uid> 接口。
+        返回 dict：uid / sec_uid / nickname / unique_id / short_id /
+                   avatar_url (300x300 优先) / follower_count / following_count
+        """
+        url = f"{self.douyin_url}/aweme/v1/web/user/profile/other/"
+        headers = HeaderBuilder.build(HeaderType.GET)
+        refer = "https://www.douyin.com/message/"
+        headers.set_header("referer", refer)
+        params = Params()
+        params.with_platform()
+        params.with_web_id(self.auth, refer)
+        params.with_ms_token()
+        params.add_param("verifyFp", self.auth.cookie.get("s_v_web_id", ""))
+        params.add_param("fp", self.auth.cookie.get("s_v_web_id", ""))
+        params.add_param("user_id", str(user_id))
+        params.with_a_bogus()
+        resp = requests.get(
+            url, params=params.get(), verify=False,
+            headers=headers.get(), cookies=self.auth.cookie, timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status_code") != 0:
+            raise ValueError(f"获取用户信息失败: {data.get('status_msg')} (code={data.get('status_code')})")
+        user = data.get("user") or {}
+
+        def _first_url(field: str) -> str:
+            urls = user.get(field, {}).get("url_list") or []
+            return urls[0] if urls else ""
+
+        # 头像按清晰度优先级取第一个可用 URL
+        avatar_url = (
+            _first_url("avatar_300x300")
+            or _first_url("avatar_168x168")
+            or _first_url("avatar_medium")
+            or _first_url("avatar_thumb")
+        )
+        return {
+            "uid": str(user.get("uid", user_id)),
+            "sec_uid": user.get("sec_uid", ""),
+            "nickname": user.get("nickname", ""),
+            "unique_id": user.get("unique_id", ""),
+            "short_id": user.get("short_id", ""),
+            "avatar_url": avatar_url,
+            "follower_count": user.get("follower_count", 0),
+            "following_count": user.get("following_count", 0),
+            "signature": user.get("signature", ""),
+        }

@@ -362,6 +362,19 @@ def cmd_my_uid(args: argparse.Namespace) -> dict[str, Any]:
     return ok(uid=client.get_my_uid())
 
 
+def cmd_user_info(args: argparse.Namespace) -> dict[str, Any]:
+    """根据数字 uid 获取用户信息（昵称、头像、sec_uid 等）。"""
+    if not args.user_id:
+        return fail("缺少 --user-id 参数")
+    auth = load_auth(args)
+    client = DouyinIMClient(auth, timeout=args.timeout)
+    try:
+        info = client.get_user_info(args.user_id)
+        return ok(**info)
+    except Exception as e:
+        return fail(f"获取用户信息失败: {e}")
+
+
 def cmd_contacts(args: argparse.Namespace) -> dict[str, Any]:
     """仅通过 HTTP 获取当前账号 UID，不再使用 CDP 读取联系人列表。"""
     auth = load_auth(args)
@@ -561,7 +574,7 @@ def cmd_monitor(args: argparse.Namespace) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AutoCast AI 抖音私信桥接脚本")
-    parser.add_argument("action", choices=["check", "my_uid", "contacts", "messages", "create_conversation", "send", "monitor", "recv", "refresh_credentials"])
+    parser.add_argument("action", choices=["check", "my_uid", "contacts", "messages", "create_conversation", "send", "monitor", "recv", "refresh_credentials", "user_info"])
     parser.add_argument("--account-name", default="")
     parser.add_argument("--cookie", default="")
     parser.add_argument("--cookie-path", default="")
@@ -574,6 +587,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wait", type=float, default=5.0)
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--to-user-id", default="")
+    parser.add_argument("--user-id", default="")
     parser.add_argument("--peer-uid", default="")
     parser.add_argument("--conversation-id", default="")
     parser.add_argument("--conversation-short-id", type=int)
@@ -608,6 +622,8 @@ def main() -> int:
                 result = cmd_send(args)
             elif args.action == "refresh_credentials":
                 result = cmd_refresh_credentials(args)
+            elif args.action == "user_info":
+                result = cmd_user_info(args)
             elif args.action == "recv":
                 result = cmd_monitor(args)
             else:

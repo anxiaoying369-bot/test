@@ -482,6 +482,7 @@ async fn verify_account(platform: String, name: String) -> Result<VerifyResult, 
 
 #[tauri::command]
 async fn delete_account(platform: String, name: String) -> Result<(), String> {
+    println!("[账号管理] 尝试删除账号: {}/{}", platform, name);
     let mut store = load_accounts();
     if let Some(pos) = store.accounts.iter().position(|a| a.platform == platform && a.name == name) {
         store.accounts.remove(pos);
@@ -507,6 +508,36 @@ async fn cleanup_login_session(session_id: String, state: State<'_, AppState>) -
 
 fn get_scraper_dir() -> PathBuf {
     get_data_dir().join("scraper")
+}
+
+#[tauri::command]
+async fn resolve_user_sec_uid(input: String) -> Result<String, String> {
+    let input = input.trim();
+
+    // 1. 如果包含 www.douyin.com/user/，提取之后的部分
+    if input.contains("www.douyin.com/user/") {
+        let parts: Vec<&str> = input.split("www.douyin.com/user/").collect();
+        if parts.len() > 1 {
+            let id_part = parts[1].split('?').next().unwrap_or("").split('/').next().unwrap_or("");
+            if !id_part.is_empty() {
+                return Ok(id_part.to_string());
+            }
+        }
+    }
+
+    // 2. 如果是短链接，这里暂时不支持跳转解析（用户未要求），仅按规则提取或直接返回
+    // 抖音 sec_uid 通常以 MS4wLjABAAAA 开头，长度较长
+    if input.len() > 30 && input.starts_with("MS4wLjABAAAA") {
+        return Ok(input.to_string());
+    }
+
+    // 3. 其他情况，如果看起来像链接但不是支持的格式
+    if input.starts_with("http") {
+        return Err("目前仅支持 sec_uid 或以 www.douyin.com/user/ 开头的主页链接".to_string());
+    }
+
+    // 默认返回原样，假设用户输入的是正确的 sec_uid
+    Ok(input.to_string())
 }
 
 /// 启动采集任务
@@ -824,6 +855,21 @@ async fn douyin_im_my_uid(accountName: String) -> Result<serde_json::Value, Stri
 
 #[tauri::command]
 #[allow(non_snake_case)]
+async fn douyin_im_user_info(accountName: String, userId: String) -> Result<serde_json::Value, String> {
+    let cookie_path = get_douyin_cookie_path(&accountName)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        run_douyin_im_bridge(vec![
+            "user_info".to_string(),
+            "--cookie-path".to_string(),
+            cookie_path.to_string_lossy().to_string(),
+            "--user-id".to_string(),
+            userId,
+        ])
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
 async fn douyin_im_contacts(accountName: String, uid: Option<String>, limit: Option<i64>) -> Result<serde_json::Value, String> {
     let cookie_path = get_douyin_cookie_path(&accountName)?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -1078,42 +1124,29 @@ async fn douyin_im_stop_monitor(accountName: String, state: State<'_, AppState>)
 #[tauri::command]
 async fn resolve_live_url(url: String) -> Result<String, String> {
     let url = url.trim();
-    // 1. 如果 url 已经是纯数字 ID，直接返回
+
+    // 1. 如果是纯数字 ID，直接返回
     if !url.is_empty() && url.chars().all(|c| c.is_ascii_digit()) {
         return Ok(url.to_string());
     }
 
-    // 2. 如果包含 v.douyin.com 或 live.douyin.com
-    let target_url = if url.contains("douyin.com") {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .build()
-            .map_err(|e| e.to_string())?;
-        
-        let res = client.get(url)
-            .send()
-            .await
-            .map_err(|e| format!("请求失败: {}", e))?;
-        
-        res.url().to_string()
-    } else {
-        return Err("请输入有效的直播间 ID 或抖音链接".to_string());
-    };
-
-    // 3. 从最终 URL 中提取 ID
-    // 匹配 live.douyin.com/xxxx
-    if target_url.contains("live.douyin.com/") {
-        let parts: Vec<&str> = target_url.split("live.douyin.com/").collect();
+    // 2. 如果包含 live.douyin.com/，尝试从 URL 中提取 ID
+    if url.contains("live.douyin.com/") {
+        let parts: Vec<&str> = url.split("live.douyin.com/").collect();
         if parts.len() > 1 {
             let id_part = parts[1].split('?').next().unwrap_or("").split('/').next().unwrap_or("");
-            if !id_part.is_empty() && id_part.chars().all(|c| c.is_ascii_digit()) {
+            if !id_part.is_empty() {
                 return Ok(id_part.to_string());
             }
         }
     }
 
-    Err(format!("无法从链接解析到直播间 ID，最终跳转地址: {}", target_url))
+    // 3. 如果是其他形式的链接或非法输入
+    if url.starts_with("http") {
+        return Err("目前仅支持直播间 ID 或以 live.douyin.com/ 开头的直播间链接".to_string());
+    }
+
+    Err("请输入有效的直播间 ID 或直播间链接".to_string())
 }
 
 #[tauri::command]
@@ -1248,8 +1281,8 @@ pub fn run() {
             start_scrape, get_scrape_progress, cancel_scrape,
             get_current_task, clear_current_task,
             list_scraped_users, get_scraped_videos, get_scraped_comments,
-            open_video_in_browser,
-            douyin_im_check, douyin_im_my_uid,
+            open_video_in_browser, resolve_user_sec_uid,
+            douyin_im_check, douyin_im_my_uid, douyin_im_user_info,
             douyin_im_contacts, douyin_im_messages,
             douyin_im_create_conversation, douyin_im_send,
             douyin_im_refresh_credentials,
