@@ -78,6 +78,8 @@ pub struct LLMConfig {
     pub analysis_prompt: String,
     #[serde(default = "default_live_reply_prompt")]
     pub live_reply_prompt: String,
+    #[serde(default = "default_im_reply_prompt")]
+    pub im_reply_prompt: String,
     #[serde(default)]
     pub live_theme: String,
     #[serde(default)]
@@ -86,6 +88,10 @@ pub struct LLMConfig {
 
 fn default_embedding_model() -> String {
     "text-embedding-3-small".to_string()
+}
+
+fn default_im_reply_prompt() -> String {
+    "你是一位专业的客户经理。请根据用户的私信内容和提供的企业背景知识，给出一个专业、礼貌且简洁的回复建议。回复应直接面向用户，语气真诚。".to_string()
 }
 
 fn default_live_reply_prompt() -> String {
@@ -106,6 +112,12 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub timestamp: u64,
+    /// 本条消息中 AI 调用的创作工具名称（如 "generate_content"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_used: Option<String>,
+    /// 工具返回的结构化数据，用于前端富文本渲染
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_data: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -413,6 +425,102 @@ async fn delete_chat_session(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn generate_im_reply(messages: Vec<serde_json::Value>) -> Result<String, String> {
+    let config = get_config().await?;
+    if config.llm.api_key.is_empty() {
+        return Err("请先在设置中配置 LLM API Key".to_string());
+    }
+
+    if messages.is_empty() {
+        return Err("对话记录为空".to_string());
+    }
+
+    let system_prompt = if config.llm.im_reply_prompt.is_empty() {
+        default_im_reply_prompt()
+    } else {
+        config.llm.im_reply_prompt.clone()
+    };
+
+    // 获取最后一条用户的消息内容用于知识库搜索
+    let last_user_content = messages.iter().rev()
+        .find(|m| m["role"] == "user")
+        .and_then(|m| m["content"].as_str())
+        .unwrap_or("");
+
+    // 1. 从知识库检索相关背景
+    let kb_context = if !last_user_content.is_empty() {
+        match search_kb_internal(last_user_content.to_string()).await {
+            Ok(res_str) => {
+                let res: serde_json::Value = serde_json::from_str(&res_str).unwrap_or(serde_json::json!([]));
+                let mut context_text = String::from("\n相关背景知识参考：\n");
+                if let Some(arr) = res.as_array() {
+                    for item in arr.iter().take(5) {
+                        if let Some(text) = item["text"].as_str() {
+                            context_text.push_str(&format!("- {}\n", text));
+                        }
+                    }
+                }
+                if context_text.len() < 20 { String::new() } else { context_text }
+            },
+            Err(_) => String::new(),
+        }
+    } else {
+        String::new()
+    };
+
+    let client = reqwest::Client::new();
+    let url = if config.llm.base_url.ends_with("/chat/completions") {
+        config.llm.base_url.clone()
+    } else {
+        format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/'))
+    };
+
+    // 构建完整消息列表：System (Prompt + KB) + History
+    let mut api_messages = vec![
+        serde_json::json!({ 
+            "role": "system", 
+            "content": format!("{}\n\n{}", system_prompt, kb_context) 
+        })
+    ];
+    
+    // 添加历史记录
+    for m in messages {
+        api_messages.push(serde_json::json!({
+            "role": m["role"],
+            "content": m["content"]
+        }));
+    }
+
+    // 显式要求生成回复
+    api_messages.push(serde_json::json!({
+        "role": "user",
+        "content": "请根据以上对话历史和参考知识，为我（assistant）生成一段专业、得体的回复。只需要输出回复内容本身。"
+    }));
+
+    let payload = serde_json::json!({
+        "model": config.llm.model,
+        "messages": api_messages,
+        "temperature": 0.7
+    });
+
+    let response = client.post(&url)
+        .header("Authorization", format!("Bearer {}", config.llm.api_key))
+        .json(&payload)
+        .send().await.map_err(|e| format!("请求失败: {}", e))?;
+
+    if !response.status().is_success() {
+        let err_text = response.text().await.unwrap_or_default();
+        return Err(format!("LLM API 错误: {}", err_text));
+    }
+
+    let resp_data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let reply = resp_data["choices"][0]["message"]["content"]
+        .as_str().ok_or("LLM 返回格式错误")?.trim().to_string();
+
+    Ok(reply)
+}
+
+#[tauri::command]
 async fn generate_live_reply(user_name: String, content: String) -> Result<String, String> {
     let config = get_config().await?;
     if config.llm.api_key.is_empty() {
@@ -602,6 +710,8 @@ async fn send_chat_message(
         role: "user".to_string(),
         content: content.clone(),
         timestamp: now_secs(),
+        tool_used: None,
+        tool_data: None,
     };
     session.messages.push(user_msg);
 
@@ -675,6 +785,37 @@ async fn send_chat_message(
                     "required": ["query"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "generate_content",
+                "description": "调用 AI 创作中心为指定平台（抖音/微信/知乎）生成 GEO 优化的内容文章，或对已有内容进行 GEO 深度改造重写。完成后同步输出舆情及 GEO 评分报告。当用户要求写文案、创作文章、内容改写时必须调用此工具。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "topic": { "type": "string", "description": "创作主题（全新创作时填写）" },
+                        "material": { "type": "string", "description": "参考素材或待改造的原始内容（改造模式时填写）" },
+                        "mode": { "type": "string", "enum": ["new", "rewrite"], "description": "new=全新创作，rewrite=改造已有内容" },
+                        "platform": { "type": "string", "enum": ["douyin", "wechat", "zhihu"], "description": "目标发布平台" }
+                    },
+                    "required": ["mode", "platform"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "audit_content",
+                "description": "对已有内容进行 GEO 评分和舆情分析，返回改进建议报告。当用户要求审核、分析、评估、优化已有内容时调用。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": { "type": "string", "description": "待审核的内容文本" }
+                    },
+                    "required": ["content"]
+                }
+            }
         }
     ]);
 
@@ -695,6 +836,9 @@ async fn send_chat_message(
     // 循环处理工具调用（支持多轮调用）
     let mut max_iterations = 5;
     let mut final_assistant_msg: Option<ChatMessage> = None;
+    // 追踪创作工具调用结果，用于前端富文本渲染
+    let mut studio_tool_used: Option<String> = None;
+    let mut studio_tool_data: Option<serde_json::Value> = None;
 
     while max_iterations > 0 {
         max_iterations -= 1;
@@ -746,7 +890,7 @@ async fn send_chat_message(
                         let stype = func_args["scrape_type"].as_str().unwrap_or("comment").to_string();
                         let lim = func_args["limit"].as_i64().unwrap_or(100) as i32;
                         
-                        let res = start_scrape(acc, plat, uid, stype, lim, true, state.clone()).await?;
+                        let res = start_scrape(acc, plat, uid, stype, lim, true, true, true, state.clone()).await?;
                         serde_json::to_string(&res).unwrap_or_default()
                     },
                     "list_scraped_users" => {
@@ -764,6 +908,37 @@ async fn send_chat_message(
                     "search_knowledge_base" => {
                         let query = func_args["query"].as_str().unwrap_or_default().to_string();
                         search_kb_internal(query).await?
+                    },
+                    "generate_content" => {
+                        let topic    = func_args["topic"].as_str().unwrap_or_default().to_string();
+                        let material = func_args["material"].as_str().unwrap_or_default().to_string();
+                        let mode     = func_args["mode"].as_str().unwrap_or("new").to_string();
+                        let platform = func_args["platform"].as_str().unwrap_or("douyin").to_string();
+                        match studio_generate_internal(topic.clone(), material, mode, platform.clone()).await {
+                            Ok(val) => {
+                                let char_count = val["content"].as_str().unwrap_or("").chars().count();
+                                studio_tool_used = Some("generate_content".to_string());
+                                studio_tool_data = Some(serde_json::json!({
+                                    "content":  val["content"],
+                                    "audit":    val["audit"],
+                                    "platform": platform,
+                                    "topic":    topic,
+                                }));
+                                format!("✅ 内容已生成完毕。平台：{}，主题：「{}」，共约 {} 字。内容和 GEO 评估报告已在对话气泡中以卡片形式展示，用户可直接复制使用。", platform, topic, char_count)
+                            }
+                            Err(e) => format!("❌ 内容生成失败: {}", e),
+                        }
+                    },
+                    "audit_content" => {
+                        let content = func_args["content"].as_str().unwrap_or_default().to_string();
+                        match audit_content_internal(content).await {
+                            Ok(audit) => {
+                                studio_tool_used = Some("audit_content".to_string());
+                                studio_tool_data = Some(serde_json::json!({ "audit": audit }));
+                                "✅ 内容审计完成，GEO 评估报告已在对话气泡中展示。".to_string()
+                            }
+                            Err(e) => format!("❌ 审计失败: {}", e),
+                        }
                     },
                     _ => format!("未知工具: {}", func_name)
                 };
@@ -785,6 +960,8 @@ async fn send_chat_message(
                 role: "assistant".to_string(),
                 content: assistant_content,
                 timestamp: now_secs(),
+                tool_used: studio_tool_used.take(),
+                tool_data: studio_tool_data.take(),
             };
             final_assistant_msg = Some(assistant_msg);
             break;
@@ -837,6 +1014,7 @@ async fn get_default_config() -> Result<AppConfig, String> {
             embedding_model: "text-embedding-3-small".to_string(),
             analysis_prompt: default_analysis_prompt(),
             live_reply_prompt: default_live_reply_prompt(),
+            im_reply_prompt: default_im_reply_prompt(),
             live_theme: "".to_string(),
             live_content: "".to_string(),
         }
@@ -1126,9 +1304,11 @@ async fn start_scrape(
     account_name: String,
     platform: String,
     sec_uid: String,
-    scrape_type: String,   // video | comment | reply | all
+    scrape_type: String,   // video | comment | reply | all | follower | like
     limit: i32,
     skip_existing: bool,
+    incremental: bool,
+    index_kb: bool,
     state: State<'_, AppState>,
 ) -> Result<ScraperTask, String> {
     // 检查是否有任务正在运行
@@ -1168,9 +1348,21 @@ async fn start_scrape(
         .arg("--sec-uid").arg(&sec_uid)
         .arg("--type").arg(&scrape_type)
         .arg("--limit").arg(limit.to_string());
+
     if skip_existing {
         cmd.arg("--skip-existing");
     }
+
+    if incremental {
+        cmd.arg("--incremental");
+    }
+
+    if index_kb {
+        let config = get_config().await?;
+        let config_str = serde_json::to_string(&config).unwrap();
+        cmd.arg("--config").arg(config_str);
+    }
+
     let child = cmd
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(stderr_file))
@@ -1267,6 +1459,161 @@ async fn clear_current_task(state: State<'_, AppState>) -> Result<(), String> {
     let mut current = state.current_task_id.lock().unwrap();
     *current = None;
     Ok(())
+}
+
+/// 内部共享函数：内容生成 + GEO 审计（供 Tauri 命令和聊天工具调用）
+async fn studio_generate_internal(
+    topic: String,
+    material: String,
+    mode: String,
+    platform: String,
+) -> Result<serde_json::Value, String> {
+    let config = get_config().await?;
+    if config.llm.api_key.is_empty() {
+        return Err("请先在设置中配置 LLM API Key".to_string());
+    }
+
+    let query = if topic.is_empty() {
+        material.chars().take(50).collect::<String>()
+    } else {
+        topic.clone()
+    };
+    let kb_context = match search_kb_internal(query).await {
+        Ok(res_str) => {
+            let res: serde_json::Value = serde_json::from_str(&res_str).unwrap_or(serde_json::json!([]));
+            let mut ctx = String::from("\n参考的企业知识库背景：\n");
+            if let Some(arr) = res.as_array() {
+                for item in arr.iter().take(5) {
+                    if let Some(text) = item["text"].as_str() {
+                        ctx.push_str(&format!("- {}\n", text));
+                    }
+                }
+            }
+            if ctx.len() < 20 { String::new() } else { ctx }
+        }
+        Err(_) => String::new(),
+    };
+
+    let platform_instructions = match platform.as_str() {
+        "douyin" => "【抖音/短视频平台优化】：要求开头前 3 秒有极其吸引人的\"情绪钩子\"，中间事实密集，语言口语化，结尾有强引导。采用\"答案前置\"结构，直接在开头揭示核心价值。",
+        "wechat" => "【微信公众号优化】：要求排版精美感，深度分析，事实密度极高，建立 E-E-A-T 权威感。采用\"答案前置\"结构，首段即总结全文精华。",
+        "zhihu"  => "【知乎/专业社区优化】：要求专业严谨，大量引用事实和数据，逻辑性强。直接回答问题核心，避免废话。",
+        _        => "采用答案前置结构，提高事实密度。",
+    };
+
+    let system_prompt = format!(
+        "你是一位资深的 AI 内容创作者和 GEO（生成式引擎优化）专家。\n\
+        你的任务是根据提供的素材和知识库内容，为用户创作或改造高质量内容。\n\n\
+        核心准则：\n\
+        1. **答案前置 (Answer-First)**：直接在内容开头回答核心问题或展示最核心价值。\n\
+        2. **事实密度最大化**：大量使用知识库中的具体数据、技术指标和事实描述，避免空洞的形容词。\n\
+        3. **权威性构建**：语言风格专业，逻辑严密。\n\n\
+        {}\n\n{}",
+        platform_instructions, kb_context
+    );
+
+    let user_content = if mode == "new" {
+        format!("请围绕主题「{}」创作一篇全新的文章。补充素材：{}", topic, material)
+    } else {
+        format!("请对以下内容进行 GEO 深度改造和重写：\n\n{}", material)
+    };
+
+    let client = reqwest::Client::new();
+    let url = if config.llm.base_url.ends_with("/chat/completions") {
+        config.llm.base_url.clone()
+    } else {
+        format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/'))
+    };
+
+    // 第一步：生成内容
+    let gen_payload = serde_json::json!({
+        "model": config.llm.model,
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_content }
+        ],
+        "temperature": 0.7
+    });
+    let gen_resp: serde_json::Value = client.post(&url)
+        .header("Authorization", format!("Bearer {}", config.llm.api_key))
+        .json(&gen_payload)
+        .send().await.map_err(|e| format!("生成内容失败: {}", e))?
+        .json().await.map_err(|e| e.to_string())?;
+    let generated_content = gen_resp["choices"][0]["message"]["content"]
+        .as_str().ok_or("LLM 返回内容为空")?.to_string();
+
+    // 第二步：GEO 审计
+    let audit_system = "你是一位冷静的内容审计员和舆情分析师。\n\
+        请对提供的内容进行\"发布前压力测试\"，输出一份简洁的 Markdown 审计报告。\n\
+        报告需包含：\n\
+        1. **舆情预判**：模拟读者看到该内容后的潜在反应（积极、争议点）。\n\
+        2. **GEO 评分**：针对\"答案前置\"和\"事实密度\"给出 0-100 的评分。\n\
+        3. **改进建议**：如何让内容更专业、更具 AI 引擎可见性。\n\
+        4. **敏感性核查**：是否存在不合规风险。";
+    let audit_payload = serde_json::json!({
+        "model": config.llm.model,
+        "messages": [
+            { "role": "system", "content": audit_system },
+            { "role": "user", "content": format!("请对以下内容进行审计分析：\n\n{}", generated_content) }
+        ],
+        "temperature": 0.3
+    });
+    let audit_resp: serde_json::Value = client.post(&url)
+        .header("Authorization", format!("Bearer {}", config.llm.api_key))
+        .json(&audit_payload)
+        .send().await.map_err(|e| format!("审计分析失败: {}", e))?
+        .json().await.map_err(|e| e.to_string())?;
+    let audit_report = audit_resp["choices"][0]["message"]["content"]
+        .as_str().unwrap_or("审计失败").to_string();
+
+    Ok(serde_json::json!({ "content": generated_content, "audit": audit_report }))
+}
+
+/// 内部共享函数：仅审计（不生成新内容）
+async fn audit_content_internal(content: String) -> Result<String, String> {
+    let config = get_config().await?;
+    if config.llm.api_key.is_empty() {
+        return Err("请先在设置中配置 LLM API Key".to_string());
+    }
+    let client = reqwest::Client::new();
+    let url = if config.llm.base_url.ends_with("/chat/completions") {
+        config.llm.base_url.clone()
+    } else {
+        format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/'))
+    };
+    let system = "你是一位冷静的内容审计员和舆情分析师。\n\
+        请对提供的内容进行\"发布前压力测试\"，输出一份简洁的 Markdown 审计报告。\n\
+        报告需包含：\n\
+        1. **舆情预判**：模拟读者看到该内容后的潜在反应（积极、争议点）。\n\
+        2. **GEO 评分**：针对\"答案前置\"和\"事实密度\"给出 0-100 的评分。\n\
+        3. **改进建议**：如何让内容更专业、更具 AI 引擎可见性。\n\
+        4. **敏感性核查**：是否存在不合规风险。";
+    let payload = serde_json::json!({
+        "model": config.llm.model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": format!("请对以下内容进行审计分析：\n\n{}", content) }
+        ],
+        "temperature": 0.3
+    });
+    let resp: serde_json::Value = client.post(&url)
+        .header("Authorization", format!("Bearer {}", config.llm.api_key))
+        .json(&payload)
+        .send().await.map_err(|e| format!("审计失败: {}", e))?
+        .json().await.map_err(|e| e.to_string())?;
+    Ok(resp["choices"][0]["message"]["content"]
+        .as_str().ok_or("审计返回为空")?.to_string())
+}
+
+/// Tauri 命令：内容创作（代理 internal 函数）
+#[tauri::command]
+async fn studio_generate_content(
+    topic: String,
+    material: String,
+    mode: String,
+    platform: String,
+) -> Result<serde_json::Value, String> {
+    studio_generate_internal(topic, material, mode, platform).await
 }
 
 #[tauri::command]
@@ -1958,7 +2305,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_config, save_config, get_default_config,
             list_kb_files, add_to_kb, delete_kb_file, get_kb_file_details,
-            analyze_comments, generate_live_reply, delete_scraped_user,
+            studio_generate_content,
+            analyze_comments, generate_live_reply, generate_im_reply, delete_scraped_user,
             list_chat_sessions, create_chat_session, delete_chat_session,
             send_chat_message, get_chat_messages,
             list_accounts, verify_account, delete_account,
