@@ -834,12 +834,32 @@ async fn send_chat_message(
         format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/'))
     };
 
-    let mut current_messages: Vec<serde_json::Value> = session.messages.iter().map(|m| {
+    // 系统提示：约束 AI 助理在工具调用场景下的回复风格
+    let system_prompt = serde_json::json!({
+        "role": "system",
+        "content": "你是 AutoCast AI 助理，帮助用户管理抖音账号、采集数据、创作内容。\n\
+        \n\
+        【采集任务行为规范】\n\
+        - 调用 start_scrape 之前，必须先调用 get_scrape_status 确认当前没有任务在运行。\n\
+        - 如果 get_scrape_status 返回有任务在运行，告知用户等待或去「评论采集」页面取消，不要再次启动。\n\
+        - start_scrape 启动成功后，工具会返回以 BACKGROUND_TASK_STARTED: 开头的消息。\n\
+          此时立即用简短友好的语言告知用户：「已在后台开始采集，请切换到「评论采集」页面查看实时进度和结果」。\n\
+          不要等待、不要追问，直接给出这个提示即可。\n\
+        \n\
+        【账号与 sec_uid 规范】\n\
+        - 调用 start_scrape 前必须先调用 list_accounts 确认可用账号名称（account_name 必须完全一致）。\n\
+        - 如果用户没有提供 sec_uid，主动询问并说明可从抖音主页链接获取。\n\
+        \n\
+        【回复风格】简洁、直接，不要重复罗列参数和技术细节。"
+    });
+
+    let mut current_messages: Vec<serde_json::Value> = vec![system_prompt];
+    current_messages.extend(session.messages.iter().map(|m| {
         serde_json::json!({
             "role": m.role,
             "content": m.content
         })
-    }).collect();
+    }));
 
     // 循环处理工具调用（支持多轮调用）
     let mut max_iterations = 5;
@@ -926,78 +946,14 @@ async fn send_chat_message(
                         let stype = func_args["scrape_type"].as_str().unwrap_or("comment").to_string();
                         let lim = func_args["limit"].as_i64().unwrap_or(0) as i32;
 
-                        // 启动采集任务
-                        let task = start_scrape(acc, plat, uid, stype, lim, true, true, true, state.clone()).await?;
-                        let task_id = task.task_id.clone();
-
-                        // 同步等待任务完成（最长等待 10 分钟）
-                        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
-                        let mut final_progress_val: Option<serde_json::Value> = None;
-
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-                            let progress_path = get_scraper_dir().join(format!("{}.json", &task_id));
-                            if progress_path.exists() {
-                                if let Ok(content) = fs::read_to_string(&progress_path) {
-                                    if let Ok(p) = serde_json::from_str::<serde_json::Value>(&content) {
-                                        let status = p["status"].as_str().unwrap_or("running");
-                                        if status != "running" {
-                                            final_progress_val = Some(p);
-                                            break;
-                                        }
-                                    }
-                                }
+                        // 启动采集任务后立即返回，任务在后台运行
+                        match start_scrape(acc, plat, uid, stype.clone(), lim, true, true, true, state.clone()).await {
+                            Ok(task) => {
+                                let limit_desc = if lim > 0 { format!("限制 {} 条", lim) } else { "不限数量".to_string() };
+                                format!("BACKGROUND_TASK_STARTED:采集任务已在后台启动。类型：{}，{}。任务 ID：{}。请告知用户去「评论采集」页面查看实时进度和最终数据。",
+                                    stype, limit_desc, &task.task_id[..8])
                             }
-
-                            if std::time::Instant::now() >= deadline {
-                                break;
-                            }
-                        }
-
-                        // 清除全局任务 ID
-                        {
-                            let mut current = state.current_task_id.lock().unwrap();
-                            *current = None;
-                        }
-
-                        // 构造给 LLM 的结果描述
-                        match final_progress_val {
-                            Some(p) => {
-                                let status = p["status"].as_str().unwrap_or("unknown");
-                                let status_cn = match status {
-                                    "completed"      => "✅ 采集完成",
-                                    "error"          => "❌ 采集出错",
-                                    "cookie_expired" => "⚠️ Cookie 已过期，请重新授权账号",
-                                    "cancelled"      => "⚪ 任务已取消",
-                                    _                => "⚠️ 状态未知",
-                                };
-                                let mut stats_parts: Vec<String> = vec![];
-                                if let Some(stats_obj) = p["stats"].as_object() {
-                                    for (k, v) in stats_obj {
-                                        let type_cn = match k.as_str() {
-                                            "video"    => "作品",
-                                            "comment"  => "评论",
-                                            "reply"    => "回复",
-                                            "follower" => "粉丝",
-                                            "like"     => "喜欢",
-                                            other      => other,
-                                        };
-                                        let new_count = v["new"].as_i64().unwrap_or(0);
-                                        let total = v["total"].as_i64().unwrap_or(0);
-                                        stats_parts.push(format!("{}：新增 {} 条，共 {} 条", type_cn, new_count, total));
-                                    }
-                                }
-                                let stats_str = if stats_parts.is_empty() {
-                                    "无统计数据".to_string()
-                                } else {
-                                    stats_parts.join("；")
-                                };
-                                format!("{}\n采集统计：{}", status_cn, stats_str)
-                            }
-                            None => {
-                                "⏳ 采集任务已超时（超过10分钟），请切换到「评论采集」页面查看实时进度。".to_string()
-                            }
+                            Err(e) => format!("采集任务启动失败：{}", e)
                         }
                     },
                     "list_scraped_users" => {
