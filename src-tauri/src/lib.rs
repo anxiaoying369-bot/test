@@ -69,10 +69,16 @@ pub struct GeoModelConfig {
     pub base_url: String,
     pub api_key: String,
     pub model_id: String,
-    #[serde(default)]
-    pub publish_url: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct GeoPublishPlatform {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 fn default_true() -> bool { true }
@@ -100,6 +106,8 @@ pub struct LLMConfig {
     pub live_content: String,
     #[serde(default)]
     pub geo_models: Vec<GeoModelConfig>,
+    #[serde(default)]
+    pub geo_publish_platforms: Vec<GeoPublishPlatform>,
 }
 
 fn default_embedding_model() -> String {
@@ -1097,6 +1105,7 @@ async fn get_default_config() -> Result<AppConfig, String> {
             live_theme: "".to_string(),
             live_content: "".to_string(),
             geo_models: vec![],
+            geo_publish_platforms: vec![],
         }
     })
 }
@@ -1703,7 +1712,6 @@ pub struct GeoQueryResult {
     pub position: i32,       // 0=未提及，1=首位，2=次位，以此类推
     pub response: String,
     pub sources: Vec<String>,
-    pub publish_url: String,
     pub error: Option<String>,
 }
 
@@ -1743,7 +1751,6 @@ async fn geo_monitor_query(
                 position: 0,
                 response: String::new(),
                 sources: vec![],
-                publish_url: String::new(),
                 error: Some(e.to_string()),
             }),
         }
@@ -1790,7 +1797,6 @@ async fn query_geo_model(model: GeoModelConfig, brand: String, keyword: String) 
             position: 0,
             response: String::new(),
             sources: vec![],
-            publish_url: model.publish_url,
             error: Some(format!("请求失败: {}", e)),
         },
     };
@@ -1803,7 +1809,6 @@ async fn query_geo_model(model: GeoModelConfig, brand: String, keyword: String) 
             position: 0,
             response: String::new(),
             sources: vec![],
-            publish_url: model.publish_url,
             error: Some(format!("解析响应失败: {}", e)),
         },
     };
@@ -1853,7 +1858,6 @@ async fn query_geo_model(model: GeoModelConfig, brand: String, keyword: String) 
         position,
         response: response_text,
         sources,
-        publish_url: model.publish_url,
         error: None,
     }
 }

@@ -33,8 +33,13 @@ interface GeoResult {
   position: number;
   response: string;
   sources: string[];
-  publish_url: string;
   error: string | null;
+}
+
+interface GeoPublishPlatform {
+  name: string;
+  url: string;
+  description: string;
 }
 
 const geoBrand = ref('');
@@ -43,6 +48,7 @@ const isGeoQuerying = ref(false);
 const geoResults = ref<GeoResult[]>([]);
 const geoError = ref('');
 const selectedGeoModel = ref<GeoResult | null>(null);
+const geoPublishPlatforms = ref<GeoPublishPlatform[]>([]);
 
 const geoMentionRate = computed(() => {
   if (!geoResults.value.length) return 0;
@@ -58,6 +64,10 @@ async function handleGeoQuery() {
   geoError.value = '';
   selectedGeoModel.value = null;
   try {
+    // 同步加载发布平台配置
+    const cfg = await invoke('get_config') as any;
+    geoPublishPlatforms.value = cfg?.llm?.geo_publish_platforms ?? [];
+
     const res = await invoke('geo_monitor_query', {
       brand: geoBrand.value,
       keyword: geoKeyword.value,
@@ -71,7 +81,7 @@ async function handleGeoQuery() {
   }
 }
 
-function openPublishUrl(url: string) {
+function openUrl(url: string) {
   if (url) window.open(url, '_blank');
 }
 
@@ -391,13 +401,7 @@ function copyContent() {
         >
           <Copy class="w-3.5 h-3.5" /> 复制正文
         </button>
-        <button
-          v-if="workMode === 'geo' && selectedGeoModel?.publish_url"
-          @click="openPublishUrl(selectedGeoModel.publish_url)"
-          class="flex items-center gap-1.5 text-xs text-purple-400 hover:text-white transition-colors bg-purple-600/20 px-3 py-1.5 rounded-lg border border-purple-600/30 hover:bg-purple-600/40"
-        >
-          <ExternalLink class="w-3.5 h-3.5" /> 前往 {{ selectedGeoModel.model_name }} 发布
-        </button>
+        <span v-if="workMode === 'geo' && geoPublishPlatforms.length > 0" class="text-[10px] text-gray-600">{{ geoPublishPlatforms.length }} 个发布平台 · 见右侧</span>
       </header>
 
       <div class="flex-1 overflow-y-auto p-8 custom-scrollbar">
@@ -551,12 +555,11 @@ function copyContent() {
               </p>
             </div>
 
-            <!-- 每个平台详情 -->
+            <!-- 每个 LLM 平台结果 -->
             <div class="space-y-2">
-              <p class="text-[10px] text-gray-600 uppercase tracking-wider font-bold">各平台结果</p>
+              <p class="text-[10px] text-gray-600 uppercase tracking-wider font-bold">各模型结果</p>
               <div
-                v-for="r in geoResults"
-                :key="r.model_name"
+                v-for="r in geoResults" :key="r.model_name"
                 @click="selectedGeoModel = r"
                 :class="['p-3 rounded-xl border cursor-pointer transition-all',
                   selectedGeoModel?.model_name === r.model_name ? 'border-purple-500/50 bg-purple-500/5' : 'border-gray-800 hover:border-gray-700']"
@@ -573,10 +576,23 @@ function copyContent() {
                     :style="{ width: r.mentioned ? Math.max(10, 100 - (r.position - 1) * 15) + '%' : '10%' }"
                   ></div>
                 </div>
-                <p v-if="r.publish_url" class="text-[10px] text-gray-600 mt-1.5 flex items-center gap-1">
-                  <ExternalLink class="w-2.5 h-2.5" />
-                  <span @click.stop="openPublishUrl(r.publish_url)" class="hover:text-purple-400 cursor-pointer transition-colors">前往发布</span>
-                </p>
+              </div>
+            </div>
+
+            <!-- 内容发布平台（提升 GEO 的数据来源） -->
+            <div v-if="geoPublishPlatforms.length > 0" class="space-y-2">
+              <p class="text-[10px] text-gray-600 uppercase tracking-wider font-bold">发布内容 · 提升曝光</p>
+              <p class="text-[10px] text-gray-600 leading-relaxed">在以下平台发布内容，可增加被 AI 引用的概率</p>
+              <div
+                v-for="p in geoPublishPlatforms" :key="p.name"
+                @click="openUrl(p.url)"
+                class="flex items-center justify-between p-2.5 rounded-lg border border-gray-800 hover:border-blue-500/40 bg-gray-950 cursor-pointer transition-all group"
+              >
+                <div>
+                  <span class="text-xs text-white group-hover:text-blue-400 transition-colors">{{ p.name }}</span>
+                  <p v-if="p.description" class="text-[10px] text-gray-600 mt-0.5">{{ p.description }}</p>
+                </div>
+                <ExternalLink class="w-3.5 h-3.5 text-gray-600 group-hover:text-blue-400 transition-colors flex-shrink-0" />
               </div>
             </div>
           </div>
