@@ -241,13 +241,14 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
             progress.update(progress=current_progress, stats=all_stats)
 
         # 2. 评论采集
+        # video_limit=limit: 选取最近 limit 个视频；limit=0: 每个视频下评论全量采集（不截断）
         if scrape_type in ('comment', 'all'):
             _log(f"[SCRAPER] ===== 开始采集评论 =====")
             start_p = 25 if scrape_type == 'all' else 10
             progress.update(current_type="评论", current_user=sec_uid[:12], progress=start_p)
 
             service = CommentService(sec_uid, cookie_str)
-            stats = await service.run(delay=delay, limit=limit, skip_existing=skip_existing)
+            stats = await service.run(delay=delay, video_limit=limit, limit=0, skip_existing=skip_existing)
             all_stats['comment'] = stats
             _log(f"[SCRAPER] 评论采集完成: {stats}")
 
@@ -255,6 +256,7 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
             progress.update(progress=current_progress, stats=all_stats)
 
         # 3. 回复采集
+        # video_ids/video_limit: 精确限定视频范围；limit=0: 每条评论下回复全量采集（不截断）
         if scrape_type in ('reply', 'all'):
             _log(f"[SCRAPER] ===== 开始采集回复 =====")
             start_p = 50 if scrape_type == 'all' else 20
@@ -262,9 +264,8 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
 
             service = ReplyService(sec_uid, cookie_str)
 
-            # 当指定 limit 且为全量采集时，将回复阶段的评论范围限制在
-            # 与评论阶段相同的视频集合内（读取 videos.csv 取最近 limit 条），
-            # 避免扫描全量历史评论导致任务长时间卡住。
+            # 全量采集+limit>0 时，将回复范围限定在评论阶段相同的视频集合内，
+            # 避免扫描全量历史评论导致超长等待。
             reply_video_ids = None
             if limit > 0 and scrape_type == 'all':
                 try:
@@ -279,8 +280,8 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
                 except Exception as _e:
                     _log(f"[SCRAPER] 计算回复视频范围失败（将使用全量）: {_e}")
 
-            stats = await service.run(delay=delay, limit=limit, skip_existing=skip_existing,
-                                      video_ids=reply_video_ids)
+            stats = await service.run(delay=delay, video_limit=limit, limit=0,
+                                      skip_existing=skip_existing, video_ids=reply_video_ids)
             all_stats['reply'] = stats
             _log(f"[SCRAPER] 回复采集完成: {stats}")
 
