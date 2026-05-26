@@ -734,7 +734,7 @@ async fn send_chat_message(
             "type": "function",
             "function": {
                 "name": "start_scrape",
-                "description": "启动评论或视频采集任务",
+                "description": "启动评论或视频采集任务。调用前必须先调用 get_scrape_status 确认当前无任务在运行。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -746,6 +746,14 @@ async fn send_chat_message(
                     },
                     "required": ["account_name", "platform", "sec_uid", "scrape_type"]
                 }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_scrape_status",
+                "description": "查询当前是否有采集任务在运行，以及任务的实时进度。在调用 start_scrape 之前应先调用此工具确认无任务在运行。",
+                "parameters": { "type": "object", "properties": {} }
             }
         },
         {
@@ -882,6 +890,34 @@ async fn send_chat_message(
                         let platform = func_args["platform"].as_str().map(|s| s.to_string());
                         let res = list_accounts(platform).await?;
                         serde_json::to_string(&res).unwrap_or_default()
+                    },
+                    "get_scrape_status" => {
+                        let current_task = {
+                            let current = state.current_task_id.lock().unwrap();
+                            current.clone()
+                        };
+                        match current_task {
+                            None => "当前没有采集任务在运行，可以安全地启动新任务。".to_string(),
+                            Some(task_id) => {
+                                let progress_path = get_scraper_dir().join(format!("{}.json", &task_id));
+                                if progress_path.exists() {
+                                    if let Ok(content) = fs::read_to_string(&progress_path) {
+                                        if let Ok(p) = serde_json::from_str::<serde_json::Value>(&content) {
+                                            let status = p["status"].as_str().unwrap_or("unknown");
+                                            let progress_pct = p["progress"].as_i64().unwrap_or(0);
+                                            let current_type = p["current_type"].as_str().unwrap_or("");
+                                            format!("当前有采集任务正在运行中。状态：{}，进度：{}%，当前阶段：{}。请等待任务完成，或提示用户去「评论采集」页面手动取消后再尝试。", status, progress_pct, current_type)
+                                        } else {
+                                            format!("有任务正在运行（ID：{}），暂时无法读取进度。", &task_id[..8])
+                                        }
+                                    } else {
+                                        format!("有任务正在运行（ID：{}）。", &task_id[..8])
+                                    }
+                                } else {
+                                    "有采集任务 ID 记录但进度文件尚未生成，任务可能刚刚启动。".to_string()
+                                }
+                            }
+                        }
                     },
                     "start_scrape" => {
                         let acc = func_args["account_name"].as_str().unwrap_or_default().to_string();

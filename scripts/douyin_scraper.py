@@ -261,7 +261,26 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
             progress.update(current_type="回复", current_user=sec_uid[:12], progress=start_p)
 
             service = ReplyService(sec_uid, cookie_str)
-            stats = await service.run(delay=delay, limit=limit, skip_existing=skip_existing)
+
+            # 当指定 limit 且为全量采集时，将回复阶段的评论范围限制在
+            # 与评论阶段相同的视频集合内（读取 videos.csv 取最近 limit 条），
+            # 避免扫描全量历史评论导致任务长时间卡住。
+            reply_video_ids = None
+            if limit > 0 and scrape_type == 'all':
+                try:
+                    videos_csv = os.path.join('data', sec_uid, 'videos.csv')
+                    if os.path.exists(videos_csv):
+                        import csv as _csv
+                        with open(videos_csv, 'r', newline='', encoding='utf-8-sig') as _f:
+                            _all_vids = [row['aweme_id'] for row in _csv.DictReader(_f)
+                                         if row.get('aweme_id')]
+                        reply_video_ids = _all_vids[-limit:]
+                        _log(f"[SCRAPER] 回复采集范围限定为最近 {len(reply_video_ids)} 个视频")
+                except Exception as _e:
+                    _log(f"[SCRAPER] 计算回复视频范围失败（将使用全量）: {_e}")
+
+            stats = await service.run(delay=delay, limit=limit, skip_existing=skip_existing,
+                                      video_ids=reply_video_ids)
             all_stats['reply'] = stats
             _log(f"[SCRAPER] 回复采集完成: {stats}")
 
