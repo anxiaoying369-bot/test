@@ -1,7 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { Save, RefreshCw, CheckCircle, XCircle, ShieldCheck, Globe, Cpu, Wand2, Video, MessageSquare, RotateCcw, Binary } from 'lucide-vue-next';
+import { Save, RefreshCw, CheckCircle, XCircle, ShieldCheck, Globe, Cpu, Wand2, Video, MessageSquare, RotateCcw, Binary, Plus, Trash2, BarChart3, ToggleLeft, ToggleRight } from 'lucide-vue-next';
+
+interface GeoModelConfig {
+  name: string;
+  base_url: string;
+  api_key: string;
+  model_id: string;
+  publish_url: string;
+  enabled: boolean;
+}
 
 interface LLMConfig {
   api_key: string;
@@ -15,6 +24,7 @@ interface LLMConfig {
   im_reply_prompt: string;
   live_theme: string;
   live_content: string;
+  geo_models: GeoModelConfig[];
 }
 
 interface AppConfig {
@@ -34,10 +44,33 @@ const config = ref<AppConfig>({
     im_reply_prompt: '',
     live_theme: '',
     live_content: '',
+    geo_models: [],
   },
 });
 
-const activeTab = ref<'model' | 'prompt' | 'live' | 'kb'>('model');
+const activeTab = ref<'model' | 'prompt' | 'live' | 'kb' | 'geo'>('model');
+
+function addGeoModel() {
+  config.value.llm.geo_models.push({
+    name: '',
+    base_url: '',
+    api_key: '',
+    model_id: '',
+    publish_url: '',
+    enabled: true,
+  });
+}
+
+function removeGeoModel(index: number) {
+  config.value.llm.geo_models.splice(index, 1);
+}
+
+const GEO_PRESETS = [
+  { name: '豆包', base_url: 'https://ark.cn-beijing.volces.com/api/v3', model_id: '', publish_url: 'https://www.doubao.com/' },
+  { name: 'Kimi', base_url: 'https://api.moonshot.cn/v1', model_id: 'moonshot-v1-8k', publish_url: 'https://kimi.moonshot.cn/' },
+  { name: '通义千问', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model_id: 'qwen-plus', publish_url: 'https://tongyi.aliyun.com/' },
+  { name: 'ChatGPT', base_url: 'https://api.openai.com/v1', model_id: 'gpt-4o', publish_url: 'https://chatgpt.com/' },
+];
 const isSaving = ref(false);
 const saveStatus = ref<'idle' | 'success' | 'error'>('idle');
 const statusMsg = ref('');
@@ -147,6 +180,16 @@ onMounted(() => {
         >
           <Database class="w-4 h-4" />
           知识库
+        </button>
+        <button
+          @click="activeTab = 'geo'"
+          :class="[
+            'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all',
+            activeTab === 'geo' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'
+          ]"
+        >
+          <BarChart3 class="w-4 h-4" />
+          GEO 监控
         </button>
       </div>
 
@@ -380,6 +423,109 @@ onMounted(() => {
                   <strong>⚠️ 重要提示：</strong><br/>
                   并非所有 API 供应商都支持此功能。如果您使用 DeepSeek 等不提供向量接口的服务商，您需要为知识库配置一个支持 Embedding 的代理或使用 OpenAI 原生模型。
                 </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- GEO 监控模型配置 -->
+        <div v-if="activeTab === 'geo'" class="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <div class="p-2 bg-purple-500/10 rounded-lg">
+                  <BarChart3 class="w-5 h-5 text-purple-400" />
+                </div>
+                <h3 class="text-lg font-medium text-white">GEO 监控模型</h3>
+              </div>
+              <button
+                @click="addGeoModel"
+                class="flex items-center gap-1.5 text-xs bg-purple-600/20 hover:bg-purple-600/40 text-purple-400 px-3 py-1.5 rounded-lg border border-purple-600/30 transition-all"
+              >
+                <Plus class="w-3.5 h-3.5" /> 添加模型
+              </button>
+            </div>
+            <p class="text-xs text-gray-500 mb-6">配置各大 AI 平台接口，用于 GEO 排名监控查询。所有平台均使用 OpenAI 兼容协议，支持中转站。</p>
+
+            <!-- 快速预设 -->
+            <div class="mb-6">
+              <p class="text-[11px] text-gray-600 uppercase tracking-wider font-bold mb-2">快速添加预设平台</p>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  v-for="preset in GEO_PRESETS"
+                  :key="preset.name"
+                  @click="config.llm.geo_models.push({ ...preset, api_key: '', enabled: true })"
+                  class="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:border-purple-500 hover:text-purple-400 transition-all bg-gray-950"
+                >
+                  + {{ preset.name }}
+                </button>
+              </div>
+            </div>
+
+            <!-- 模型列表 -->
+            <div v-if="config.llm.geo_models.length === 0" class="text-center py-10 text-gray-600 text-sm border border-dashed border-gray-800 rounded-xl">
+              还没有配置任何监控模型，点击「添加模型」或使用上方预设快速添加
+            </div>
+
+            <div class="space-y-4">
+              <div
+                v-for="(model, idx) in config.llm.geo_models"
+                :key="idx"
+                class="border rounded-xl p-4 transition-colors"
+                :class="model.enabled ? 'border-gray-700 bg-gray-950' : 'border-gray-800 bg-gray-950/50 opacity-60'"
+              >
+                <div class="flex items-center justify-between mb-4">
+                  <input
+                    v-model="model.name"
+                    placeholder="平台名称（如豆包）"
+                    class="bg-transparent text-white font-medium text-sm focus:outline-none placeholder-gray-600 flex-1"
+                  />
+                  <div class="flex items-center gap-2">
+                    <button @click="model.enabled = !model.enabled" class="text-gray-500 hover:text-white transition-colors">
+                      <ToggleRight v-if="model.enabled" class="w-5 h-5 text-purple-400" />
+                      <ToggleLeft v-else class="w-5 h-5" />
+                    </button>
+                    <button @click="removeGeoModel(idx)" class="text-gray-600 hover:text-red-400 transition-colors">
+                      <Trash2 class="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="text-[10px] text-gray-500 uppercase tracking-wider block mb-1">Base URL</label>
+                    <input
+                      v-model="model.base_url"
+                      placeholder="https://api.example.com/v1"
+                      class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500 transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <label class="text-[10px] text-gray-500 uppercase tracking-wider block mb-1">Model ID</label>
+                    <input
+                      v-model="model.model_id"
+                      placeholder="model-name 或 ep-xxxx"
+                      class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500 transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <label class="text-[10px] text-gray-500 uppercase tracking-wider block mb-1">API Key</label>
+                    <input
+                      v-model="model.api_key"
+                      type="password"
+                      placeholder="sk-..."
+                      class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500 transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <label class="text-[10px] text-gray-500 uppercase tracking-wider block mb-1">发布页面 URL</label>
+                    <input
+                      v-model="model.publish_url"
+                      placeholder="https://..."
+                      class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500 transition-colors"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </div>

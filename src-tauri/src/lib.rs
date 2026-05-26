@@ -64,6 +64,20 @@ pub struct LocalStorageEntry {
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
+pub struct GeoModelConfig {
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub model_id: String,
+    #[serde(default)]
+    pub publish_url: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool { true }
+
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct LLMConfig {
     pub api_key: String,
     pub base_url: String,
@@ -84,6 +98,8 @@ pub struct LLMConfig {
     pub live_theme: String,
     #[serde(default)]
     pub live_content: String,
+    #[serde(default)]
+    pub geo_models: Vec<GeoModelConfig>,
 }
 
 fn default_embedding_model() -> String {
@@ -1080,6 +1096,7 @@ async fn get_default_config() -> Result<AppConfig, String> {
             im_reply_prompt: default_im_reply_prompt(),
             live_theme: "".to_string(),
             live_content: "".to_string(),
+            geo_models: vec![],
         }
     })
 }
@@ -1677,6 +1694,168 @@ async fn studio_generate_content(
     platform: String,
 ) -> Result<serde_json::Value, String> {
     studio_generate_internal(topic, material, mode, platform).await
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct GeoQueryResult {
+    pub model_name: String,
+    pub mentioned: bool,
+    pub position: i32,       // 0=未提及，1=首位，2=次位，以此类推
+    pub response: String,
+    pub sources: Vec<String>,
+    pub publish_url: String,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+async fn geo_monitor_query(
+    brand: String,
+    keyword: String,
+) -> Result<Vec<GeoQueryResult>, String> {
+    let config = get_config().await?;
+    let models: Vec<GeoModelConfig> = config.llm.geo_models.into_iter()
+        .filter(|m| m.enabled && !m.api_key.is_empty() && !m.base_url.is_empty())
+        .collect();
+
+    if models.is_empty() {
+        return Err("未配置任何 GEO 监控模型，请前往设置页添加模型".to_string());
+    }
+
+    let brand_clone = brand.clone();
+    let keyword_clone = keyword.clone();
+
+    let mut handles = Vec::new();
+    for model in models {
+        let b = brand_clone.clone();
+        let k = keyword_clone.clone();
+        handles.push(tokio::spawn(async move {
+            query_geo_model(model, b, k).await
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok(r) => results.push(r),
+            Err(e) => results.push(GeoQueryResult {
+                model_name: "未知".to_string(),
+                mentioned: false,
+                position: 0,
+                response: String::new(),
+                sources: vec![],
+                publish_url: String::new(),
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+
+    Ok(results)
+}
+
+async fn query_geo_model(model: GeoModelConfig, brand: String, keyword: String) -> GeoQueryResult {
+    let url = if model.base_url.ends_with("/chat/completions") {
+        model.base_url.clone()
+    } else {
+        format!("{}/chat/completions", model.base_url.trim_end_matches('/'))
+    };
+
+    let prompt = format!(
+        "请问关于「{}」，你能推荐一些相关的内容创作者或品牌吗？请给出具体名称，并说明你的信息来源。",
+        keyword
+    );
+
+    let body = serde_json::json!({
+        "model": model.model_id,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 800,
+        "temperature": 0.3
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
+
+    let resp = match client.post(&url)
+        .header("Authorization", format!("Bearer {}", model.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return GeoQueryResult {
+            model_name: model.name,
+            mentioned: false,
+            position: 0,
+            response: String::new(),
+            sources: vec![],
+            publish_url: model.publish_url,
+            error: Some(format!("请求失败: {}", e)),
+        },
+    };
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(e) => return GeoQueryResult {
+            model_name: model.name,
+            mentioned: false,
+            position: 0,
+            response: String::new(),
+            sources: vec![],
+            publish_url: model.publish_url,
+            error: Some(format!("解析响应失败: {}", e)),
+        },
+    };
+
+    let response_text = json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    // 判断品牌是否被提及，并估算位置
+    let brand_lower = brand.to_lowercase();
+    let resp_lower = response_text.to_lowercase();
+    let mentioned = resp_lower.contains(&brand_lower);
+
+    let position = if mentioned {
+        // 按段落/列表项粗估排名位置
+        let lines: Vec<&str> = response_text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        let pos = lines.iter().position(|l| l.to_lowercase().contains(&brand_lower))
+            .map(|i| i + 1)
+            .unwrap_or(1);
+        pos as i32
+    } else {
+        0
+    };
+
+    // 提取 sources：抓取响应中出现的 URL 或「来源：xxx」格式
+    let mut sources: Vec<String> = Vec::new();
+    let url_re = regex::Regex::new(r"https?://[^\s\)]+").unwrap_or_else(|_| regex::Regex::new(r"$^").unwrap());
+    for cap in url_re.find_iter(&response_text) {
+        sources.push(cap.as_str().to_string());
+    }
+    // 同时提取「来源」「参考」关键词后的内容
+    for line in response_text.lines() {
+        if line.contains("来源") || line.contains("参考") || line.contains("引用") {
+            let cleaned = line.trim_start_matches(|c: char| !c.is_alphanumeric()).trim().to_string();
+            if !cleaned.is_empty() && !sources.contains(&cleaned) {
+                sources.push(cleaned);
+            }
+        }
+    }
+
+    GeoQueryResult {
+        model_name: model.name,
+        mentioned,
+        position,
+        response: response_text,
+        sources,
+        publish_url: model.publish_url,
+        error: None,
+    }
 }
 
 #[tauri::command]
@@ -2386,7 +2565,8 @@ pub fn run() {
             douyin_im_start_monitor, douyin_im_stop_monitor,
             get_active_douyin_im_monitors,
             start_live_monitor, stop_live_monitor, get_active_monitors,
-            get_live_history, resolve_live_url
+            get_live_history, resolve_live_url,
+            geo_monitor_query
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
