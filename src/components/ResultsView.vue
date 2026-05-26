@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { 
-  Users, Video, MessageSquare, ChevronRight, 
+import {
+  Users, Video, MessageSquare, ChevronRight,
   Calendar, Heart, MessageCircle, ArrowLeft,
   RefreshCw, ExternalLink, AlertCircle,
-  Wand2, Sparkles, X, BarChart3, PieChart, Info, Trash2
+  Wand2, Sparkles, X, Trash2
 } from 'lucide-vue-next';
 import { marked } from 'marked';
 
@@ -46,17 +46,6 @@ interface Account {
   meta: { user_id?: string; nickname?: string; avatar?: string };
 }
 
-interface AIAnalysisResult {
-  summary: string;
-  sentiment: {
-    positive: number;
-    neutral: number;
-    negative: number;
-  };
-  key_themes: string[];
-  top_comments_summary: string;
-  suggestions: string[];
-}
 
 const users = ref<ScrapedUser[]>([]);
 const selectedUser = ref<ScrapedUser | null>(null);

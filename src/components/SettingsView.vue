@@ -12,6 +12,7 @@ interface LLMConfig {
   embedding_model: string;
   analysis_prompt: string;
   live_reply_prompt: string;
+  im_reply_prompt: string;
   live_theme: string;
   live_content: string;
 }
@@ -30,6 +31,7 @@ const config = ref<AppConfig>({
     embedding_model: 'text-embedding-3-small',
     analysis_prompt: '',
     live_reply_prompt: '',
+    im_reply_prompt: '',
     live_theme: '',
     live_content: '',
   },
@@ -52,13 +54,15 @@ async function loadConfig() {
   }
 }
 
-async function restoreDefaultPrompt(type: 'analysis' | 'live') {
+async function restoreDefaultPrompt(type: 'analysis' | 'live' | 'im') {
   try {
     const defaultConfig = await invoke('get_default_config') as AppConfig;
     if (type === 'analysis') {
       config.value.llm.analysis_prompt = defaultConfig.llm.analysis_prompt;
-    } else {
+    } else if (type === 'live') {
       config.value.llm.live_reply_prompt = defaultConfig.llm.live_reply_prompt;
+    } else if (type === 'im') {
+      config.value.llm.im_reply_prompt = defaultConfig.llm.im_reply_prompt;
     }
     statusMsg.value = '已恢复默认提示词';
     saveStatus.value = 'success';
@@ -289,6 +293,29 @@ onMounted(() => {
                 class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all resize-none font-sans text-sm"
               ></textarea>
               <p class="text-[11px] text-gray-500 mt-2">提示 AI 以主播身份简短、亲切地回复用户弹幕</p>
+            </div>
+
+            <!-- IM Reply Prompt -->
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <label class="block text-sm font-medium text-gray-300 flex items-center gap-2">
+                  <MessageCircle class="w-4 h-4 text-gray-400" />
+                  私信回复预置提示词 (System Prompt)
+                </label>
+                <button 
+                  @click="restoreDefaultPrompt('im')" 
+                  class="flex items-center gap-1 text-[10px] text-gray-500 hover:text-blue-400 transition-colors bg-gray-950 px-2 py-1 rounded border border-gray-800"
+                >
+                  <RotateCcw class="w-3 h-3" /> 恢复默认
+                </button>
+              </div>
+              <textarea
+                v-model="config.llm.im_reply_prompt"
+                rows="5"
+                placeholder="设置 AI 客服/经理的回复风格..."
+                class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all resize-none font-sans text-sm"
+              ></textarea>
+              <p class="text-[11px] text-gray-500 mt-2">提示 AI 以专业身份回复用户私信</p>
             </div>
           </div>
         </div>

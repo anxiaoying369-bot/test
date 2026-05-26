@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Plus, Trash2, Send, Bot, User, RefreshCw } from 'lucide-vue-next';
+import { MessageSquare, Plus, Trash2, Send, Bot, User } from 'lucide-vue-next';
 import { marked } from 'marked';
 
 interface ChatMessage {

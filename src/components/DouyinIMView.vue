@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Square,
   UserRound,
+  Wand2,
 } from 'lucide-vue-next';
 
 interface Account {
@@ -95,6 +96,7 @@ const myUid = ref('');
 const replyContent = ref('');
 const loading = ref(false);
 const sending = ref(false);
+const isGeneratingReply = ref(false);
 const refreshingCreds = ref(false);
 const sendReady = ref<boolean | null>(null);   // null=未检测, true=可发送, false=缺凭证
 const statusMessage = ref('请选择抖音 Cookie 账号，然后点击开始监控');
@@ -489,6 +491,32 @@ async function stopMonitor(account: string) {
   }
 }
 
+async function generateAiReply() {
+  if (!selectedMessage.value || isGeneratingReply.value) return;
+  
+  isGeneratingReply.value = true;
+  errorMessage.value = '';
+  try {
+    // 提取最近 10 条对话作为上下文
+    const history = conversationThread.value.map(m => ({
+      role: m.isSelf ? 'assistant' : 'user',
+      content: m.text
+    })).slice(-10);
+
+    const reply = await invoke('generate_im_reply', { 
+      messages: history 
+    }) as string;
+    
+    replyContent.value = reply;
+    finish('AI 回复建议已生成');
+  } catch (e) {
+    console.error('AI 生成失败:', e);
+    fail('AI 生成失败: ' + e);
+  } finally {
+    isGeneratingReply.value = false;
+  }
+}
+
 async function sendReply() {
   if (!canReply.value || !selectedMessage.value) return;
   sending.value = true;
@@ -843,8 +871,19 @@ onUnmounted(() => {
 
       <div class="border-t border-gray-800 p-4 bg-gray-900/60">
         <div class="flex gap-2">
-          <textarea v-model="replyContent" rows="3" class="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm" :placeholder="selectedMessage ? `回复 ${selectedMessage.senderName}` : '请先点击一条收到的私信'"></textarea>
-          <button @click="sendReply" :disabled="!canReply" class="bg-pink-600 hover:bg-pink-700 disabled:opacity-50 rounded-lg px-5 py-2 text-sm flex items-center gap-2">
+          <div class="flex-1 relative">
+            <textarea v-model="replyContent" rows="3" class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm pr-12" :placeholder="selectedMessage ? `回复 ${selectedMessage.senderName}` : '请先点击一条收到的私信'"></textarea>
+            <button 
+              @click="generateAiReply"
+              :disabled="!selectedMessage || isGeneratingReply"
+              class="absolute right-2 bottom-2 p-2 text-gray-500 hover:text-blue-400 disabled:opacity-30 transition-colors"
+              title="AI 生成回复建议"
+            >
+              <Loader2 v-if="isGeneratingReply" class="w-4 h-4 animate-spin" />
+              <Wand2 v-else class="w-4 h-4" />
+            </button>
+          </div>
+          <button @click="sendReply" :disabled="!canReply" class="bg-pink-600 hover:bg-pink-700 disabled:opacity-50 rounded-lg px-5 py-2 text-sm flex items-center gap-2 self-end">
             <Loader2 v-if="sending" class="w-4 h-4 animate-spin" />
             <Send v-else class="w-4 h-4" /> 回复
           </button>

@@ -2,15 +2,11 @@
 import { ref, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { 
-  Database, Upload, FileText, Trash2, 
+import {
+  Database, FileText, Trash2,
   RefreshCw, CheckCircle, AlertCircle, Info,
   Plus, Search, SearchCode, X
 } from 'lucide-vue-next';
-
-interface KBFile {
-  name: string;
-}
 
 interface KBChunk {
   text: string;

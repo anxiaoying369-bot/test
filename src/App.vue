@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio, MessageCircle, Settings, Database } from 'lucide-vue-next';
+import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio, MessageCircle, Settings, Database, Sparkles } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import ResultsView from './components/ResultsView.vue';
 import LiveMonitorView from './components/LiveMonitorView.vue';
@@ -9,8 +9,9 @@ import DouyinIMView from './components/DouyinIMView.vue';
 import SettingsView from './components/SettingsView.vue';
 import ChatView from './components/ChatView.vue';
 import KnowledgeBaseView from './components/KnowledgeBaseView.vue';
+import ContentStudioView from './components/ContentStudioView.vue';
 
-type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb';
+type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio';
 const currentPage = ref<PageKey>('accounts');
 const accounts = ref<any[]>([]);
 const isLoginModalOpen = ref(false);
@@ -263,13 +264,17 @@ function isVerifying(platform: string, name: string) {
 
 <template>
   <div class="flex h-screen w-screen overflow-hidden bg-gray-950 text-gray-50 font-sans">
-    <!-- 左侧导航 -->
-    <aside class="flex flex-col w-[20%] h-full bg-gray-950 border-r border-gray-800">
+    <!-- 左侧导航（固定宽度，不随内容区压缩） -->
+    <aside class="flex flex-col w-56 flex-shrink-0 h-full bg-gray-950 border-r border-gray-800">
       <div class="p-6 font-bold tracking-tight">AutoCast AI</div>
       <nav class="flex-1 px-3 space-y-1">
         <a href="#" @click="currentPage = 'chat'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'chat' ? 'bg-gray-900' : 'text-gray-400']">
           <MessageSquare class="w-5 h-5 text-blue-500" />
           <span>AI 助理对话</span>
+        </a>
+        <a href="#" @click="currentPage = 'studio'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'studio' ? 'bg-gray-900' : 'text-gray-400']">
+          <Sparkles class="w-5 h-5 text-purple-400" />
+          <span>AI 创作中心</span>
         </a>
         <a href="#" @click="currentPage = 'accounts'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'accounts' ? 'bg-gray-900' : 'text-gray-400']">
           <Users class="w-5 h-5" />
@@ -310,12 +315,17 @@ function isVerifying(platform: string, name: string) {
     </aside>
 
     <!-- 主内容：AI 助理 -->
-    <main v-if="currentPage === 'chat'" class="flex flex-col flex-1 h-full bg-gray-950">
+    <main v-if="currentPage === 'chat'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <ChatView />
     </main>
 
+    <!-- 主内容：AI 创作中心 -->
+    <main v-if="currentPage === 'studio'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
+      <ContentStudioView />
+    </main>
+
     <!-- 主内容：账号管理 -->
-    <main v-if="currentPage === 'accounts'" class="flex flex-col flex-1 h-full bg-gray-950 p-6 overflow-y-auto">
+    <main v-if="currentPage === 'accounts'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950 p-6 overflow-y-auto">
       <div class="flex justify-between items-center mb-8">
         <h2 class="text-xl font-bold">账号管理</h2>
         <div class="text-xs text-gray-500 bg-gray-900 px-3 py-1 rounded-full border border-gray-800 font-mono">
@@ -390,32 +400,32 @@ function isVerifying(platform: string, name: string) {
     </main>
 
     <!-- 主内容：评论采集 -->
-    <main v-if="currentPage === 'scraper'" class="flex flex-col flex-1 h-full bg-gray-950">
+    <main v-if="currentPage === 'scraper'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <ScraperView />
     </main>
 
     <!-- 主内容：采集结果 -->
-    <main v-if="currentPage === 'results'" class="flex flex-col flex-1 h-full bg-gray-950">
+    <main v-if="currentPage === 'results'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <ResultsView />
     </main>
 
     <!-- 主内容：私信监控 -->
-    <main v-if="currentPage === 'douyin_im'" class="flex flex-col flex-1 h-full bg-gray-950">
+    <main v-if="currentPage === 'douyin_im'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <DouyinIMView />
     </main>
 
     <!-- 主内容：企业知识库 -->
-    <main v-if="currentPage === 'kb'" class="flex flex-col flex-1 h-full bg-gray-950">
+    <main v-if="currentPage === 'kb'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <KnowledgeBaseView />
     </main>
 
     <!-- 主内容：直播监控 -->
-    <main v-if="currentPage === 'live_monitor'" class="flex flex-col flex-1 h-full bg-gray-950">
+    <main v-if="currentPage === 'live_monitor'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <LiveMonitorView :globalRooms="liveMonitorRooms" />
     </main>
 
     <!-- 主内容：系统设置 -->
-    <main v-if="currentPage === 'settings'" class="flex flex-col flex-1 h-full bg-gray-950">
+    <main v-if="currentPage === 'settings'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <SettingsView />
     </main>
 
