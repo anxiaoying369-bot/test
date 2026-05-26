@@ -888,10 +888,81 @@ async fn send_chat_message(
                         let plat = func_args["platform"].as_str().unwrap_or("douyin").to_string();
                         let uid = func_args["sec_uid"].as_str().unwrap_or_default().to_string();
                         let stype = func_args["scrape_type"].as_str().unwrap_or("comment").to_string();
-                        let lim = func_args["limit"].as_i64().unwrap_or(100) as i32;
-                        
-                        let res = start_scrape(acc, plat, uid, stype, lim, true, true, true, state.clone()).await?;
-                        serde_json::to_string(&res).unwrap_or_default()
+                        let lim = func_args["limit"].as_i64().unwrap_or(0) as i32;
+
+                        // 启动采集任务
+                        let task = start_scrape(acc, plat, uid, stype, lim, true, true, true, state.clone()).await?;
+                        let task_id = task.task_id.clone();
+
+                        // 同步等待任务完成（最长等待 10 分钟）
+                        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+                        let mut final_progress_val: Option<serde_json::Value> = None;
+
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                            let progress_path = get_scraper_dir().join(format!("{}.json", &task_id));
+                            if progress_path.exists() {
+                                if let Ok(content) = fs::read_to_string(&progress_path) {
+                                    if let Ok(p) = serde_json::from_str::<serde_json::Value>(&content) {
+                                        let status = p["status"].as_str().unwrap_or("running");
+                                        if status != "running" {
+                                            final_progress_val = Some(p);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if std::time::Instant::now() >= deadline {
+                                break;
+                            }
+                        }
+
+                        // 清除全局任务 ID
+                        {
+                            let mut current = state.current_task_id.lock().unwrap();
+                            *current = None;
+                        }
+
+                        // 构造给 LLM 的结果描述
+                        match final_progress_val {
+                            Some(p) => {
+                                let status = p["status"].as_str().unwrap_or("unknown");
+                                let status_cn = match status {
+                                    "completed"      => "✅ 采集完成",
+                                    "error"          => "❌ 采集出错",
+                                    "cookie_expired" => "⚠️ Cookie 已过期，请重新授权账号",
+                                    "cancelled"      => "⚪ 任务已取消",
+                                    _                => "⚠️ 状态未知",
+                                };
+                                let mut stats_parts: Vec<String> = vec![];
+                                if let Some(stats_obj) = p["stats"].as_object() {
+                                    for (k, v) in stats_obj {
+                                        let type_cn = match k.as_str() {
+                                            "video"    => "作品",
+                                            "comment"  => "评论",
+                                            "reply"    => "回复",
+                                            "follower" => "粉丝",
+                                            "like"     => "喜欢",
+                                            other      => other,
+                                        };
+                                        let new_count = v["new"].as_i64().unwrap_or(0);
+                                        let total = v["total"].as_i64().unwrap_or(0);
+                                        stats_parts.push(format!("{}：新增 {} 条，共 {} 条", type_cn, new_count, total));
+                                    }
+                                }
+                                let stats_str = if stats_parts.is_empty() {
+                                    "无统计数据".to_string()
+                                } else {
+                                    stats_parts.join("；")
+                                };
+                                format!("{}\n采集统计：{}", status_cn, stats_str)
+                            }
+                            None => {
+                                "⏳ 采集任务已超时（超过10分钟），请切换到「评论采集」页面查看实时进度。".to_string()
+                            }
+                        }
                     },
                     "list_scraped_users" => {
                         let res = list_scraped_users().await?;
