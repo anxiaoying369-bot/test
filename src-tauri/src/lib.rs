@@ -79,6 +79,8 @@ pub struct GeoPublishPlatform {
     pub url: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub system_prompt: String,
 }
 
 fn default_true() -> bool { true }
@@ -1001,7 +1003,7 @@ async fn send_chat_message(
                         let material = func_args["material"].as_str().unwrap_or_default().to_string();
                         let mode     = func_args["mode"].as_str().unwrap_or("new").to_string();
                         let platform = func_args["platform"].as_str().unwrap_or("douyin").to_string();
-                        match studio_generate_internal(topic.clone(), material, mode, platform.clone()).await {
+                        match studio_generate_internal(topic.clone(), material, mode, platform.clone(), None).await {
                             Ok(val) => {
                                 let char_count = val["content"].as_str().unwrap_or("").chars().count();
                                 studio_tool_used = Some("generate_content".to_string());
@@ -1556,6 +1558,7 @@ async fn studio_generate_internal(
     material: String,
     mode: String,
     platform: String,
+    platform_prompt: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let config = get_config().await?;
     if config.llm.api_key.is_empty() {
@@ -1583,11 +1586,26 @@ async fn studio_generate_internal(
         Err(_) => String::new(),
     };
 
-    let platform_instructions = match platform.as_str() {
-        "douyin" => "【抖音/短视频平台优化】：要求开头前 3 秒有极其吸引人的\"情绪钩子\"，中间事实密集，语言口语化，结尾有强引导。采用\"答案前置\"结构，直接在开头揭示核心价值。",
-        "wechat" => "【微信公众号优化】：要求排版精美感，深度分析，事实密度极高，建立 E-E-A-T 权威感。采用\"答案前置\"结构，首段即总结全文精华。",
-        "zhihu"  => "【知乎/专业社区优化】：要求专业严谨，大量引用事实和数据，逻辑性强。直接回答问题核心，避免废话。",
-        _        => "采用答案前置结构，提高事实密度。",
+    let platform_instructions_owned;
+    let platform_instructions: &str = if let Some(ref p) = platform_prompt {
+        if !p.trim().is_empty() {
+            platform_instructions_owned = p.clone();
+            &platform_instructions_owned
+        } else {
+            match platform.as_str() {
+                "douyin" => "【抖音/短视频平台优化】：要求开头前 3 秒有极其吸引人的\"情绪钩子\"，中间事实密集，语言口语化，结尾有强引导。采用\"答案前置\"结构，直接在开头揭示核心价值。",
+                "wechat" => "【微信公众号优化】：要求排版精美感，深度分析，事实密度极高，建立 E-E-A-T 权威感。采用\"答案前置\"结构，首段即总结全文精华。",
+                "zhihu"  => "【知乎/专业社区优化】：要求专业严谨，大量引用事实和数据，逻辑性强。直接回答问题核心，避免废话。",
+                _        => "采用答案前置结构，提高事实密度。",
+            }
+        }
+    } else {
+        match platform.as_str() {
+            "douyin" => "【抖音/短视频平台优化】：要求开头前 3 秒有极其吸引人的\"情绪钩子\"，中间事实密集，语言口语化，结尾有强引导。采用\"答案前置\"结构，直接在开头揭示核心价值。",
+            "wechat" => "【微信公众号优化】：要求排版精美感，深度分析，事实密度极高，建立 E-E-A-T 权威感。采用\"答案前置\"结构，首段即总结全文精华。",
+            "zhihu"  => "【知乎/专业社区优化】：要求专业严谨，大量引用事实和数据，逻辑性强。直接回答问题核心，避免废话。",
+            _        => "采用答案前置结构，提高事实密度。",
+        }
     };
 
     let system_prompt = format!(
@@ -1701,8 +1719,9 @@ async fn studio_generate_content(
     material: String,
     mode: String,
     platform: String,
+    platform_prompt: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    studio_generate_internal(topic, material, mode, platform).await
+    studio_generate_internal(topic, material, mode, platform, platform_prompt).await
 }
 
 #[derive(Clone, Serialize, Deserialize)]

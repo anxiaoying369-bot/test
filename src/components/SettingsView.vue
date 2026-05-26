@@ -15,6 +15,7 @@ interface GeoPublishPlatform {
   name: string;
   url: string;
   description: string;
+  system_prompt: string;
 }
 
 interface LLMConfig {
@@ -65,7 +66,7 @@ function removeGeoModel(index: number) {
 }
 
 function addPublishPlatform() {
-  config.value.llm.geo_publish_platforms.push({ name: '', url: '', description: '' });
+  config.value.llm.geo_publish_platforms.push({ name: '', url: '', description: '', system_prompt: '' });
 }
 function removePublishPlatform(index: number) {
   config.value.llm.geo_publish_platforms.splice(index, 1);
@@ -78,13 +79,43 @@ const GEO_MODEL_PRESETS = [
   { name: 'ChatGPT', base_url: 'https://api.openai.com/v1', model_id: 'gpt-4o' },
 ];
 
-const GEO_PUBLISH_PRESETS = [
-  { name: '知乎', url: 'https://www.zhihu.com/write', description: '高权重问答平台，AI 引用频率高' },
-  { name: '百度百科', url: 'https://baike.baidu.com/', description: '权威百科，国内 AI 核心数据来源' },
-  { name: '微信公众号', url: 'https://mp.weixin.qq.com/', description: '内容被搜狗及多家 AI 收录' },
-  { name: '小红书', url: 'https://creator.xiaohongshu.com/', description: '生活内容类 AI 引用率上升' },
-  { name: 'B站专栏', url: 'https://member.bilibili.com/platform/upload/text/edit', description: '视频知识类内容' },
-  { name: '今日头条', url: 'https://mp.toutiao.com/', description: '字节系 AI 数据来源之一' },
+const GEO_PUBLISH_PRESETS: GeoPublishPlatform[] = [
+  {
+    name: '知乎',
+    url: 'https://www.zhihu.com/write',
+    description: '高权重问答平台，AI 引用频率高',
+    system_prompt: '【知乎平台优化】内容风格：专业严谨，逻辑清晰，大量引用具体数据和事实。结构上采用"先给出结论，再分点论证"的方式。语气客观理性，建立专业权威感。字数建议 800-2000 字，适当分段，使用数字列表提升可读性。避免口语化表达，多使用"研究表明""数据显示"等表述强化可信度。',
+  },
+  {
+    name: '百度百科',
+    url: 'https://baike.baidu.com/',
+    description: '权威百科，国内 AI 核心数据来源',
+    system_prompt: '【百度百科优化】内容风格：百科词条式写作，客观中立，第三人称叙述。结构：简介（定义）→ 基本信息 → 详细内容 → 发展历史 → 相关条目。语言简洁准确，避免主观评价和广告性用语。重点突出关键定义、时间节点、重要人物和核心事实。',
+  },
+  {
+    name: '微信公众号',
+    url: 'https://mp.weixin.qq.com/',
+    description: '内容被搜狗及多家 AI 收录',
+    system_prompt: '【微信公众号优化】内容风格：深度长文，排版精美，段落短小（每段 3-5 行），大量留白。开头用故事或问题钩住读者，中间信息密集，结尾有明确行动号召。善用小标题分段，每个小标题都应能独立吸引点击。语气亲切但专业，适当使用加粗强调关键信息。字数 1500-3000 字为佳。',
+  },
+  {
+    name: '小红书',
+    url: 'https://creator.xiaohongshu.com/',
+    description: '生活内容类 AI 引用率上升',
+    system_prompt: '【小红书平台优化】内容风格：生活化、种草感强，第一人称分享。开头用"姐妹们！"或直接抛出干货钩子。多用 emoji 点缀（但不过度），善用"✅"列表。语气真实亲切，分享亲身体验和感受。标题要含关键词且有情绪价值。字数 300-800 字，配合话题标签，结尾引导互动（"你们觉得呢？"）。',
+  },
+  {
+    name: 'B站专栏',
+    url: 'https://member.bilibili.com/platform/upload/text/edit',
+    description: '视频知识类内容',
+    system_prompt: '【B站专栏优化】内容风格：年轻化、有趣但不失深度，可适当使用网络用语。结构清晰，善用小标题和分点。内容要有观点和态度，不能四平八稳。可适当加入弹幕式互动语气（"没想到吧""你以为到这了？不，还有"）。字数 1000-2500 字，可配合图片说明，结尾引导一键三连。',
+  },
+  {
+    name: '今日头条',
+    url: 'https://mp.toutiao.com/',
+    description: '字节系 AI 数据来源之一',
+    system_prompt: '【今日头条优化】内容风格：信息量大，标题吸睛（含数字或悬念）。第一段必须直接回答用户最关心的问题（答案前置）。段落简短，每段不超过 4 行，多用小标题切分。语言直白通俗，避免生僻词汇。多用"你知道吗""很多人不知道"等吸引眼球的表达。字数 800-1500 字为佳，适合碎片化阅读。',
+  },
 ];
 const isSaving = ref(false);
 const saveStatus = ref<'idle' | 'success' | 'error'>('idle');
@@ -534,15 +565,24 @@ onMounted(() => {
             <div v-if="config.llm.geo_publish_platforms.length === 0" class="text-center py-8 text-gray-600 text-sm border border-dashed border-gray-800 rounded-xl">
               尚未添加发布平台，点击「添加平台」或使用上方预设
             </div>
-            <div class="space-y-2">
-              <div v-for="(platform, idx) in config.llm.geo_publish_platforms" :key="idx" class="flex items-center gap-3 p-3 border border-gray-800 bg-gray-950 rounded-xl">
-                <div class="flex-1 grid grid-cols-3 gap-2">
-                  <input v-model="platform.name" placeholder="平台名称" class="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors" />
-                  <input v-model="platform.url" placeholder="发布页面 URL" class="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors col-span-2" />
+            <div class="space-y-3">
+              <div v-for="(platform, idx) in config.llm.geo_publish_platforms" :key="idx" class="border border-gray-800 bg-gray-950 rounded-xl p-4 space-y-3">
+                <div class="flex items-center gap-2">
+                  <input v-model="platform.name" placeholder="平台名称" class="flex-1 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors font-medium" />
+                  <input v-model="platform.url" placeholder="发布页面 URL" class="flex-[2] bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors" />
+                  <button @click="removePublishPlatform(idx)" class="text-gray-600 hover:text-red-400 transition-colors flex-shrink-0">
+                    <Trash2 class="w-4 h-4" />
+                  </button>
                 </div>
-                <button @click="removePublishPlatform(idx)" class="text-gray-600 hover:text-red-400 transition-colors flex-shrink-0">
-                  <Trash2 class="w-4 h-4" />
-                </button>
+                <div>
+                  <label class="text-[10px] text-gray-500 uppercase tracking-wider block mb-1.5">平台风格提示词 <span class="normal-case text-gray-600">（生成内容时注入系统提示）</span></label>
+                  <textarea
+                    v-model="platform.system_prompt"
+                    rows="4"
+                    placeholder="描述该平台的内容风格要求，例如：段落简短、语气亲切、多用列表..."
+                    class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors resize-none leading-relaxed"
+                  ></textarea>
+                </div>
               </div>
             </div>
           </div>

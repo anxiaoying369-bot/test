@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onUnmounted, computed } from 'vue';
+import { ref, onUnmounted, computed, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Sparkles, FileText, BarChart3,
@@ -19,7 +19,21 @@ const workMode = ref<'studio' | 'geo'>('studio');
 const topic = ref('');
 const sourceMaterial = ref('');
 const generationMode = ref<'new' | 'rewrite'>('new');
-const targetPlatform = ref<'douyin' | 'wechat' | 'zhihu'>('douyin');
+const studioPlatforms = ref<GeoPublishPlatform[]>([]);
+const selectedStudioPlatform = ref<GeoPublishPlatform | null>(null);
+
+async function loadStudioPlatforms() {
+  try {
+    const cfg = await invoke('get_config') as any;
+    const platforms: GeoPublishPlatform[] = cfg?.llm?.geo_publish_platforms ?? [];
+    studioPlatforms.value = platforms;
+    if (platforms.length > 0 && !selectedStudioPlatform.value) {
+      selectedStudioPlatform.value = platforms[0];
+    }
+  } catch { /* ignore */ }
+}
+
+onMounted(loadStudioPlatforms);
 
 const isGenerating = ref(false);
 const generatedContent = ref('');
@@ -40,6 +54,7 @@ interface GeoPublishPlatform {
   name: string;
   url: string;
   description: string;
+  system_prompt: string;
 }
 
 const geoBrand = ref('');
@@ -151,7 +166,8 @@ async function handleGenerate() {
       topic: topic.value,
       material: sourceMaterial.value,
       mode: generationMode.value,
-      platform: targetPlatform.value
+      platform: selectedStudioPlatform.value?.name ?? 'default',
+      platformPrompt: selectedStudioPlatform.value?.system_prompt ?? null,
     }) as { content: string; audit: string };
     generatedContent.value = res.content;
     auditReport.value = res.audit;
@@ -302,16 +318,22 @@ function copyContent() {
             <label class="text-[11px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
               <Zap class="w-3 h-3" /> 目标平台 (GEO 优化)
             </label>
-            <div class="grid grid-cols-3 gap-1.5">
+            <div v-if="studioPlatforms.length > 0" class="flex flex-wrap gap-1.5">
               <button
-                v-for="p in (['douyin', 'wechat', 'zhihu'] as const)"
-                :key="p"
-                @click="targetPlatform = p"
-                :class="['py-2 px-2 rounded-xl text-[11px] border transition-all flex flex-col items-center gap-1',
-                  targetPlatform === p ? 'bg-blue-600/10 border-blue-500 text-blue-400' : 'bg-gray-950 border-gray-800 text-gray-500 hover:border-gray-700']"
-              >
-                <span>{{ p === 'douyin' ? '抖音' : p === 'wechat' ? '微信' : '知乎' }}</span>
-              </button>
+                v-for="p in studioPlatforms"
+                :key="p.name"
+                @click="selectedStudioPlatform = p"
+                :class="['py-1.5 px-3 rounded-xl text-[11px] border transition-all',
+                  selectedStudioPlatform?.name === p.name
+                    ? 'bg-blue-600/10 border-blue-500 text-blue-400'
+                    : 'bg-gray-950 border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300']"
+              >{{ p.name }}</button>
+            </div>
+            <div v-else class="p-3 bg-gray-950 border border-dashed border-gray-800 rounded-xl text-center">
+              <p class="text-[10px] text-gray-600">请先前往<span class="text-purple-400 cursor-pointer hover:underline" @click=""> 设置 → GEO 监控 </span>添加内容发布平台</p>
+            </div>
+            <div v-if="selectedStudioPlatform" class="p-2.5 bg-blue-500/5 border border-blue-500/10 rounded-xl">
+              <p class="text-[10px] text-gray-500 leading-relaxed line-clamp-2">{{ selectedStudioPlatform.system_prompt || '使用默认生成策略' }}</p>
             </div>
           </div>
 
@@ -421,7 +443,7 @@ function copyContent() {
             </div>
             <div class="text-center space-y-1.5">
               <p class="text-gray-300 font-medium animate-pulse">正在调动全网 GEO 策略与企业知识库...</p>
-              <p class="text-xs text-gray-500">正在生成适应 {{ targetPlatform }} 平台的高价值内容</p>
+              <p class="text-xs text-gray-500">正在生成适应「{{ selectedStudioPlatform?.name ?? '默认' }}」平台的高价值内容</p>
             </div>
           </div>
           <div v-else class="max-w-3xl mx-auto">
