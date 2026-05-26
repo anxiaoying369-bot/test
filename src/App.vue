@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, provide } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio, MessageCircle, Settings, Database, Sparkles } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
@@ -13,6 +13,17 @@ import ContentStudioView from './components/ContentStudioView.vue';
 
 type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio';
 const currentPage = ref<PageKey>('accounts');
+const settingsInitialTab = ref<string>('model');
+
+function navigateTo(page: PageKey, settingsTab?: string) {
+  currentPage.value = page;
+  if (page === 'settings' && settingsTab) {
+    settingsInitialTab.value = settingsTab;
+  }
+}
+
+provide('navigateTo', navigateTo);
+provide('settingsInitialTab', settingsInitialTab);
 const accounts = ref<any[]>([]);
 const isLoginModalOpen = ref(false);
 const currentPlatform = ref('');

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, inject, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { Save, RefreshCw, CheckCircle, XCircle, ShieldCheck, Globe, Cpu, Wand2, Video, MessageSquare, RotateCcw, Binary, Plus, Trash2, BarChart3, ToggleLeft, ToggleRight } from 'lucide-vue-next';
 
@@ -56,7 +56,16 @@ const config = ref<AppConfig>({
   },
 });
 
-const activeTab = ref<'model' | 'prompt' | 'live' | 'kb' | 'geo'>('model');
+const settingsInitialTab = inject<ReturnType<typeof ref<string>>>('settingsInitialTab');
+const activeTab = ref<'model' | 'prompt' | 'live' | 'kb' | 'geo'>(
+  (settingsInitialTab?.value as any) || 'model'
+);
+
+watch(() => settingsInitialTab?.value, (tab) => {
+  if (tab && ['model', 'prompt', 'live', 'kb', 'geo'].includes(tab)) {
+    activeTab.value = tab as any;
+  }
+});
 
 function addGeoModel() {
   config.value.llm.geo_models.push({ name: '', base_url: '', api_key: '', model_id: '', enabled: true });

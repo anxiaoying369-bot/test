@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onUnmounted, computed, onMounted } from 'vue';
+import { ref, onUnmounted, computed, onMounted, inject } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Sparkles, FileText, BarChart3,
@@ -10,6 +10,13 @@ import {
   PanelLeftClose, PanelLeftOpen
 } from 'lucide-vue-next';
 import { marked } from 'marked';
+
+// ============ 导航 ============
+const navigateTo = inject<(page: string, settingsTab?: string) => void>('navigateTo');
+
+function goToGeoSettings() {
+  navigateTo?.('settings', 'geo');
+}
 
 // ============ 工作模式 ============
 const workMode = ref<'studio' | 'geo'>('studio');
@@ -330,7 +337,7 @@ function copyContent() {
               >{{ p.name }}</button>
             </div>
             <div v-else class="p-3 bg-gray-950 border border-dashed border-gray-800 rounded-xl text-center">
-              <p class="text-[10px] text-gray-600">请先前往<span class="text-purple-400 cursor-pointer hover:underline" @click=""> 设置 → GEO 监控 </span>添加内容发布平台</p>
+              <p class="text-[10px] text-gray-600">请先前往<span class="text-purple-400 cursor-pointer hover:underline" @click="goToGeoSettings"> 设置 → GEO 监控 </span>添加内容发布平台</p>
             </div>
             <div v-if="selectedStudioPlatform" class="p-2.5 bg-blue-500/5 border border-blue-500/10 rounded-xl">
               <p class="text-[10px] text-gray-500 leading-relaxed line-clamp-2">{{ selectedStudioPlatform.system_prompt || '使用默认生成策略' }}</p>
