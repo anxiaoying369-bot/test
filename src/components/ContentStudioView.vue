@@ -116,8 +116,8 @@ function copyContent() {
         minWidth: isStudioCollapsed ? '0px' : undefined,
       }"
     >
-      <!-- 内层可滚动容器，避免 overflow 影响宽度动画 -->
-      <div class="flex flex-col flex-1 overflow-y-auto min-w-0" style="width: 360px; max-width: 560px; padding: 24px;">
+      <!-- 内层可滚动容器，宽度跟随父级 aside -->
+      <div class="flex flex-col flex-1 overflow-y-auto w-full p-6">
         <!-- 标题栏 -->
         <div class="flex items-center justify-between mb-8 flex-shrink-0">
           <div class="flex items-center gap-3">
