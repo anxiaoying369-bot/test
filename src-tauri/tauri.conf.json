@@ -45,7 +45,6 @@
     "resources": [
       "../scripts/*.py",
       "../scripts/*.json",
-      "../scripts/douyin_im/*.py",
       "../scripts/static/*",
       "../scripts/DouyinComment/*.py",
       "../scripts/DouyinComment/*.yaml",

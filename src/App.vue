@@ -305,10 +305,6 @@ function isVerifying(platform: string, name: string) {
           <FileText class="w-5 h-5 text-green-500" />
           <span>采集结果</span>
         </a>
-        <a href="#" @click="currentPage = 'douyin_im'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'douyin_im' ? 'bg-gray-900' : 'text-gray-400']">
-          <MessageCircle class="w-5 h-5 text-pink-500" />
-          <span>私信监控</span>
-        </a>
         <a href="#" @click="currentPage = 'kb'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'kb' ? 'bg-gray-900' : 'text-gray-400']">
           <Database class="w-5 h-5 text-blue-500" />
           <span>企业知识库</span>
@@ -438,11 +434,6 @@ function isVerifying(platform: string, name: string) {
     <!-- 主内容：采集结果 -->
     <main v-if="currentPage === 'results'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <ResultsView />
-    </main>
-
-    <!-- 主内容：私信监控 -->
-    <main v-if="currentPage === 'douyin_im'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
-      <DouyinIMView />
     </main>
 
     <!-- 主内容：企业知识库 -->

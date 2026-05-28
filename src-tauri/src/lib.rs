@@ -207,8 +207,6 @@ pub struct LLMConfig {
     pub analysis_prompt: String,
     #[serde(default = "default_live_reply_prompt")]
     pub live_reply_prompt: String,
-    #[serde(default = "default_im_reply_prompt")]
-    pub im_reply_prompt: String,
     #[serde(default)]
     pub live_theme: String,
     #[serde(default)]
@@ -221,10 +219,6 @@ pub struct LLMConfig {
 
 fn default_embedding_model() -> String {
     "text-embedding-3-small".to_string()
-}
-
-fn default_im_reply_prompt() -> String {
-    "你是一位专业的客户经理。请根据用户的私信内容和提供的企业背景知识，给出一个专业、礼貌且简洁的回复建议。回复应直接面向用户，语气真诚。".to_string()
 }
 
 fn default_live_reply_prompt() -> String {
@@ -254,6 +248,12 @@ pub struct VideoConfig {
     pub fal_key: String,
     #[serde(default)]
     pub volc_key: String,
+    #[serde(default)]
+    pub openai_api_key: String,
+    #[serde(default)]
+    pub openai_base_url: String,
+    #[serde(default)]
+    pub openai_model: String,
     #[serde(default)]
     pub default_provider: String,
 }
@@ -1147,14 +1147,6 @@ fn python_cmd() -> tokio::process::Command {
     cmd
 }
 
-/// 同步版（std::process）Python Command，用于需要阻塞等待输出的场景。
-fn python_cmd_sync() -> std::process::Command {
-    let mut cmd = std::process::Command::new(python_executable());
-    cmd.env("AUTOCAST_DATA_DIR", get_data_dir().to_string_lossy().to_string());
-    cmd.env("PATH", enhanced_path());
-    cmd
-}
-
 fn get_accounts_db_path() -> PathBuf {
     get_data_dir().join("accounts.json")
 }
@@ -1293,102 +1285,6 @@ async fn delete_chat_session(id: String) -> Result<(), String> {
         fs::remove_file(path).map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-#[tauri::command]
-async fn generate_im_reply(messages: Vec<serde_json::Value>) -> Result<String, String> {
-    let config = get_config().await?;
-    if config.llm.api_key.is_empty() {
-        return Err("请先在设置中配置 LLM API Key".to_string());
-    }
-
-    if messages.is_empty() {
-        return Err("对话记录为空".to_string());
-    }
-
-    let system_prompt = if config.llm.im_reply_prompt.is_empty() {
-        default_im_reply_prompt()
-    } else {
-        config.llm.im_reply_prompt.clone()
-    };
-
-    // 获取最后一条用户的消息内容用于知识库搜索
-    let last_user_content = messages.iter().rev()
-        .find(|m| m["role"] == "user")
-        .and_then(|m| m["content"].as_str())
-        .unwrap_or("");
-
-    // 1. 从知识库检索相关背景
-    let kb_context = if !last_user_content.is_empty() {
-        match search_kb_internal(last_user_content.to_string()).await {
-            Ok(res_str) => {
-                let res: serde_json::Value = serde_json::from_str(&res_str).unwrap_or(serde_json::json!([]));
-                let mut context_text = String::from("\n相关背景知识参考：\n");
-                if let Some(arr) = res.as_array() {
-                    for item in arr.iter().take(5) {
-                        if let Some(text) = item["text"].as_str() {
-                            context_text.push_str(&format!("- {}\n", text));
-                        }
-                    }
-                }
-                if context_text.len() < 20 { String::new() } else { context_text }
-            },
-            Err(_) => String::new(),
-        }
-    } else {
-        String::new()
-    };
-
-    let client = reqwest::Client::new();
-    let url = if config.llm.base_url.ends_with("/chat/completions") {
-        config.llm.base_url.clone()
-    } else {
-        format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/'))
-    };
-
-    // 构建完整消息列表：System (Prompt + KB) + History
-    let mut api_messages = vec![
-        serde_json::json!({ 
-            "role": "system", 
-            "content": format!("{}\n\n{}", system_prompt, kb_context) 
-        })
-    ];
-    
-    // 添加历史记录
-    for m in messages {
-        api_messages.push(serde_json::json!({
-            "role": m["role"],
-            "content": m["content"]
-        }));
-    }
-
-    // 显式要求生成回复
-    api_messages.push(serde_json::json!({
-        "role": "user",
-        "content": "请根据以上对话历史和参考知识，为我（assistant）生成一段专业、得体的回复。只需要输出回复内容本身。"
-    }));
-
-    let payload = serde_json::json!({
-        "model": config.llm.model,
-        "messages": api_messages,
-        "temperature": 0.7
-    });
-
-    let response = client.post(&url)
-        .header("Authorization", format!("Bearer {}", config.llm.api_key))
-        .json(&payload)
-        .send().await.map_err(|e| format!("请求失败: {}", e))?;
-
-    if !response.status().is_success() {
-        let err_text = response.text().await.unwrap_or_default();
-        return Err(format!("LLM API 错误: {}", err_text));
-    }
-
-    let resp_data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    let reply = resp_data["choices"][0]["message"]["content"]
-        .as_str().ok_or("LLM 返回格式错误")?.trim().to_string();
-
-    Ok(reply)
 }
 
 #[tauri::command]
@@ -1638,22 +1534,6 @@ async fn send_chat_message(
         {
             "type": "function",
             "function": {
-                "name": "send_im_message",
-                "description": "向指定用户发送私信",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "account_name": { "type": "string", "description": "发送者的账号名称" },
-                        "to_user_id": { "type": "string", "description": "接收者的 UID" },
-                        "content": { "type": "string", "description": "私信内容" }
-                    },
-                    "required": ["account_name", "to_user_id", "content"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
                 "name": "search_knowledge_base",
                 "description": "从本地知识库中搜索相关背景知识、产品说明、企业规则等。在回答用户专业问题或背景知识时应优先使用此工具。",
                 "parameters": {
@@ -1831,15 +1711,8 @@ async fn send_chat_message(
                         let res = list_scraped_users().await?;
                         serde_json::to_string(&res).unwrap_or_default()
                     },
-                    "send_im_message" => {
-                        let acc = func_args["account_name"].as_str().unwrap_or_default().to_string();
-                        let to = func_args["to_user_id"].as_str().unwrap_or_default().to_string();
-                        let msg = func_args["content"].as_str().unwrap_or_default().to_string();
-                        
-                        let res = douyin_im_send(acc, msg, Some(to), None, None, None, None, None, None).await?;
-                        serde_json::to_string(&res).unwrap_or_default()
-                    },
                     "search_knowledge_base" => {
+
                         let query = func_args["query"].as_str().unwrap_or_default().to_string();
                         search_kb_internal(query).await?
                     },
@@ -1948,7 +1821,6 @@ async fn get_default_config() -> Result<AppConfig, String> {
             embedding_model: "text-embedding-3-small".to_string(),
             analysis_prompt: default_analysis_prompt(),
             live_reply_prompt: default_live_reply_prompt(),
-            im_reply_prompt: default_im_reply_prompt(),
             live_theme: "".to_string(),
             live_content: "".to_string(),
             geo_models: vec![],
@@ -1962,10 +1834,13 @@ async fn get_default_config() -> Result<AppConfig, String> {
         video: VideoConfig {
             fal_key: "".to_string(),
             volc_key: "".to_string(),
+            openai_api_key: "".to_string(),
+            openai_base_url: "https://api.openai.com/v1".to_string(),
+            openai_model: "v0".to_string(),
             default_provider: "fal".to_string(),
         },
-        })
-        }
+    })
+}
 
 
 #[tauri::command]
@@ -2970,6 +2845,22 @@ async fn video_upsert_project(state: State<'_, AppState>, project: VideoProject)
 }
 
 #[tauri::command]
+async fn video_delete_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db = state.video_db.lock().map_err(|e| e.to_string())?;
+    
+    // 1. 删除关联的任务
+    db.execute("DELETE FROM video_tasks WHERE project_id = ?1", [&id]).map_err(|e| e.to_string())?;
+    
+    // 2. 删除关联的素材
+    db.execute("DELETE FROM video_materials WHERE project_id = ?1", [&id]).map_err(|e| e.to_string())?;
+    
+    // 3. 删除项目本身
+    db.execute("DELETE FROM video_projects WHERE id = ?1", [&id]).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
 async fn video_start_generation(
     state: State<'_, AppState>,
     project_id: String,
@@ -2978,19 +2869,33 @@ async fn video_start_generation(
     api_key: String,
     mode: String,
     ratio: String,
+    base_url: Option<String>,
+    model: Option<String>,
 ) -> Result<String, String> {
     let scripts = get_scripts_dir();
     let manager_py = scripts.join("video_manager.py");
     
-    let output = python_cmd()
-        .arg(&manager_py)
+    let mut cmd = python_cmd();
+    cmd.arg(&manager_py)
         .arg("start")
         .arg("--provider").arg(&provider)
         .arg("--api-key").arg(&api_key)
         .arg("--prompt").arg(&prompt)
         .arg("--mode").arg(&mode)
-        .arg("--ratio").arg(&ratio)
-        .output()
+        .arg("--ratio").arg(&ratio);
+
+    if let Some(url) = base_url {
+        if !url.is_empty() {
+            cmd.arg("--base-url").arg(url);
+        }
+    }
+    if let Some(m) = model {
+        if !m.is_empty() {
+            cmd.arg("--model").arg(m);
+        }
+    }
+
+    let output = cmd.output()
         .await
         .map_err(|e| e.to_string())?;
 
@@ -3019,17 +2924,31 @@ async fn video_poll_task_status(
     task_id: String,
     provider: String,
     api_key: String,
+    base_url: Option<String>,
+    model: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let scripts = get_scripts_dir();
     let manager_py = scripts.join("video_manager.py");
 
-    let output = python_cmd()
-        .arg(&manager_py)
+    let mut cmd = python_cmd();
+    cmd.arg(&manager_py)
         .arg("poll")
         .arg("--provider").arg(&provider)
         .arg("--api-key").arg(&api_key)
-        .arg("--task-id").arg(&task_id)
-        .output()
+        .arg("--task-id").arg(&task_id);
+
+    if let Some(url) = base_url {
+        if !url.is_empty() {
+            cmd.arg("--base-url").arg(url);
+        }
+    }
+    if let Some(m) = model {
+        if !m.is_empty() {
+            cmd.arg("--model").arg(m);
+        }
+    }
+
+    let output = cmd.output()
         .await
         .map_err(|e| e.to_string())?;
 
@@ -3532,354 +3451,7 @@ async fn open_video_in_browser(aweme_id: String, account_name: String) -> Result
     Ok(())
 }
 
-// ============ 抖音私信命令 ============
-
-fn run_douyin_im_bridge(args: Vec<String>) -> Result<serde_json::Value, String> {
-    let script_path = get_scripts_dir().join("douyin_im_bridge.py");
-    let output = python_cmd_sync()
-        .arg(&script_path)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    let stderr_str = String::from_utf8_lossy(&output.stderr);
-    if !stderr_str.is_empty() {
-        eprintln!("[douyin_im_bridge] Python stderr:\n{}", stderr_str);
-    }
-
-    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if result_str.is_empty() {
-        return Err(format!("抖音私信脚本无输出，退出码: {:?}", output.status.code()));
-    }
-
-    let result: serde_json::Value = serde_json::from_str(&result_str)
-        .map_err(|_| format!("抖音私信结果解析失败: {}", result_str))?;
-
-    if !output.status.success() || result.get("ok").and_then(|v| v.as_bool()) == Some(false) {
-        // 把完整 JSON 作为错误字符串传回，让前端可以解析出 needs_refresh 等额外字段。
-        // 格式：JSON_ERR:<json>  前端通过前缀区分普通错误和结构化错误。
-        let json_err = serde_json::to_string(&result).unwrap_or_default();
-        let message = result.get("error").and_then(|v| v.as_str()).unwrap_or("抖音私信命令执行失败");
-        return Err(format!("JSON_ERR:{}\n{}", json_err, message));
-    }
-
-    Ok(result)
-}
-
-fn append_optional_arg(args: &mut Vec<String>, name: &str, value: Option<String>) {
-    if let Some(value) = value {
-        if !value.trim().is_empty() {
-            args.push(name.to_string());
-            args.push(value);
-        }
-    }
-}
-
-fn get_douyin_cookie_path(account_name: &str) -> Result<PathBuf, String> {
-    let store = load_accounts();
-    let _account = store.accounts.iter()
-        .find(|a| a.platform == "douyin" && a.name == account_name)
-        .ok_or_else(|| format!("抖音账号不存在: {}", account_name))?;
-    let cookie_path = get_account_dir("douyin", account_name).join("cookie.txt");
-    if !cookie_path.exists() {
-        return Err(format!("账号 {} 的 Cookie 文件不存在", account_name));
-    }
-    Ok(cookie_path)
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn douyin_im_check(accountName: String) -> Result<serde_json::Value, String> {
-    let cookie_path = get_douyin_cookie_path(&accountName)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        run_douyin_im_bridge(vec![
-            "check".to_string(),
-            "--cookie-path".to_string(),
-            cookie_path.to_string_lossy().to_string(),
-        ])
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn douyin_im_my_uid(accountName: String) -> Result<serde_json::Value, String> {
-    let cookie_path = get_douyin_cookie_path(&accountName)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        run_douyin_im_bridge(vec![
-            "my_uid".to_string(),
-            "--cookie-path".to_string(),
-            cookie_path.to_string_lossy().to_string(),
-        ])
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn douyin_im_user_info(accountName: String, userId: String) -> Result<serde_json::Value, String> {
-    let cookie_path = get_douyin_cookie_path(&accountName)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        run_douyin_im_bridge(vec![
-            "user_info".to_string(),
-            "--cookie-path".to_string(),
-            cookie_path.to_string_lossy().to_string(),
-            "--user-id".to_string(),
-            userId,
-        ])
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn douyin_im_contacts(accountName: String, uid: Option<String>, limit: Option<i64>) -> Result<serde_json::Value, String> {
-    let cookie_path = get_douyin_cookie_path(&accountName)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut args = vec![
-            "contacts".to_string(),
-            "--cookie-path".to_string(),
-            cookie_path.to_string_lossy().to_string(),
-            "--limit".to_string(),
-            limit.unwrap_or(50).to_string(),
-        ];
-        append_optional_arg(&mut args, "--uid", uid);
-        run_douyin_im_bridge(args)
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn douyin_im_messages(
-    accountName: String,
-    conversationId: Option<String>,
-    peerUid: Option<String>,
-    uid: Option<String>,
-    limit: Option<i64>,
-) -> Result<serde_json::Value, String> {
-    let cookie_path = get_douyin_cookie_path(&accountName)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut args = vec![
-            "messages".to_string(),
-            "--cookie-path".to_string(),
-            cookie_path.to_string_lossy().to_string(),
-            "--limit".to_string(),
-            limit.unwrap_or(50).to_string(),
-        ];
-        append_optional_arg(&mut args, "--conversation-id", conversationId);
-        append_optional_arg(&mut args, "--peer-uid", peerUid);
-        append_optional_arg(&mut args, "--uid", uid);
-        run_douyin_im_bridge(args)
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn douyin_im_create_conversation(
-    accountName: String,
-    toUserId: String,
-    webProtect: Option<String>,
-    keys: Option<String>,
-    uid: Option<String>,
-) -> Result<serde_json::Value, String> {
-    if toUserId.trim().is_empty() {
-        return Err("对方 UID 不能为空".to_string());
-    }
-    let cookie_path = get_douyin_cookie_path(&accountName)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut args = vec![
-            "create_conversation".to_string(),
-            "--cookie-path".to_string(),
-            cookie_path.to_string_lossy().to_string(),
-            "--to-user-id".to_string(),
-            toUserId,
-        ];
-        if let Some(web_protect_value) = webProtect {
-            if !web_protect_value.trim().is_empty() {
-                args.push("--web-protect".to_string());
-                args.push(web_protect_value);
-            }
-        }
-        if let Some(keys_value) = keys {
-            if !keys_value.trim().is_empty() {
-                args.push("--keys".to_string());
-                args.push(keys_value);
-            }
-        }
-        if let Some(uid_value) = uid {
-            if !uid_value.trim().is_empty() {
-                args.push("--uid".to_string());
-                args.push(uid_value);
-            }
-        }
-        run_douyin_im_bridge(args)
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn douyin_im_send(
-    accountName: String,
-    content: String,
-    toUserId: Option<String>,
-    conversationId: Option<String>,
-    conversationShortId: Option<i64>,
-    ticket: Option<String>,
-    webProtect: Option<String>,
-    keys: Option<String>,
-    uid: Option<String>,
-) -> Result<serde_json::Value, String> {
-    if content.trim().is_empty() {
-        return Err("消息内容不能为空".to_string());
-    }
-    let cookie_path = get_douyin_cookie_path(&accountName)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut args = vec![
-            "send".to_string(),
-            "--cookie-path".to_string(),
-            cookie_path.to_string_lossy().to_string(),
-            "--content".to_string(),
-            content,
-        ];
-        if let Some(web_protect_value) = webProtect {
-            if !web_protect_value.trim().is_empty() {
-                args.push("--web-protect".to_string());
-                args.push(web_protect_value);
-            }
-        }
-        if let Some(keys_value) = keys {
-            if !keys_value.trim().is_empty() {
-                args.push("--keys".to_string());
-                args.push(keys_value);
-            }
-        }
-        if let Some(uid_value) = uid {
-            if !uid_value.trim().is_empty() {
-                args.push("--uid".to_string());
-                args.push(uid_value);
-            }
-        }
-        if let Some(to_user_id) = toUserId {
-            if !to_user_id.trim().is_empty() {
-                args.push("--to-user-id".to_string());
-                args.push(to_user_id);
-            }
-        } else {
-            if let Some(conversation_id) = conversationId {
-                args.push("--conversation-id".to_string());
-                args.push(conversation_id);
-            }
-            if let Some(short_id) = conversationShortId {
-                args.push("--conversation-short-id".to_string());
-                args.push(short_id.to_string());
-            }
-            if let Some(ticket_value) = ticket {
-                args.push("--ticket".to_string());
-                args.push(ticket_value);
-            }
-        }
-        run_douyin_im_bridge(args)
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn douyin_im_refresh_credentials(
-    accountName: String,
-) -> Result<serde_json::Value, String> {
-    let cookie_path = get_douyin_cookie_path(&accountName)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        run_douyin_im_bridge(vec![
-            "refresh_credentials".to_string(),
-            "--cookie-path".to_string(),
-            cookie_path.to_string_lossy().to_string(),
-        ])
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn douyin_im_start_monitor(
-    accountName: String,
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let cookie_path = get_douyin_cookie_path(&accountName)?;
-    let key = format!("douyin_im_{}", accountName);
-    let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
-    if handles.contains_key(&key) {
-        return Err("该账号私信监控已在运行".to_string());
-    }
-
-    let script_path = get_scripts_dir().join("douyin_im_bridge.py");
-    let mut child = python_cmd()
-        .arg(&script_path)
-        .arg("monitor")
-        .arg("--cookie-path").arg(&cookie_path)
-        .arg("--account-name").arg(&accountName)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .spawn().map_err(|e| e.to_string())?;
-
-    let stdout = child.stdout.take().ok_or("无法打开 Python stdout")?;
-    let app_handle = app.clone();
-    let key_clone = key.clone();
-    let account_name_clone = accountName.clone();
-
-    tauri::async_runtime::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        let mut reader = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                let _ = app_handle.emit("douyin-im-event", val);
-            }
-        }
-        if let Ok(mut h) = app_handle.state::<AppState>().process_handles.lock() {
-            h.remove(&key_clone);
-        }
-        let _ = app_handle.emit("douyin-im-event", serde_json::json!({
-            "type": "status",
-            "status": "stopped",
-            "account": account_name_clone
-        }));
-    });
-
-    handles.insert(key, child);
-    Ok(())
-}
-
-#[tauri::command]
-async fn get_active_douyin_im_monitors(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
-    let handles = state.process_handles.lock().map_err(|e| e.to_string())?;
-    let monitors: Vec<serde_json::Value> = handles.keys()
-        .filter(|k| k.starts_with("douyin_im_"))
-        .map(|k| {
-            let account = k.replacen("douyin_im_", "", 1);
-            serde_json::json!({
-                "account": account,
-                "status": "running"
-            })
-        })
-        .collect();
-    Ok(monitors)
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn douyin_im_stop_monitor(accountName: String, state: State<'_, AppState>) -> Result<(), String> {
-    let key = format!("douyin_im_{}", accountName);
-    let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
-    if let Some(child) = handles.remove(&key) {
-        #[cfg(unix)]
-        {
-            if let Some(pid) = child.id() {
-                unsafe { libc::kill(pid as i32, libc::SIGTERM); }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = child.start_kill();
-        }
-    }
-    Ok(())
-}
+// ============ 直播监控命令 ============
 
 #[tauri::command]
 async fn resolve_live_url(url: String) -> Result<String, String> {
@@ -4220,7 +3792,7 @@ pub fn run() {
             get_config, save_config, get_default_config,
             list_kb_files, add_to_kb, delete_kb_file, get_kb_file_details,
             studio_generate_content,
-            analyze_comments, generate_live_reply, generate_im_reply, delete_scraped_user,
+            analyze_comments, generate_live_reply, delete_scraped_user,
             list_chat_sessions, create_chat_session, delete_chat_session,
             send_chat_message, get_chat_messages,
             list_accounts, verify_account, delete_account,
@@ -4230,12 +3802,6 @@ pub fn run() {
             get_current_task, clear_current_task,
             list_scraped_users, get_scraped_videos, get_scraped_comments,
             open_video_in_browser, resolve_user_sec_uid,
-            douyin_im_check, douyin_im_my_uid, douyin_im_user_info,
-            douyin_im_contacts, douyin_im_messages,
-            douyin_im_create_conversation, douyin_im_send,
-            douyin_im_refresh_credentials,
-            douyin_im_start_monitor, douyin_im_stop_monitor,
-            get_active_douyin_im_monitors,
             start_live_monitor, stop_live_monitor, get_active_monitors,
             get_live_history, resolve_live_url,
             geo_monitor_query,
@@ -4249,7 +3815,7 @@ pub fn run() {
             hermes_toggle_skill_status, hermes_toggle_tool_status,
             hermes_search_kb,
             video_test_ffmpeg, video_get_metadata, video_run_ffmpeg,
-            video_list_projects, video_upsert_project, video_start_generation, video_poll_task_status,
+            video_list_projects, video_upsert_project, video_delete_project, video_start_generation, video_poll_task_status,
             video_list_materials, video_download_material,
             video_list_tasks, video_concat_materials,
             video_render_advanced,
