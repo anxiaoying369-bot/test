@@ -30,6 +30,8 @@ reqwest = { version = "0.12", features = ["json", "cookies", "stream"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["process", "rt-multi-thread"] }
 regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+chrono = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

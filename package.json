@@ -8,7 +8,9 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "prepare:python": "node -e \"const{execSync}=require('child_process');const p=process.platform==='win32'?'powershell -ExecutionPolicy Bypass -File src-tauri/scripts/prepare-python-runtime.ps1':'bash src-tauri/scripts/prepare-python-runtime.sh';execSync(p,{stdio:'inherit'})\""
+    "prepare:python": "node -e \"const{execSync}=require('child_process');const p=process.platform==='win32'?'powershell -ExecutionPolicy Bypass -File src-tauri/scripts/prepare-python-runtime.ps1':'bash src-tauri/scripts/prepare-python-runtime.sh';execSync(p,{stdio:'inherit'})\"",
+    "prepare:ffmpeg": "node -e \"const{execSync}=require('child_process');const p=process.platform==='win32'?'powershell -ExecutionPolicy Bypass -File src-tauri/scripts/prepare-ffmpeg.ps1':'bash src-tauri/scripts/prepare-ffmpeg.sh';execSync(p,{stdio:'inherit'})\"",
+    "prepare:all": "npm run prepare:python && npm run prepare:ffmpeg"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

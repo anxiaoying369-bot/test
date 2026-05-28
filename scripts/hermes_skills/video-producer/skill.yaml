@@ -1,0 +1,21 @@
+name: video-producer
+description: 调用 AutoCast AI 引擎生成带货视频。支持文生视频和自动脚本创作。
+category: creative
+tools:
+  - name: create_marketing_video
+    description: 根据产品描述或脚本生成视频片段
+    parameters:
+      type: object
+      properties:
+        prompt:
+          type: string
+          description: 视频生成提示词（脚本内容）
+        ratio:
+          type: string
+          description: 视频比例 (9:16, 16:9, 1:1)
+          default: "9:16"
+        project_id:
+          type: string
+          description: 可选，指定的项目 ID
+      required:
+        - prompt

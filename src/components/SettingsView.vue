@@ -34,15 +34,15 @@ interface LLMConfig {
   geo_publish_platforms: GeoPublishPlatform[];
 }
 
-interface HermesConfig {
-  enabled: boolean;
-  gateway_url: string;
-  api_key: string;
+interface VideoConfig {
+  fal_key: string;
+  volc_key: string;
+  default_provider: string;
 }
 
 interface AppConfig {
   llm: LLMConfig;
-  hermes: HermesConfig;
+  video: VideoConfig;
 }
 
 const config = ref<AppConfig>({
@@ -61,20 +61,20 @@ const config = ref<AppConfig>({
     geo_models: [],
     geo_publish_platforms: [],
   },
-  hermes: {
-    enabled: false,
-    gateway_url: 'http://127.0.0.1:8642',
-    api_key: '',
+  video: {
+    fal_key: '',
+    volc_key: '',
+    default_provider: 'fal',
   },
 });
 
 const settingsInitialTab = inject<ReturnType<typeof ref<string>>>('settingsInitialTab');
-const activeTab = ref<'model' | 'prompt' | 'live' | 'kb' | 'geo' | 'hermes'>(
+const activeTab = ref<'model' | 'prompt' | 'live' | 'kb' | 'geo' | 'video'>(
   (settingsInitialTab?.value as any) || 'model'
 );
 
 watch(() => settingsInitialTab?.value, (tab) => {
-  if (tab && ['model', 'prompt', 'live', 'kb', 'geo', 'hermes'].includes(tab)) {
+  if (tab && ['model', 'prompt', 'live', 'kb', 'geo', 'video'].includes(tab)) {
     activeTab.value = tab as any;
   }
 });
@@ -249,16 +249,6 @@ onMounted(() => {
           知识库
         </button>
         <button
-          @click="activeTab = 'hermes'"
-          :class="[
-            'px-4 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all flex-grow sm:flex-grow-0',
-            activeTab === 'hermes' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'
-          ]"
-        >
-          <Binary class="w-4 h-4" />
-          Hermes 网关
-        </button>
-        <button
           @click="activeTab = 'geo'"
           :class="[
             'px-4 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all flex-grow sm:flex-grow-0',
@@ -267,6 +257,16 @@ onMounted(() => {
         >
           <BarChart3 class="w-4 h-4" />
           GEO 监控
+        </button>
+        <button
+          @click="activeTab = 'video'"
+          :class="[
+            'px-4 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all flex-grow sm:flex-grow-0',
+            activeTab === 'video' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'
+          ]"
+        >
+          <Video class="w-4 h-4 text-orange-400" />
+          视频生成
         </button>
       </div>
 
@@ -619,56 +619,56 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- Hermes 网关配置 -->
-        <div v-if="activeTab === 'hermes'" class="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-          <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 relative overflow-hidden group">
-            <div class="absolute inset-0 bg-gradient-to-br from-indigo-500/5 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            
-            <div class="relative">
-              <div class="flex items-center justify-between mb-4">
-                <div class="flex items-center gap-3">
-                  <div class="p-2.5 bg-indigo-500/10 rounded-xl border border-indigo-500/20">
-                    <Binary class="w-6 h-6 text-indigo-400" />
-                  </div>
-                  <div>
-                    <h3 class="text-xl font-semibold text-white">Hermes Agent</h3>
-                    <p class="text-sm text-gray-400 mt-1">配置接入自进化的 Hermes AI 代理网关</p>
-                  </div>
-                </div>
-                <button @click="config.hermes.enabled = !config.hermes.enabled" class="text-gray-500 hover:text-white transition-colors focus:outline-none">
-                  <ToggleRight v-if="config.hermes.enabled" class="w-8 h-8 text-indigo-400" />
-                  <ToggleLeft v-else class="w-8 h-8" />
-                </button>
-              </div>
+        <!-- 视频生成配置标签页 -->
+        <div v-if="activeTab === 'video'" class="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div class="flex items-center gap-2 mb-6">
+            <div class="p-2 bg-orange-500/10 rounded-lg">
+              <Video class="w-5 h-5 text-orange-500" />
+            </div>
+            <h3 class="text-lg font-medium text-white">视频生成 Provider 配置</h3>
+          </div>
 
-              <div class="space-y-5" :class="{ 'opacity-50 pointer-events-none': !config.hermes.enabled }">
-                <div>
-                  <label class="block text-sm font-medium text-gray-300 mb-2">网关地址 (Gateway URL)</label>
-                  <input
-                    v-model="config.hermes.gateway_url"
-                    type="text"
-                    placeholder="http://127.0.0.1:8642"
-                    class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
-                  />
-                  <p class="mt-2 text-xs text-gray-500">Hermes 本地网关 REST API 地址，默认 http://127.0.0.1:8642。</p>
-                </div>
-                
-                <div>
-                  <label class="block text-sm font-medium text-gray-300 mb-2">API Key (可选)</label>
-                  <div class="relative">
-                    <input
-                      v-model="config.hermes.api_key"
-                      type="password"
-                      placeholder="如果网关启用了鉴权请输入对应的 API Key"
-                      class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono text-sm"
-                    />
-                    <ShieldCheck class="w-5 h-5 text-gray-600 absolute right-4 top-3.5" />
-                  </div>
-                </div>
-              </div>
+          <div class="space-y-6">
+            <!-- fal.ai Key -->
+            <div>
+              <label class="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
+                fal.ai API Key
+              </label>
+              <input
+                v-model="config.video.fal_key"
+                type="password"
+                placeholder="sk-..."
+                class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+              />
+              <p class="text-[11px] text-gray-500 mt-2">用于 Luma Dream Machine 等模型</p>
+            </div>
+
+            <!-- Volcengine Key -->
+            <div>
+              <label class="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
+                火山引擎 (Volcengine) API Key
+              </label>
+              <input
+                v-model="config.video.volc_key"
+                type="password"
+                placeholder="AccessKey:SecretKey"
+                class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+              />
+              <p class="text-[11px] text-gray-500 mt-2">请输入 "AccessKey:SecretKey" 格式</p>
+            </div>
+
+            <!-- Default Provider -->
+            <div>
+              <label class="block text-sm font-medium text-gray-300 mb-2">默认生成服务商</label>
+              <select v-model="config.video.default_provider" class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500 transition-all">
+                <option value="fal">fal.ai</option>
+                <option value="volcengine">火山引擎</option>
+                <option value="mock">测试模拟</option>
+              </select>
             </div>
           </div>
         </div>
+
       </div>
 
       <!-- 保存操作 -->

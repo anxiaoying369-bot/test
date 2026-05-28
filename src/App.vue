@@ -10,9 +10,10 @@ import SettingsView from './components/SettingsView.vue';
 import ChatView from './components/ChatView.vue';
 import KnowledgeBaseView from './components/KnowledgeBaseView.vue';
 import ContentStudioView from './components/ContentStudioView.vue';
+import VideoStudioView from './components/VideoStudioView.vue';
 import HermesGatewayView from './components/HermesGatewayView.vue';
 
-type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'hermes';
+type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
 const currentPage = ref<PageKey>('accounts');
 const settingsInitialTab = ref<string>('model');
 
@@ -288,6 +289,10 @@ function isVerifying(platform: string, name: string) {
           <Sparkles class="w-5 h-5 text-purple-400" />
           <span>AI 创作中心</span>
         </a>
+        <a href="#" @click="currentPage = 'video_studio'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'video_studio' ? 'bg-gray-900' : 'text-gray-400']">
+          <Film class="w-5 h-5 text-orange-400" />
+          <span>视频创作中心</span>
+        </a>
         <a href="#" @click="currentPage = 'accounts'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'accounts' ? 'bg-gray-900' : 'text-gray-400']">
           <Users class="w-5 h-5" />
           <span>账号管理</span>
@@ -338,6 +343,11 @@ function isVerifying(platform: string, name: string) {
     <!-- 主内容：AI 创作中心 -->
     <main v-if="currentPage === 'studio'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <ContentStudioView />
+    </main>
+
+    <!-- 主内容：视频创作中心 -->
+    <main v-if="currentPage === 'video_studio'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
+      <VideoStudioView />
     </main>
 
     <!-- 主内容：Hermes 网关 -->

@@ -30,5 +30,5 @@ websocket-client>=1.9.0,<2.0
 protobuf>=7.34.1,<8.0
 proto-plus>=1.27.0,<2.0
 
-# ── 抖音 IM 私信桥接（scripts/douyin_im/） ────────────────────────────
-PyExecJS>=1.5.1                # 通过 Node.js 执行 JS（生成签名等）
+# ── 视频生成 (Video Generation) ───────────────────────────────────
+fal-client>=0.4.0              # fal.ai API 客户端
