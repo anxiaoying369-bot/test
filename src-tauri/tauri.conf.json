@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run prepare:python && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -24,7 +24,11 @@
       "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost",
       "assetProtocol": {
         "enable": true,
-        "scope": ["$LOCALAPPDATA/AutoCastAI/scraper_data/**"]
+        "scope": [
+          "$LOCALAPPDATA/AutoCastAI/scraper_data/**",
+          "$APPDATA/AutoCastAI/scraper_data/**",
+          "$DATA/AutoCastAI/scraper_data/**"
+        ]
       }
     }
   },
@@ -37,6 +41,36 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": [
+      "../scripts/*.py",
+      "../scripts/*.json",
+      "../scripts/douyin_im/*.py",
+      "../scripts/static/*",
+      "../scripts/DouyinComment/*.py",
+      "../scripts/DouyinComment/*.yaml",
+      "../scripts/DouyinComment/*.txt",
+      "../scripts/DouyinComment/core/**/*",
+      "../scripts/DouyinComment/services/**/*",
+      "../scripts/DouyinComment/utils/**/*",
+      "../scripts/DouyinComment/scripts/**/*",
+      "../scripts/DouyinBarrage/*.py",
+      "../scripts/DouyinBarrage/*.yaml",
+      "../scripts/DouyinBarrage/*.js",
+      "../scripts/DouyinBarrage/*.txt",
+      "../scripts/DouyinBarrage/base/**/*",
+      "../scripts/DouyinBarrage/service/**/*",
+      "../scripts/DouyinBarrage/scripts/**/*",
+      "python-runtime/python/**/*"
+    ],
+    "windows": {
+      "wix": {
+        "language": ["zh-CN", "en-US"]
+      },
+      "nsis": {
+        "languages": ["SimpChinese", "English"],
+        "installerIcon": "icons/icon.ico"
+      }
+    }
   }
 }

@@ -243,11 +243,11 @@ function copyContent() {
         <!-- ===== GEO 监控表单 ===== -->
         <div v-if="workMode === 'geo'" class="space-y-5">
           <div class="space-y-2.5">
-            <label class="text-[11px] font-bold text-gray-500 uppercase tracking-wider">品牌 / 账号名称</label>
+            <label class="text-[11px] font-bold text-gray-500 uppercase tracking-wider">品牌 / 产品名称</label>
             <input
               v-model="geoBrand"
               type="text"
-              placeholder="例如：某某创作者"
+              placeholder="例如：AutoCast"
               class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-purple-500 transition-colors"
             />
           </div>
@@ -257,7 +257,7 @@ function copyContent() {
             <textarea
               v-model="geoKeyword"
               rows="4"
-              placeholder="例如：历史知识博主推荐&#10;播客创作者有哪些..."
+              placeholder="例如：最好的直播设备推荐&#10;水基灭火器哪个牌子好..."
               class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-purple-500 transition-colors resize-none font-sans"
             ></textarea>
             <p class="text-[10px] text-gray-600">系统将把此内容作为提问发送给各 AI 平台，检测你的品牌是否被提及</p>

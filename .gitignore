@@ -27,3 +27,13 @@ dist-ssr
 **/cookie.json
 **/douyin/
 **/xiaohongshu/
+
+# Python
+.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+scripts/.npm-cache/
+
+# Local docs (work-in-progress notes)
+docs/

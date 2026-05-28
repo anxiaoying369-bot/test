@@ -134,10 +134,36 @@ class ProgressLogHandler(logging.Handler):
 # ============ 采集核心逻辑 ============
 async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
                      limit: int, skip_existing: bool, incremental: bool,
-                     output_dir: str, progress: ProgressWriter, config_obj: dict = None):
+                     output_dir: str, progress: ProgressWriter):
     """
     调用 DouyinComment 核心模块执行采集。
     """
+    # ★ 关键：必须在 import DouyinComment 任何模块前就 chdir 到可写目录。
+    #  原因：DouyinComment/core/logger.py 在首次调用时执行 os.makedirs('logs')
+    #  使用相对路径，打包后 CWD=`/` 是只读文件系统会报 [Errno 30]。
+    original_dir = os.getcwd()
+    data_dir_abs = os.path.abspath(os.path.join(output_dir, 'data', sec_uid))
+    os.makedirs(data_dir_abs, exist_ok=True)
+
+    # 在 output_dir 创建 config.yaml 的 symlink，让相对路径仍能找到配置
+    config_link = os.path.join(output_dir, 'config.yaml')
+    real_config = os.path.join(DOUYIN_COMMENT_DIR, 'config.yaml')
+    if not os.path.exists(config_link):
+        try:
+            os.symlink(real_config, config_link)
+        except OSError:
+            # 符号链接失败（如某些 FS 不支持）→ 复制一份
+            try:
+                import shutil
+                shutil.copy2(real_config, config_link)
+            except Exception:
+                pass
+
+    os.chdir(output_dir)
+    _log(f"[SCRAPER] 工作目录: {output_dir}")
+    _log(f"[SCRAPER] data_dir: {data_dir_abs}")
+
+    # 现在 CWD 已是可写目录，可以安全 import 触发 logger 初始化的模块
     from core.api import DouyinAPI, CookieExpiredError
     from core.logger import logger
     from services.video_service import VideoService
@@ -146,8 +172,12 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
     from services.follower_service import FollowerService
     from services.like_service import LikeService
     from utils.printer import Config
+    from utils.field_config import UserManager
 
-    # 注册日志 handler（添加到内部的标准 logging.Logger）
+    # UserManager 是单例，chdir 后强制 reload 配置
+    UserManager().reload_config()
+
+    # 注册日志 handler（这里会触发 logger 首次初始化，CWD 已是可写目录所以安全）
     progress_handler = ProgressLogHandler(progress)
     progress_handler.setLevel(logging.INFO)
     progress_handler.setFormatter(logging.Formatter('%(message)s'))
@@ -179,28 +209,6 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
         'comments': True,
         'replies': True,
     }
-
-    # 更改工作目录到 output_dir（DouyinComment 的 StorageManager 使用相对路径 data/）
-    original_dir = os.getcwd()
-    data_dir_abs = os.path.abspath(os.path.join(output_dir, 'data', sec_uid))
-    os.makedirs(data_dir_abs, exist_ok=True)
-
-    # FieldConfig/Logger 在模块导入时就初始化了，chdir 后就找不到 config.yaml
-    # 在 output_dir 创建 symlink 指向真实配置文件，使相对路径查找仍有效
-    config_link = os.path.join(output_dir, 'config.yaml')
-    real_config = os.path.join(DOUYIN_COMMENT_DIR, 'config.yaml')
-    if not os.path.exists(config_link):
-        try:
-            os.symlink(real_config, config_link)
-        except OSError:
-            pass  # 忽略（文件系统不支持symlink等）
-
-    os.chdir(output_dir)
-    # chdir 后重新加载配置（UserManager 是进程内单例，chdir 前初始化会导致配置路径失效）
-    from utils.field_config import UserManager
-    UserManager().reload_config()
-    _log(f"[SCRAPER] 工作目录: {output_dir}")
-    _log(f"[SCRAPER] data_dir: {data_dir_abs}")
 
     # 配置默认请求延迟
     delay = 1.0
@@ -308,16 +316,6 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
             _log(f"[SCRAPER] 喜欢采集完成: {stats}")
             progress.update(progress=100, stats=all_stats)
 
-        # 全量完成后的自动索引
-        if config_obj and scrape_type in ('comment', 'all'):
-            _log(f"[SCRAPER] 正在自动更新企业知识库...")
-            try:
-                from index_scraped_data import index_comments
-                idx_res = index_comments(sec_uid, config_obj)
-                _log(f"[SCRAPER] 知识库同步完成: {idx_res}")
-            except Exception as e:
-                _log(f"[SCRAPER] 知识库同步失败: {e}")
-
     except CookieExpiredError as e:
         _log(f"[SCRAPER] Cookie 过期: {e}")
         progress.finish(status="cookie_expired", stats=all_stats)
@@ -363,18 +361,10 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="限制采集数量（0=不限制）")
     parser.add_argument("--skip-existing", action="store_true", help="跳过已采集数据")
     parser.add_argument("--incremental", action="store_true", default=True, help="增量模式：遇到旧作品即停止")
-    parser.add_argument("--config", help="JSON 配置字符串，用于自动索引知识库")
     parser.add_argument("--output-dir", default="", help="输出目录（默认自动生成）")
     args = parser.parse_args()
 
     _log(f"[SCRAPER] 启动参数: task_id={args.task_id}, type={args.type}, incremental={args.incremental}")
-
-    config_obj = None
-    if args.config:
-        try:
-            config_obj = json.loads(args.config)
-        except Exception:
-            pass
 
     # 初始化进度
     progress = ProgressWriter(args.task_id)
@@ -418,8 +408,7 @@ def main():
             skip_existing=args.skip_existing,
             incremental=args.incremental,
             output_dir=output_dir,
-            progress=progress,
-            config_obj=config_obj
+            progress=progress
         ))
     except Exception as e:
         _log(f"[SCRAPER] 严重错误: {e}")

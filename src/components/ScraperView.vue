@@ -35,6 +35,7 @@ const secUid = ref('');
 const scrapeType = ref('all');
 const limit = ref(0);
 const skipExisting = ref(true);
+const incremental = ref(true);
 const isRunning = ref(false);
 const currentTaskId = ref('');
 const progress = ref<ScraperProgress | null>(null);
@@ -46,10 +47,12 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 const douyinAccounts = computed(() => accounts.value.filter(a => a.platform === 'douyin'));
 
 const typeOptions = [
-  { value: 'all', label: '全部（作品+评论+回复）' },
+  { value: 'all', label: '全量（作品+评论+回复）' },
   { value: 'video', label: '仅作品' },
   { value: 'comment', label: '仅评论' },
   { value: 'reply', label: '仅回复' },
+  { value: 'follower', label: '仅粉丝 (erma0 集成)' },
+  { value: 'like', label: '仅喜欢 (erma0 集成)' },
 ];
 
 const statusLabel = computed(() => {
@@ -130,6 +133,7 @@ async function startScrape() {
       scrapeType: scrapeType.value,
       limit: limit.value,
       skipExisting: skipExisting.value,
+      incremental: incremental.value,
     });
     currentTaskId.value = task.task_id;
     startPolling();
@@ -269,18 +273,23 @@ onUnmounted(() => {
       </div>
 
       <!-- 选项行 -->
-      <div class="flex items-center justify-between mt-4">
-        <label class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
+      <div class="flex items-center gap-6 mt-4">
+        <label class="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
           <input type="checkbox" v-model="skipExisting" :disabled="isRunning" class="rounded bg-gray-950 border-gray-700 disabled:opacity-50" />
-          跳过已采集的数据
+          跳过已存在评论
         </label>
+        <label class="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+          <input type="checkbox" v-model="incremental" :disabled="isRunning" class="rounded bg-gray-950 border-gray-700 disabled:opacity-50" />
+          增量模式 (遇旧作品停止)
+        </label>
+        <div class="flex-1"></div>
         <button v-if="!isRunning" @click="startScrape"
-          class="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors">
+          class="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-blue-900/20">
           <Play class="w-4 h-4" />
           开始采集
         </button>
         <button v-else @click="cancelScrape"
-          class="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors">
+          class="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-red-900/20">
           <Square class="w-4 h-4" />
           停止采集
         </button>
@@ -335,12 +344,22 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- 错误详情 -->
+      <div v-if="progress?.status === 'error' && progress?.stats?.error"
+           class="mb-4 bg-red-900/20 border border-red-500/30 rounded-lg p-3">
+        <div class="text-xs font-bold text-red-300 mb-1">错误原因</div>
+        <div class="text-[11px] text-red-200/90 font-mono break-all whitespace-pre-wrap">{{ progress.stats.error }}</div>
+        <div class="text-[10px] text-red-400/60 mt-2">
+          完整日志见: ~/Library/Application Support/AutoCastAI/logs/scrape_*.log
+        </div>
+      </div>
+
       <!-- 统计数据 -->
-      <div v-if="progress?.stats" class="grid grid-cols-3 gap-3 mb-4">
+      <div v-if="progress?.stats && progress?.status !== 'error'" class="grid grid-cols-3 gap-3 mb-4">
         <div v-for="(stats, type) in progress.stats" :key="type"
           class="bg-gray-950 p-3 rounded-lg border border-gray-800">
           <div class="text-xs text-gray-500 mb-1">
-            {{ type === 'video' ? '作品' : type === 'comment' ? '评论' : '回复' }}
+            {{ type === 'video' ? '作品' : type === 'comment' ? '评论' : type === 'reply' ? '回复' : type === 'follower' ? '粉丝' : '喜欢' }}
           </div>
           <div class="text-lg font-bold">{{ stats.new || stats.total || 0 }}</div>
           <div class="text-[10px] text-gray-600">

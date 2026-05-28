@@ -101,15 +101,42 @@ def main():
         safe_print({"type": "error", "message": f"账号 {args.account_name} 的 Cookie 不存在"})
         sys.exit(1)
 
+    # 预检查：DouyinBarrage 需要 Node.js 执行 sign.js 算 X-Bogus 签名
+    import shutil
+    node_bin = shutil.which("node")
+    if not node_bin:
+        # macOS GUI 应用的 PATH 默认不含 Homebrew，手动搜常见位置
+        for candidate in [
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            os.path.expanduser("~/.nvm/versions/node/*/bin/node"),
+        ]:
+            import glob
+            matches = glob.glob(candidate)
+            if matches and os.path.exists(matches[0]):
+                node_bin = matches[0]
+                # 把 node 所在目录加入 PATH，子进程也能继承
+                os.environ["PATH"] = os.path.dirname(node_bin) + os.pathsep + os.environ.get("PATH", "")
+                break
+
+    if not node_bin:
+        safe_print({"type": "error", "message": "未检测到 Node.js（直播监控必需）。请到 https://nodejs.org 下载安装 LTS 版本后重启应用。"})
+        sys.exit(1)
+
     # 准备 cookie 文件供 DouyinBarrage 读取
     tmp_cookie_fd, tmp_cookie_path = tempfile.mkstemp(prefix=f"dy_cookie_{args.room_id}_", suffix=".txt")
     try:
         with os.fdopen(tmp_cookie_fd, 'w') as f:
             f.write(cookie_str)
 
-        # 修改工作目录
-        os.chdir(BARRAGE_DIR)
-        
+        # ★ 关键：不要 chdir 到 BARRAGE_DIR（打包后是只读的）
+        #  DouyinBarrage 调用 setup_logger(log_dir='logs') 会在 CWD 下创建 logs/，
+        #  必须 chdir 到可写目录。load_config 在相对路径找不到时会 fallback 到 SCRIPT_DIR，
+        #  所以 config.yaml 仍然可以从 bundle 内读到。
+        work_dir = str(get_data_dir() / "live_data" / args.room_id)
+        os.makedirs(work_dir, exist_ok=True)
+        os.chdir(work_dir)
+
         # 预先获取房间信息以拿到主播名
         from service.network import enter_room_api, fetch_ttwid
         

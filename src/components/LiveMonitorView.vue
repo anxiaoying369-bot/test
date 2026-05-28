@@ -369,8 +369,17 @@ watch(() => selectedRoom.value?.messages.length, () => {
                   </a>
                 </h3>
                 <div class="text-xs text-gray-500 flex items-center gap-2">
-                  <span :class="selectedRoom.status === 'running' ? 'text-green-500' : 'text-gray-500'">
-                    ● {{ selectedRoom.status === 'running' ? '正在监控' : '连接中断' }}
+                  <span :class="{
+                    'text-green-500': selectedRoom.status === 'running',
+                    'text-yellow-400': selectedRoom.status === 'connecting',
+                    'text-red-400': selectedRoom.status === 'error',
+                    'text-gray-500': selectedRoom.status === 'stopped',
+                  }">
+                    ●
+                    <template v-if="selectedRoom.status === 'running'">正在监控</template>
+                    <template v-else-if="selectedRoom.status === 'connecting'">正在连接...</template>
+                    <template v-else-if="selectedRoom.status === 'error'">连接失败</template>
+                    <template v-else>已停止</template>
                   </span>
                   <span>• {{ selectedRoom.messages.length }} 条实时数据</span>
                 </div>
@@ -385,6 +394,16 @@ watch(() => selectedRoom.value?.messages.length, () => {
                 class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-all">
                 <Play class="w-3.5 h-3.5" /> 重新连接
               </button>
+            </div>
+          </div>
+
+          <!-- 错误详情 -->
+          <div v-if="selectedRoom.status === 'error'"
+               class="mb-3 bg-red-900/20 border border-red-500/30 rounded-lg p-3">
+            <div class="text-xs font-bold text-red-300 mb-1">连接失败</div>
+            <div class="text-[11px] text-red-200/90 font-mono break-all whitespace-pre-wrap">{{ selectedRoom.error || '未知原因（Python 子进程退出但未报告错误）' }}</div>
+            <div class="text-[10px] text-red-400/60 mt-2 leading-relaxed">
+              常见原因：① 未安装 Node.js (直播监控必需，下载 https://nodejs.org) ② Cookie 已过期，请重新登录抖音账号 ③ 直播间已关闭
             </div>
           </div>
 

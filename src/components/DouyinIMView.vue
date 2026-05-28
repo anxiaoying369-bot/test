@@ -637,15 +637,46 @@ onMounted(async () => {
     const payload: any = event.payload;
     if (payload?.type === 'status') {
       const account = String(payload.account || '');
+      const status = String(payload.status || '');
       if (account) {
-        upsertMonitor({
-          account,
-          status: payload.status === 'running' ? 'running' : 'stopped',
-          startedAt: payload.status === 'running' ? Date.now() : undefined,
-          stoppedAt: payload.status === 'running' ? undefined : Date.now(),
-        });
+        if (status === 'error') {
+          upsertMonitor({
+            account,
+            status: 'error',
+            error: payload.error || payload.message || '未知错误',
+            stoppedAt: Date.now(),
+          });
+          statusMessage.value = `${account} 私信监控失败：${payload.error || payload.message || '未知错误'}`;
+        } else if (status === 'starting') {
+          upsertMonitor({
+            account,
+            status: 'starting',
+            startedAt: Date.now(),
+            error: '',
+          });
+          statusMessage.value = `${account} 正在建立私信 WebSocket 连接...`;
+        } else if (status === 'running' || status === 'connected') {
+          upsertMonitor({
+            account,
+            status: 'running',
+            startedAt: Date.now(),
+            error: '',
+          });
+          statusMessage.value = status === 'connected'
+            ? `${account} 私信连接已建立，监听中`
+            : `${account} 私信监控运行中`;
+        } else if (status === 'disconnected') {
+          // 暂时断开但 auto_reconnect 通常会重连，先保持 running 状态等下一次事件
+          statusMessage.value = `${account} 私信连接断开 (code=${payload.code || '?'})，等待自动重连`;
+        } else if (status === 'stopped') {
+          upsertMonitor({
+            account,
+            status: 'stopped',
+            stoppedAt: Date.now(),
+          });
+          statusMessage.value = `${account} 私信监控已停止`;
+        }
       }
-      statusMessage.value = payload.status === 'running' ? `${account} 私信监控运行中` : `${account} 私信监控已停止`;
       return;
     }
     if (payload?.type === 'im_message') {

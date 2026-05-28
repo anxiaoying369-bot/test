@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, inject, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { Save, RefreshCw, CheckCircle, XCircle, ShieldCheck, Globe, Cpu, Wand2, Video, MessageSquare, RotateCcw, Binary, Plus, Trash2, BarChart3, ToggleLeft, ToggleRight } from 'lucide-vue-next';
+import { Save, RefreshCw, CheckCircle, XCircle, ShieldCheck, Globe, Cpu, Wand2, Video, MessageSquare, RotateCcw, Binary, Plus, Trash2, BarChart3, ToggleLeft, ToggleRight, Database } from 'lucide-vue-next';
 
 interface GeoModelConfig {
   name: string;
@@ -34,8 +34,15 @@ interface LLMConfig {
   geo_publish_platforms: GeoPublishPlatform[];
 }
 
+interface HermesConfig {
+  enabled: boolean;
+  gateway_url: string;
+  api_key: string;
+}
+
 interface AppConfig {
   llm: LLMConfig;
+  hermes: HermesConfig;
 }
 
 const config = ref<AppConfig>({
@@ -54,15 +61,20 @@ const config = ref<AppConfig>({
     geo_models: [],
     geo_publish_platforms: [],
   },
+  hermes: {
+    enabled: false,
+    gateway_url: 'http://127.0.0.1:8642',
+    api_key: '',
+  },
 });
 
 const settingsInitialTab = inject<ReturnType<typeof ref<string>>>('settingsInitialTab');
-const activeTab = ref<'model' | 'prompt' | 'live' | 'kb' | 'geo'>(
+const activeTab = ref<'model' | 'prompt' | 'live' | 'kb' | 'geo' | 'hermes'>(
   (settingsInitialTab?.value as any) || 'model'
 );
 
 watch(() => settingsInitialTab?.value, (tab) => {
-  if (tab && ['model', 'prompt', 'live', 'kb', 'geo'].includes(tab)) {
+  if (tab && ['model', 'prompt', 'live', 'kb', 'geo', 'hermes'].includes(tab)) {
     activeTab.value = tab as any;
   }
 });
@@ -195,11 +207,11 @@ onMounted(() => {
       </div>
 
       <!-- 选项卡切换 -->
-      <div class="flex items-center gap-1 p-1 bg-gray-900 rounded-xl mb-8 border border-gray-800">
+      <div class="flex flex-wrap items-center gap-2 p-1.5 bg-gray-900 rounded-xl mb-8 border border-gray-800">
         <button
           @click="activeTab = 'model'"
           :class="[
-            'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all',
+            'px-4 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all flex-grow sm:flex-grow-0',
             activeTab === 'model' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'
           ]"
         >
@@ -209,7 +221,7 @@ onMounted(() => {
         <button
           @click="activeTab = 'prompt'"
           :class="[
-            'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all',
+            'px-4 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all flex-grow sm:flex-grow-0',
             activeTab === 'prompt' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'
           ]"
         >
@@ -219,7 +231,7 @@ onMounted(() => {
         <button
           @click="activeTab = 'live'"
           :class="[
-            'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all',
+            'px-4 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all flex-grow sm:flex-grow-0',
             activeTab === 'live' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'
           ]"
         >
@@ -229,7 +241,7 @@ onMounted(() => {
         <button
           @click="activeTab = 'kb'"
           :class="[
-            'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all',
+            'px-4 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all flex-grow sm:flex-grow-0',
             activeTab === 'kb' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'
           ]"
         >
@@ -237,9 +249,19 @@ onMounted(() => {
           知识库
         </button>
         <button
+          @click="activeTab = 'hermes'"
+          :class="[
+            'px-4 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all flex-grow sm:flex-grow-0',
+            activeTab === 'hermes' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'
+          ]"
+        >
+          <Binary class="w-4 h-4" />
+          Hermes 网关
+        </button>
+        <button
           @click="activeTab = 'geo'"
           :class="[
-            'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all',
+            'px-4 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-all flex-grow sm:flex-grow-0',
             activeTab === 'geo' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'
           ]"
         >
@@ -591,6 +613,57 @@ onMounted(() => {
                     placeholder="描述该平台的内容风格要求，例如：段落简短、语气亲切、多用列表..."
                     class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors resize-none leading-relaxed"
                   ></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Hermes 网关配置 -->
+        <div v-if="activeTab === 'hermes'" class="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 relative overflow-hidden group">
+            <div class="absolute inset-0 bg-gradient-to-br from-indigo-500/5 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+            
+            <div class="relative">
+              <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-3">
+                  <div class="p-2.5 bg-indigo-500/10 rounded-xl border border-indigo-500/20">
+                    <Binary class="w-6 h-6 text-indigo-400" />
+                  </div>
+                  <div>
+                    <h3 class="text-xl font-semibold text-white">Hermes Agent</h3>
+                    <p class="text-sm text-gray-400 mt-1">配置接入自进化的 Hermes AI 代理网关</p>
+                  </div>
+                </div>
+                <button @click="config.hermes.enabled = !config.hermes.enabled" class="text-gray-500 hover:text-white transition-colors focus:outline-none">
+                  <ToggleRight v-if="config.hermes.enabled" class="w-8 h-8 text-indigo-400" />
+                  <ToggleLeft v-else class="w-8 h-8" />
+                </button>
+              </div>
+
+              <div class="space-y-5" :class="{ 'opacity-50 pointer-events-none': !config.hermes.enabled }">
+                <div>
+                  <label class="block text-sm font-medium text-gray-300 mb-2">网关地址 (Gateway URL)</label>
+                  <input
+                    v-model="config.hermes.gateway_url"
+                    type="text"
+                    placeholder="http://127.0.0.1:8642"
+                    class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
+                  />
+                  <p class="mt-2 text-xs text-gray-500">Hermes 本地网关 REST API 地址，默认 http://127.0.0.1:8642。</p>
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-gray-300 mb-2">API Key (可选)</label>
+                  <div class="relative">
+                    <input
+                      v-model="config.hermes.api_key"
+                      type="password"
+                      placeholder="如果网关启用了鉴权请输入对应的 API Key"
+                      class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono text-sm"
+                    />
+                    <ShieldCheck class="w-5 h-5 text-gray-600 absolute right-4 top-3.5" />
+                  </div>
                 </div>
               </div>
             </div>

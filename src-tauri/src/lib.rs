@@ -1,9 +1,112 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
+
+// ============ 全局打包资源路径 ============
+// 在 run() 初始化时由 AppHandle 注入；脚本路径解析依赖它。
+static RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
+static SCRIPTS_DIR: OnceLock<PathBuf> = OnceLock::new();
+static BUNDLED_PYTHON: OnceLock<String> = OnceLock::new();
+
+/// 返回 scripts/ 目录的绝对路径。优先级：
+///   1. 已缓存的结果
+///   2. AUTOCAST_SCRIPTS_DIR 环境变量
+///   3. 打包资源 resource_dir 下的多种 Tauri 布局：
+///        a. resource_dir/_up_/scripts   (Tauri 默认把 ../scripts/* 放这里)
+///        b. resource_dir/scripts        (map 形式或自定义 dest)
+///        c. resource_dir/resources/_up_/scripts (某些 Tauri 2 版本)
+///   4. 可执行文件附近的常见位置（macOS: Contents/Resources, Windows: 同级）
+///   5. 项目根目录的 ../scripts（dev 模式）
+///   6. 通过 kb_manager.py 这类已知文件做递归探测
+fn get_scripts_dir() -> PathBuf {
+    if let Some(p) = SCRIPTS_DIR.get() {
+        return p.clone();
+    }
+    let result = resolve_scripts_dir();
+    let _ = SCRIPTS_DIR.set(result.clone());
+    result
+}
+
+fn resolve_scripts_dir() -> PathBuf {
+    // 1. 环境变量手动指定（用户/CI 兜底）
+    if let Ok(env_dir) = std::env::var("AUTOCAST_SCRIPTS_DIR") {
+        let p = PathBuf::from(&env_dir);
+        if p.join("kb_manager.py").exists() {
+            return p;
+        }
+    }
+
+    // 2. resource_dir 下的所有候选位置
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(res) = RESOURCE_DIR.get() {
+        candidates.push(res.join("_up_").join("scripts"));
+        candidates.push(res.join("scripts"));
+        candidates.push(res.join("resources").join("_up_").join("scripts"));
+        candidates.push(res.join("resources").join("scripts"));
+    }
+
+    // 3. 可执行文件附近探测（macOS .app/Contents/Resources、Windows 同级）
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("scripts"));
+            candidates.push(parent.join("_up_").join("scripts"));
+            candidates.push(parent.join("resources").join("scripts"));
+            candidates.push(parent.join("resources").join("_up_").join("scripts"));
+            // macOS .app 包内位置：MacOS/<exe> → ../Resources/_up_/scripts
+            if let Some(pp) = parent.parent() {
+                candidates.push(pp.join("Resources").join("_up_").join("scripts"));
+                candidates.push(pp.join("Resources").join("scripts"));
+            }
+        }
+    }
+
+    // 4. dev fallback
+    candidates.push(PathBuf::from("..").join("scripts"));
+    candidates.push(PathBuf::from(".").join("scripts"));
+
+    for c in &candidates {
+        // 用 kb_manager.py 这个我们一定打包了的文件作为存在性标记
+        if c.join("kb_manager.py").exists() {
+            return c.clone();
+        }
+    }
+
+    // 5. 兜底：以 resource_dir 为根递归搜（最多 4 层），找 kb_manager.py
+    if let Some(res) = RESOURCE_DIR.get() {
+        if let Some(found) = find_file_upwards(res, "kb_manager.py", 4) {
+            if let Some(parent) = found.parent() {
+                return parent.to_path_buf();
+            }
+        }
+    }
+
+    // 真的找不到了，返回相对路径让上层报清晰错误
+    eprintln!("[autocast] WARN: 未找到 scripts/ 目录！RESOURCE_DIR={:?}, CWD={:?}",
+              RESOURCE_DIR.get(),
+              std::env::current_dir().ok());
+    PathBuf::from("..").join("scripts")
+}
+
+fn find_file_upwards(root: &std::path::Path, target: &str, max_depth: usize) -> Option<PathBuf> {
+    if max_depth == 0 { return None; }
+    if let Ok(entries) = fs::read_dir(root) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_file() && p.file_name().map(|n| n == target).unwrap_or(false) {
+                return Some(p);
+            }
+            if p.is_dir() {
+                if let Some(found) = find_file_upwards(&p, target, max_depth - 1) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
 
 // ============ 状态管理 ============
 pub struct AppState {
@@ -127,11 +230,28 @@ fn default_live_reply_prompt() -> String {
 fn default_analysis_prompt() -> String {
     "你是一位资深的社交媒体数据分析师。我会为你提供一组短视频评论数据，请从以下几个维度进行深度分析：\n1. 舆情氛围：整体情绪倾向（积极、消极、中立）及其占比。\n2. 核心热点：用户最关心的前3个话题或痛点。\n3. 用户意图：是否存在高潜力的咨询、购买意向或反馈建议。\n4. 互动建议：针对当前评论区，建议运营人员如何进行回复或引导。\n请用专业且简洁的 Markdown 格式输出分析报告。".to_string()
 }
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct HermesConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_hermes_url")]
+    pub gateway_url: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+fn default_hermes_url() -> String {
+    "http://127.0.0.1:8642".to_string()
+}
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub llm: LLMConfig,
+    #[serde(default)]
+    pub hermes: HermesConfig,
 }
+
+// 持久化存储结构
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -278,28 +398,736 @@ fn get_data_dir() -> PathBuf {
 }
 
 /// 跨平台 Python 可执行文件路径。
-/// 优先使用项目根目录下的 `.venv`，如果不存在则回退到系统 Python。
+/// 查找顺序：
+///   1. 环境变量 AUTOCAST_PYTHON
+///   2. 打包内 python-build-standalone（开箱即用方案）
+///        - macOS/Linux: <res>/_up_/src-tauri/python-runtime/python/bin/python3
+///        - Windows    : <res>\_up_\src-tauri\python-runtime\python\python.exe
+///        - 同时探测 <res>/python-runtime/python/...（如果 tauri 路径布局不同）
+///   3. 项目根目录的 .venv (dev)
+///   4. dev 模式下 src-tauri/python-runtime/python/...
+///   5. 系统 PATH 中的 python/python3
 fn python_executable() -> String {
-    let venv_path = if cfg!(windows) {
-        PathBuf::from("..").join(".venv").join("Scripts").join("python.exe")
+    if let Some(p) = BUNDLED_PYTHON.get() {
+        return p.clone();
+    }
+    let result = resolve_python_executable();
+    let _ = BUNDLED_PYTHON.set(result.clone());
+    result
+}
+
+fn resolve_python_executable() -> String {
+    // 1. 环境变量
+    if let Ok(env_py) = std::env::var("AUTOCAST_PYTHON") {
+        if !env_py.trim().is_empty() && PathBuf::from(&env_py).exists() {
+            return env_py;
+        }
+    }
+
+    let (rel_bin, fallback_cmd): (PathBuf, &str) = if cfg!(windows) {
+        (PathBuf::from("python").join("python.exe"), "python")
     } else {
-        PathBuf::from("..").join(".venv").join("bin").join("python3")
+        (PathBuf::from("python").join("bin").join("python3"), "python3")
     };
 
-    if venv_path.exists() {
-        venv_path.to_string_lossy().to_string()
-    } else if cfg!(windows) {
-        "python".to_string()
-    } else {
-        "python3".to_string()
+    // 2. 打包内的 python-runtime
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(res) = RESOURCE_DIR.get() {
+        candidates.push(res.join("_up_").join("src-tauri").join("python-runtime").join(&rel_bin));
+        candidates.push(res.join("python-runtime").join(&rel_bin));
+        candidates.push(res.join("_up_").join("python-runtime").join(&rel_bin));
     }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            // macOS .app/Contents/MacOS/<exe> → ../Resources/_up_/src-tauri/python-runtime
+            if let Some(pp) = parent.parent() {
+                candidates.push(pp.join("Resources").join("_up_").join("src-tauri").join("python-runtime").join(&rel_bin));
+                candidates.push(pp.join("Resources").join("python-runtime").join(&rel_bin));
+            }
+            candidates.push(parent.join("python-runtime").join(&rel_bin));
+        }
+    }
+    // 3. dev 模式：src-tauri/python-runtime（CWD=src-tauri/）
+    candidates.push(PathBuf::from("python-runtime").join(&rel_bin));
+    // 4. dev 模式：项目根目录的 .venv 或 src-tauri/python-runtime
+    let venv_rel = if cfg!(windows) {
+        PathBuf::from(".venv").join("Scripts").join("python.exe")
+    } else {
+        PathBuf::from(".venv").join("bin").join("python3")
+    };
+    candidates.push(PathBuf::from("..").join(&venv_rel));
+    candidates.push(PathBuf::from("..").join("src-tauri").join("python-runtime").join(&rel_bin));
+
+    for c in &candidates {
+        if c.exists() {
+            return c.to_string_lossy().to_string();
+        }
+    }
+
+    eprintln!("[autocast] WARN: 未找到 bundled Python，回退到系统 PATH。候选路径：");
+    for c in &candidates {
+        eprintln!("  - {}", c.display());
+    }
+    fallback_cmd.to_string()
 }
 
 /// 创建已预置 AUTOCAST_DATA_DIR 环境变量的 tokio Python 子进程 Command。
 /// Python 脚本通过 compat.get_data_dir() 优先读取该变量，确保路径与 Rust 端严格一致。
+
+/// 诊断命令：返回运行时关键路径 + Python 依赖检查结果
+#[tauri::command]
+async fn autocast_diagnostics() -> Result<serde_json::Value, String> {
+    let scripts = get_scripts_dir();
+    let py = python_executable();
+    let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    let resource = RESOURCE_DIR.get().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    let kb_exists = scripts.join("kb_manager.py").exists();
+
+    // 探测 Python 关键依赖
+    let check_modules = [
+        "DrissionPage", "lancedb", "pypdf", "openai",
+        "websockets", "httpx", "yaml", "tqdm", "PIL",
+    ];
+    let probe_code = format!(
+        "import importlib,json,sys; res={{}}\nfor m in {:?}:\n  try: importlib.import_module(m); res[m]=True\n  except Exception as e: res[m]=str(e)\nprint(json.dumps(res))",
+        check_modules
+    );
+    let dep_result = tokio::process::Command::new(&py)
+        .arg("-c")
+        .arg(&probe_code)
+        .output()
+        .await;
+    let deps = match dep_result {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).to_string();
+            serde_json::from_str::<serde_json::Value>(&s)
+                .unwrap_or(serde_json::json!({ "raw": s }))
+        }
+        Ok(o) => serde_json::json!({
+            "error": String::from_utf8_lossy(&o.stderr).to_string()
+        }),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    };
+
+    Ok(serde_json::json!({
+        "scripts_dir": scripts.to_string_lossy(),
+        "kb_manager_exists": kb_exists,
+        "python": py,
+        "cwd": cwd,
+        "exe": exe,
+        "resource_dir": resource,
+        "python_modules": deps,
+    }))
+}
+
+// ============ Hermes Agent 网关控制 ============
+
+/// 跨平台查找 hermes 可执行文件
+fn which_hermes() -> String {
+    let exe_name = if cfg!(windows) { "hermes.exe" } else { "hermes" };
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // 用户 home 下常见安装位置
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".local").join("bin").join(exe_name));
+        if cfg!(windows) {
+            // pipx / Python Scripts / 自定义安装路径
+            candidates.push(home.join("AppData").join("Local").join("Programs").join("hermes").join(exe_name));
+            candidates.push(home.join("AppData").join("Local").join("hermes").join("bin").join(exe_name));
+            candidates.push(home.join("AppData").join("Roaming").join("Python").join("Scripts").join(exe_name));
+            candidates.push(home.join("scoop").join("shims").join(exe_name));
+        }
+    }
+
+    if cfg!(windows) {
+        // Chocolatey / Program Files
+        candidates.push(PathBuf::from(r"C:\Program Files\hermes").join(exe_name));
+        candidates.push(PathBuf::from(r"C:\ProgramData\chocolatey\bin").join(exe_name));
+    } else {
+        candidates.push(PathBuf::from("/usr/local/bin/hermes"));
+        candidates.push(PathBuf::from("/opt/homebrew/bin/hermes"));
+        candidates.push(PathBuf::from("/usr/bin/hermes"));
+    }
+
+    for c in candidates {
+        if c.exists() {
+            return c.to_string_lossy().to_string();
+        }
+    }
+    // fallback：交给 PATH 解析
+    if cfg!(windows) { "hermes.exe".to_string() } else { "hermes".to_string() }
+}
+
+/// Write API_SERVER_ENABLED=true to ~/.hermes/.env so the gateway starts the HTTP API on :8642
+/// Write API_SERVER_ENABLED=true to ~/.hermes/.env.
+/// Returns the existing or newly generated API_SERVER_KEY (empty string = no key set).
+#[tauri::command]
+async fn hermes_enable_api_server() -> Result<String, String> {
+    let env_path = dirs::home_dir()
+        .ok_or("无法获取 home 目录")?
+        .join(".hermes")
+        .join(".env");
+
+    let content = if env_path.exists() {
+        fs::read_to_string(&env_path).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let mut api_key_value = String::new();
+
+    // Ensure API_SERVER_ENABLED=true
+    if !lines.iter().any(|l| l.trim() == "API_SERVER_ENABLED=true") {
+        lines.push("API_SERVER_ENABLED=true".to_string());
+    }
+
+    // Extract existing API_SERVER_KEY if set
+    for line in &lines {
+        if let Some(val) = line.strip_prefix("API_SERVER_KEY=") {
+            api_key_value = val.trim().to_string();
+        }
+    }
+
+    // Generate a new key if missing
+    if api_key_value.is_empty() {
+        api_key_value = uuid::Uuid::new_v4().to_string().replace("-", "");
+        lines.push(format!("API_SERVER_KEY={}", api_key_value));
+    }
+
+    let new_content = lines.join("\n") + "\n";
+    fs::write(&env_path, new_content).map_err(|e| e.to_string())?;
+
+    // Return the key (newly generated or existing)
+    Ok(api_key_value)
+}
+
+/// Fire-and-forget restart of the launchd/systemd-managed Hermes gateway.
+/// Returns immediately — caller should poll /health to detect when it's back up.
+#[tauri::command]
+async fn hermes_restart_service() -> Result<(), String> {
+    let hermes_bin = which_hermes();
+    // spawn() and drop — takes ~10s to complete, don't block the UI
+    tokio::process::Command::new(&hermes_bin)
+        .args(["gateway", "restart"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("重启网关失败: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_hermes_gateway(
+    _app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let key = "hermes_gateway".to_string();
+    // Kill old owned process
+    let old_child = {
+        let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+        handles.remove(&key)
+    };
+    if let Some(mut child) = old_child {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    // Fire-and-forget restart of launchd service (takes ~10s — let caller poll health)
+    let hermes_bin = which_hermes();
+    let spawned = tokio::process::Command::new(&hermes_bin)
+        .args(["gateway", "restart"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    match spawned {
+        Ok(_) => Ok(()), // launchd restart in progress
+        Err(_) => {
+            // Fallback: start foreground process with API server enabled
+            let child = tokio::process::Command::new(&hermes_bin)
+                .args(["gateway", "run", "--replace"])
+                .env("API_SERVER_ENABLED", "true")
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|e| format!("启动 Hermes 失败 ({}): {}", hermes_bin, e))?;
+
+            let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+            handles.insert(key, child);
+            Ok(())
+        }
+    }
+}
+
+#[tauri::command]
+async fn stop_hermes_gateway(state: State<'_, AppState>) -> Result<(), String> {
+    // Try stopping owned process
+    {
+        let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+        if let Some(mut child) = handles.remove("hermes_gateway") {
+            let _ = child.start_kill();
+            return Ok(());
+        }
+    }
+    // Try stopping launchd service
+    let hermes_bin = which_hermes();
+    let output = tokio::process::Command::new(&hermes_bin)
+        .args(["gateway", "stop"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+#[tauri::command]
+async fn check_hermes_status(state: State<'_, AppState>) -> Result<bool, String> {
+    // Clean up exited owned process
+    {
+        let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
+        if let Some(child) = handles.get_mut("hermes_gateway") {
+            if let Ok(Some(_)) = child.try_wait() {
+                handles.remove("hermes_gateway");
+            }
+        }
+    }
+    // HTTP health check is authoritative — Hermes may run independently
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|e| e.to_string())?;
+    match client.get("http://127.0.0.1:8642/health").send().await {
+        Ok(r) => Ok(r.status().is_success()),
+        Err(_) => Ok(false),
+    }
+}
+
+/// Detailed health info from the gateway
+#[tauri::command]
+async fn check_hermes_gateway_health(gateway_url: String, api_key: String) -> Result<serde_json::Value, String> {
+    let url = format!("{}/health", gateway_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut req = client.get(&url);
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
+    }
+    let response = req.send().await.map_err(|e| format!("连接失败: {}", e))?;
+    if response.status().is_success() {
+        let body = response.json::<serde_json::Value>().await
+            .unwrap_or(serde_json::json!({"status": "ok"}));
+        Ok(body)
+    } else {
+        Err(format!("HTTP {}", response.status().as_u16()))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HermesSession {
+    pub id: String,
+    pub title: String,
+    pub preview: String,
+    pub last_active: String,
+}
+
+/// List sessions from Hermes CLI (hermes sessions list).
+/// Hermes stores sessions in a local SQLite DB; there is no REST endpoint for listing.
+#[tauri::command]
+async fn list_hermes_sessions() -> Result<Vec<HermesSession>, String> {
+    let hermes_bin = which_hermes();
+    let output = tokio::process::Command::new(&hermes_bin)
+        .args(["sessions", "list", "--limit", "30"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        // Not an error — hermes might not be installed or sessions empty
+        return Ok(vec![]);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut sessions = Vec::new();
+
+    // Output format:
+    // Title                            Preview                  Last Active   ID
+    // ──────────────────────────────────────────────────────────────────────────────────
+    // Session title here               Preview text here...     2h ago        some_id
+    for line in stdout.lines().skip(2) {  // Skip header + separator
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('─') {
+            continue;
+        }
+        // Tab or multiple-spaces separated; try splitting by 2+ spaces
+        let parts: Vec<&str> = line.splitn(4, "  ").map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        if parts.len() >= 2 {
+            let title = parts.first().unwrap_or(&"").to_string();
+            let preview = parts.get(1).unwrap_or(&"").to_string();
+            let last_active = parts.get(2).unwrap_or(&"").to_string();
+            let id = parts.get(3).unwrap_or(&"").to_string();
+
+            if !id.is_empty() || !last_active.is_empty() {
+                // When there are only 3 parts, last_active might actually be the ID
+                let (real_last_active, real_id) = if parts.len() == 3 {
+                    (last_active.clone(), preview.clone())
+                } else {
+                    (last_active, id)
+                };
+                if !real_id.is_empty() {
+                    sessions.push(HermesSession {
+                        id: real_id,
+                        title: if title == "—" || title.is_empty() { "未命名会话".to_string() } else { title },
+                        preview: preview.chars().take(80).collect(),
+                        last_active: real_last_active,
+                    });
+                }
+            }
+        }
+    }
+    Ok(sessions)
+}
+
+/// Get status of a specific run (GET /v1/runs/{run_id})
+#[tauri::command]
+async fn hermes_list_runs(gateway_url: String, api_key: String, run_id: Option<String>) -> Result<Vec<serde_json::Value>, String> {
+    let Some(rid) = run_id else {
+        return Ok(vec![]);
+    };
+    let url = format!("{}/v1/runs/{}", gateway_url.trim_end_matches('/'), rid);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut req = client.get(&url);
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
+    }
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<serde_json::Value>().await {
+                Ok(body) => Ok(vec![body]),
+                Err(_) => Ok(vec![]),
+            }
+        }
+        _ => Ok(vec![]),
+    }
+}
+
+/// Stop an active run via POST /v1/runs/{id}/stop
+#[tauri::command]
+async fn hermes_stop_run(gateway_url: String, api_key: String, run_id: String) -> Result<(), String> {
+    let url = format!("{}/v1/runs/{}/stop", gateway_url.trim_end_matches('/'), run_id);
+    let client = reqwest::Client::new();
+    let mut req = client.post(&url).json(&serde_json::json!({}));
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
+    }
+    req.send().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Approve or reject a tool call for a pending run
+#[tauri::command]
+async fn hermes_approve_run(
+    gateway_url: String,
+    api_key: String,
+    run_id: String,
+    approved: bool,
+) -> Result<(), String> {
+    let url = format!("{}/v1/runs/{}/approval", gateway_url.trim_end_matches('/'), run_id);
+    let client = reqwest::Client::new();
+    let mut req = client
+        .post(&url)
+        .json(&serde_json::json!({"approved": approved}));
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
+    }
+    req.send().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Send a chat message to Hermes and stream the response via Tauri events.
+/// Events emitted: hermes-chunk, hermes-done, hermes-error, hermes-run-id, hermes-tool-calls
+/// Note: X-Hermes-Session-Id is only sent when api_key is set (403 without it).
+#[tauri::command]
+async fn hermes_send_message(
+    app: tauri::AppHandle,
+    gateway_url: String,
+    api_key: String,
+    messages: Vec<serde_json::Value>,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+
+    let url = format!("{}/v1/chat/completions", gateway_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300)) // agent tasks can be long
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut req = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream");
+
+    // X-Hermes-Session-Id requires API_SERVER_KEY to be configured on the server.
+    // Only send it when the user has set an api_key in settings.
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
+        if let Some(ref sid) = session_id {
+            if !sid.is_empty() {
+                req = req.header("X-Hermes-Session-Id", sid.as_str());
+            }
+        }
+    }
+
+    // "model" is ignored by Hermes (it uses its configured model), but required by OpenAI spec
+    let body = serde_json::json!({
+        "messages": messages,
+        "stream": true,
+        "model": "hermes-agent"
+    });
+
+    let response = req.json(&body).send().await.map_err(|e| {
+        let msg = format!("连接失败: {}", e);
+        let _ = app.emit("hermes-error", serde_json::json!({"message": msg.clone()}));
+        msg
+    })?;
+
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        let msg = format!("HTTP {}: {}", status, text);
+        let _ = app.emit("hermes-error", serde_json::json!({"message": msg.clone()}));
+        return Err(msg);
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+
+    let mut current_event = String::new();
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| {
+            let msg = e.to_string();
+            let _ = app.emit("hermes-error", serde_json::json!({"message": msg.clone()}));
+            msg
+        })?;
+
+        let text = String::from_utf8_lossy(&chunk);
+        buffer.push_str(&text);
+
+        // Drain complete SSE lines from buffer
+        loop {
+            match buffer.find('\n') {
+                None => break,
+                Some(pos) => {
+                    let line = buffer[..pos].trim_end_matches('\r').to_string();
+                    buffer = buffer[pos + 1..].to_string();
+
+                    if line.starts_with("event: ") {
+                        current_event = line[7..].to_string();
+                        continue;
+                    }
+
+                    if !line.starts_with("data: ") {
+                        if line.is_empty() {
+                            current_event = String::new();
+                        }
+                        continue;
+                    }
+                    let data = &line[6..];
+
+                    if data == "[DONE]" {
+                        let _ = app.emit("hermes-done", serde_json::json!({}));
+                        return Ok(());
+                    }
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
+                        // Check for error in stream (OpenAI format)
+                        if let Some(err) = val.get("error") {
+                            let msg = err["message"].as_str()
+                                .or_else(|| err.as_str())
+                                .unwrap_or("未知流错误");
+                            let _ = app.emit("hermes-error", serde_json::json!({"message": msg}));
+                            return Ok(());
+                        }
+
+                        // Emit custom events
+                        if !current_event.is_empty() {
+                            if current_event == "hermes.tool.progress" {
+                                let _ = app.emit("hermes-tool-progress", val.clone());
+                            } else {
+                                let _ = app.emit("hermes-event", serde_json::json!({
+                                    "event": current_event,
+                                    "data": val
+                                }));
+                            }
+                        }
+
+                        // Emit run ID for stop/approval operations
+                        if let Some(run_id) = val.get("id").and_then(|v| v.as_str()) {
+                            let _ = app.emit("hermes-run-id", serde_json::json!({"run_id": run_id}));
+                        }
+                        
+                        // Content delta (OpenAI format)
+                        if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
+                            if let Some(choice) = choices.get(0) {
+                                if let Some(delta) = choice.get("delta") {
+                                    if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
+                                        if !content.is_empty() {
+                                            let _ = app.emit("hermes-chunk", serde_json::json!({"content": content}));
+                                        }
+                                    }
+                                    if let Some(reasoning) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
+                                        if !reasoning.is_empty() {
+                                            let _ = app.emit("hermes-thinking", serde_json::json!({"content": reasoning}));
+                                        }
+                                    }
+                                    if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+                                        if !tool_calls.is_empty() {
+                                            let _ = app.emit("hermes-tool-calls", serde_json::json!({"tool_calls": tool_calls}));
+                                        }
+                                    }
+                                }
+                                
+                                // Finish reason
+                                let finish = choice.get("finish_reason").and_then(|v| v.as_str()).unwrap_or("");
+                                if !finish.is_empty() && finish != "null" {
+                                    let _ = app.emit("hermes-done", serde_json::json!({"finish_reason": finish}));
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = app.emit("hermes-done", serde_json::json!({}));
+    Ok(())
+}
+
+/// Read the current API_SERVER_KEY from ~/.hermes/.env
+#[tauri::command]
+async fn hermes_read_api_key() -> Result<String, String> {
+    let env_path = dirs::home_dir()
+        .ok_or("无法获取 home 目录")?
+        .join(".hermes")
+        .join(".env");
+
+    if !env_path.exists() {
+        return Ok(String::new());
+    }
+
+    let content = fs::read_to_string(&env_path).map_err(|e| e.to_string())?;
+    for line in content.lines() {
+        if let Some(val) = line.strip_prefix("API_SERVER_KEY=") {
+            return Ok(val.trim().to_string());
+        }
+    }
+    Ok(String::new())
+}
+
+/// Write/update API_SERVER_KEY in ~/.hermes/.env (empty key = remove the line)
+#[tauri::command]
+async fn hermes_set_api_key(key: String) -> Result<(), String> {
+    let hermes_dir = dirs::home_dir()
+        .ok_or("无法获取 home 目录")?
+        .join(".hermes");
+    fs::create_dir_all(&hermes_dir).map_err(|e| e.to_string())?;
+
+    let env_path = hermes_dir.join(".env");
+    let content = if env_path.exists() {
+        fs::read_to_string(&env_path).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let existing_pos = lines.iter().position(|l| l.starts_with("API_SERVER_KEY="));
+
+    if key.is_empty() {
+        // Remove existing key line if present
+        if let Some(pos) = existing_pos {
+            lines.remove(pos);
+        }
+    } else {
+        let new_line = format!("API_SERVER_KEY={}", key);
+        if let Some(pos) = existing_pos {
+            lines[pos] = new_line;
+        } else {
+            lines.push(new_line);
+        }
+    }
+
+    let new_content = if lines.is_empty() {
+        String::new()
+    } else {
+        lines.join("\n") + "\n"
+    };
+    fs::write(&env_path, new_content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 计算扩展后的 PATH，包含常见 Node.js / Homebrew / pipx 安装位置。
+/// macOS GUI App 默认 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，
+/// 必须补充 /usr/local/bin 和 /opt/homebrew/bin 否则找不到 node、ffmpeg、hermes 等。
+fn enhanced_path() -> String {
+    let current = std::env::var("PATH").unwrap_or_default();
+    let extra_dirs = if cfg!(target_os = "macos") {
+        vec![
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+        ]
+    } else if cfg!(target_os = "linux") {
+        vec![
+            "/usr/local/bin",
+            "/snap/bin",
+        ]
+    } else {
+        vec![]
+    };
+
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let mut parts: Vec<String> = current.split(sep).map(|s| s.to_string()).collect();
+
+    // 把 home/.local/bin 加上（pipx 默认安装位置）
+    if let Some(home) = dirs::home_dir() {
+        let local_bin = home.join(".local").join("bin");
+        let s = local_bin.to_string_lossy().to_string();
+        if !parts.iter().any(|p| p == &s) {
+            parts.push(s);
+        }
+    }
+
+    for d in extra_dirs {
+        if !parts.iter().any(|p| p == d) {
+            parts.push(d.to_string());
+        }
+    }
+    parts.join(sep)
+}
+
 fn python_cmd() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(python_executable());
     cmd.env("AUTOCAST_DATA_DIR", get_data_dir().to_string_lossy().to_string());
+    cmd.env("PYTHONUNBUFFERED", "1"); // 强制 Python 立即输出
+    cmd.env("PATH", enhanced_path());  // 补全 PATH，让 Python 子进程能找到 node 等工具
+    cmd.arg("-u"); // 开启无缓冲模式
     cmd
 }
 
@@ -307,6 +1135,7 @@ fn python_cmd() -> tokio::process::Command {
 fn python_cmd_sync() -> std::process::Command {
     let mut cmd = std::process::Command::new(python_executable());
     cmd.env("AUTOCAST_DATA_DIR", get_data_dir().to_string_lossy().to_string());
+    cmd.env("PATH", enhanced_path());
     cmd
 }
 
@@ -973,7 +1802,7 @@ async fn send_chat_message(
                         let lim = func_args["limit"].as_i64().unwrap_or(0) as i32;
 
                         // 启动采集任务后立即返回，任务在后台运行
-                        match start_scrape(acc, plat, uid, stype.clone(), lim, true, true, true, state.clone()).await {
+                        match start_scrape(acc, plat, uid, stype.clone(), lim, true, true, state.clone()).await {
                             Ok(task) => {
                                 let limit_desc = if lim > 0 { format!("限制 {} 条", lim) } else { "不限数量".to_string() };
                                 format!("BACKGROUND_TASK_STARTED:采集任务已在后台启动。类型：{}，{}。任务 ID：{}。请告知用户去「评论采集」页面查看实时进度和最终数据。",
@@ -1108,6 +1937,11 @@ async fn get_default_config() -> Result<AppConfig, String> {
             live_content: "".to_string(),
             geo_models: vec![],
             geo_publish_platforms: vec![],
+        },
+        hermes: HermesConfig {
+            enabled: false,
+            gateway_url: default_hermes_url(),
+            api_key: "".to_string(),
         }
     })
 }
@@ -1193,7 +2027,7 @@ async fn init_login_session(platform: String, state: State<'_, AppState>) -> Res
         _ => return Err("不支持的平台".to_string()),
     };
 
-    let script_path = PathBuf::from("..").join("scripts").join(script_name);
+    let script_path = get_scripts_dir().join(script_name);
 
     // 把 Python 子进程的 stdout/stderr 重定向到日志文件，方便排查
     let log_dir = get_data_dir().join("logs");
@@ -1304,7 +2138,7 @@ async fn verify_account(platform: String, name: String) -> Result<VerifyResult, 
         .ok_or_else(|| "账号不存在".to_string())?;
 
     let cookie_json = get_account_dir(&platform, &name).join("cookie.json");
-    let script_path = PathBuf::from("..").join("scripts").join("verify_account.py");
+    let script_path = get_scripts_dir().join("verify_account.py");
 
     let output = python_cmd()
         .arg(&script_path)
@@ -1399,7 +2233,6 @@ async fn start_scrape(
     limit: i32,
     skip_existing: bool,
     incremental: bool,
-    index_kb: bool,
     state: State<'_, AppState>,
 ) -> Result<ScraperTask, String> {
     // 检查是否有任务正在运行
@@ -1422,7 +2255,7 @@ async fn start_scrape(
 
     let task_id = Uuid::new_v4().to_string();
     let cookie_file = get_account_dir(&platform, &account_name).join("cookie.txt");
-    let script_path = PathBuf::from("..").join("scripts").join("douyin_scraper.py");
+    let script_path = get_scripts_dir().join("douyin_scraper.py");
 
     // 日志文件
     let log_dir = get_data_dir().join("logs");
@@ -1446,12 +2279,6 @@ async fn start_scrape(
 
     if incremental {
         cmd.arg("--incremental");
-    }
-
-    if index_kb {
-        let config = get_config().await?;
-        let config_str = serde_json::to_string(&config).unwrap();
-        cmd.arg("--config").arg(config_str);
     }
 
     let child = cmd
@@ -1609,7 +2436,7 @@ async fn studio_generate_internal(
     };
 
     let system_prompt = format!(
-        "你是一位资深的 AI 内容创作者和 GEO（生成式引擎优化）专家。\n\
+        "你是一位资深的 AI 内容专家和 GEO（生成式引擎优化）专家。\n\
         你的任务是根据提供的素材和知识库内容，为用户创作或改造高质量内容。\n\n\
         核心准则：\n\
         1. **答案前置 (Answer-First)**：直接在内容开头回答核心问题或展示最核心价值。\n\
@@ -1786,7 +2613,7 @@ async fn query_geo_model(model: GeoModelConfig, brand: String, keyword: String) 
     };
 
     let prompt = format!(
-        "请问关于「{}」，你能推荐一些相关的内容创作者或品牌吗？请给出具体名称，并说明你的信息来源。",
+        "对于「{}」这个话题，你会首选推荐哪些品牌、产品或信息源？请给出具体名称，并简要说明推荐理由。",
         keyword
     );
 
@@ -1883,7 +2710,7 @@ async fn query_geo_model(model: GeoModelConfig, brand: String, keyword: String) 
 
 #[tauri::command]
 async fn list_kb_files() -> Result<serde_json::Value, String> {
-    let script_path = PathBuf::from("..").join("scripts").join("kb_manager.py");
+    let script_path = get_scripts_dir().join("kb_manager.py");
     let output = python_cmd()
         .arg(&script_path)
         .arg("list")
@@ -1905,7 +2732,7 @@ async fn add_to_kb(file_path: String) -> Result<serde_json::Value, String> {
     let config = get_config().await?;
     let config_str = serde_json::to_string(&config).unwrap();
 
-    let script_path = PathBuf::from("..").join("scripts").join("kb_manager.py");
+    let script_path = get_scripts_dir().join("kb_manager.py");
     let output = python_cmd()
         .arg(&script_path)
         .arg("add")
@@ -1926,7 +2753,7 @@ async fn add_to_kb(file_path: String) -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 async fn get_kb_file_details(filename: String) -> Result<serde_json::Value, String> {
-    let script_path = PathBuf::from("..").join("scripts").join("kb_manager.py");
+    let script_path = get_scripts_dir().join("kb_manager.py");
     let output = python_cmd()
         .arg(&script_path)
         .arg("details")
@@ -1946,7 +2773,7 @@ async fn get_kb_file_details(filename: String) -> Result<serde_json::Value, Stri
 
 #[tauri::command]
 async fn delete_kb_file(filename: String) -> Result<serde_json::Value, String> {
-    let script_path = PathBuf::from("..").join("scripts").join("kb_manager.py");
+    let script_path = get_scripts_dir().join("kb_manager.py");
     let output = python_cmd()
         .arg(&script_path)
         .arg("delete")
@@ -1968,7 +2795,7 @@ async fn search_kb_internal(query: String) -> Result<String, String> {
     let config = get_config().await?;
     let config_str = serde_json::to_string(&config).unwrap();
 
-    let script_path = PathBuf::from("..").join("scripts").join("kb_manager.py");
+    let script_path = get_scripts_dir().join("kb_manager.py");
     let output = python_cmd()
         .arg(&script_path)
         .arg("search")
@@ -1980,11 +2807,29 @@ async fn search_kb_internal(query: String) -> Result<String, String> {
     Ok(result_str)
 }
 
+/// 暴露给 HermesGatewayView 的 KB 搜索命令，返回格式化好的上下文字符串
+#[tauri::command]
+async fn hermes_search_kb(query: String) -> Result<String, String> {
+    let raw = search_kb_internal(query).await?;
+    let res: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::json!([]));
+    let mut context = String::new();
+    if let Some(arr) = res.as_array() {
+        for item in arr.iter().take(6) {
+            if let Some(text) = item["text"].as_str() {
+                if !text.trim().is_empty() {
+                    context.push_str(&format!("- {}\n", text.trim()));
+                }
+            }
+        }
+    }
+    Ok(context)
+}
+
 // ============ 结果查询命令 ============
 
 #[tauri::command]
 async fn list_scraped_users() -> Result<serde_json::Value, String> {
-    let script_path = PathBuf::from("..").join("scripts").join("query_data.py");
+    let script_path = get_scripts_dir().join("query_data.py");
     let output = python_cmd()
         .arg(&script_path)
         .arg("list_users")
@@ -1999,7 +2844,7 @@ async fn list_scraped_users() -> Result<serde_json::Value, String> {
 #[tauri::command]
 #[allow(non_snake_case)]
 async fn get_scraped_videos(secUid: String, limit: i32, offset: i32) -> Result<serde_json::Value, String> {
-    let script_path = PathBuf::from("..").join("scripts").join("query_data.py");
+    let script_path = get_scripts_dir().join("query_data.py");
     let output = python_cmd()
         .arg(&script_path)
         .arg("get_videos")
@@ -2017,7 +2862,7 @@ async fn get_scraped_videos(secUid: String, limit: i32, offset: i32) -> Result<s
 #[tauri::command]
 #[allow(non_snake_case)]
 async fn get_scraped_comments(secUid: String, awemeId: Option<String>, limit: i32, offset: i32) -> Result<serde_json::Value, String> {
-    let script_path = PathBuf::from("..").join("scripts").join("query_data.py");
+    let script_path = get_scripts_dir().join("query_data.py");
     let mut cmd = python_cmd();
     cmd.arg(&script_path)
         .arg("get_comments")
@@ -2046,7 +2891,7 @@ async fn open_video_in_browser(aweme_id: String, account_name: String) -> Result
         return Err(format!("账号 {} 的 Cookie 文件不存在", account_name));
     }
 
-    let script_path = PathBuf::from("..").join("scripts").join("open_video.py");
+    let script_path = get_scripts_dir().join("open_video.py");
     
     let mut cmd = python_cmd();
     cmd.arg(&script_path)
@@ -2066,7 +2911,7 @@ async fn open_video_in_browser(aweme_id: String, account_name: String) -> Result
 // ============ 抖音私信命令 ============
 
 fn run_douyin_im_bridge(args: Vec<String>) -> Result<serde_json::Value, String> {
-    let script_path = PathBuf::from("..").join("scripts").join("douyin_im_bridge.py");
+    let script_path = get_scripts_dir().join("douyin_im_bridge.py");
     let output = python_cmd_sync()
         .arg(&script_path)
         .args(args)
@@ -2339,7 +3184,7 @@ async fn douyin_im_start_monitor(
         return Err("该账号私信监控已在运行".to_string());
     }
 
-    let script_path = PathBuf::from("..").join("scripts").join("douyin_im_bridge.py");
+    let script_path = get_scripts_dir().join("douyin_im_bridge.py");
     let mut child = python_cmd()
         .arg(&script_path)
         .arg("monitor")
@@ -2460,7 +3305,7 @@ async fn start_live_monitor(
         return Err("最多只能同时监控 10 个直播间".to_string());
     }
 
-    let script_path = PathBuf::from("..").join("scripts").join("douyin_live_monitor.py");
+    let script_path = get_scripts_dir().join("douyin_live_monitor.py");
     
     let mut child = python_cmd()
         .arg(&script_path)
@@ -2557,17 +3402,196 @@ async fn get_live_history(room_id: String) -> Result<Vec<serde_json::Value>, Str
     Ok(history)
 }
 
+#[tauri::command]
+async fn hermes_list_skills() -> Result<Vec<serde_json::Value>, String> {
+    let hermes_bin = which_hermes();
+    let output = std::process::Command::new(&hermes_bin)
+        .arg("skills")
+        .arg("list")
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut skills = vec![];
+
+    // Simple parsing for the ASCII table
+    for line in stdout.lines() {
+        if line.starts_with('│') && !line.contains(" Name ") {
+            let parts: Vec<&str> = line.split('│').collect();
+            if parts.len() >= 6 {
+                skills.push(serde_json::json!({
+                    "name": parts[1].trim(),
+                    "category": parts[2].trim(),
+                    "source": parts[3].trim(),
+                    "trust": parts[4].trim(),
+                    "status": parts[5].trim(),
+                }));
+            }
+        }
+    }
+
+    Ok(skills)
+}
+
+#[tauri::command]
+async fn hermes_install_skill(name: String) -> Result<String, String> {
+    let hermes_bin = which_hermes();
+    let output = tokio::process::Command::new(&hermes_bin)
+        .arg("skills")
+        .arg("install")
+        .arg(&name)
+        .arg("--yes")   // Skip confirmation prompt (required in non-interactive mode)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+#[tauri::command]
+async fn hermes_uninstall_skill(name: String) -> Result<String, String> {
+    let hermes_bin = which_hermes();
+    let output = tokio::process::Command::new(&hermes_bin)
+        .arg("skills")
+        .arg("uninstall")
+        .arg(&name)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+#[tauri::command]
+async fn hermes_list_tools() -> Result<Vec<serde_json::Value>, String> {
+    let hermes_bin = which_hermes();
+    let output = std::process::Command::new(&hermes_bin)
+        .arg("tools")
+        .arg("--summary")
+        .arg("list")
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut tools = vec![];
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.ends_with(':') { continue; }
+        
+        let enabled = line.contains("✓ enabled");
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        // Skip checkmark and status
+        if parts.len() >= 3 {
+            let name = parts[2];
+            let description = parts[3..].join(" ");
+            tools.push(serde_json::json!({
+                "name": name,
+                "enabled": enabled,
+                "description": description,
+                "keyword": format!("!{}", name)
+            }));
+        }
+    }
+
+    Ok(tools)
+}
+
+#[tauri::command]
+async fn hermes_get_session_messages(session_id: String) -> Result<Vec<serde_json::Value>, String> {
+    let hermes_bin = which_hermes();
+    let output = std::process::Command::new(&hermes_bin)
+        .arg("sessions")
+        .arg("export")
+        .arg("-")
+        .arg("--session-id")
+        .arg(&session_id)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if let Some(line) = stdout.lines().next() {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(messages) = val.get("messages").and_then(|m| m.as_array()) {
+                return Ok(messages.clone());
+            }
+        }
+    }
+
+    Ok(vec![])
+}
+
+#[tauri::command]
+async fn hermes_toggle_skill_status(name: String, enable: bool) -> Result<(), String> {
+    let hermes_bin = which_hermes();
+    let action = if enable { "enable" } else { "disable" };
+    let output = tokio::process::Command::new(&hermes_bin)
+        .arg("skills")
+        .arg(action)
+        .arg(&name)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        Err(if !stderr.is_empty() { stderr } else { stdout })
+    }
+}
+
+#[tauri::command]
+async fn hermes_toggle_tool_status(name: String, enable: bool) -> Result<(), String> {
+    let hermes_bin = which_hermes();
+    let action = if enable { "enable" } else { "disable" };
+    let output = tokio::process::Command::new(&hermes_bin)
+        .arg("tools")
+        .arg(action)
+        .arg(&name)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // 缓存打包资源目录，供 get_scripts_dir/python_executable 使用
+            if let Ok(res_dir) = app.path().resource_dir() {
+                let _ = RESOURCE_DIR.set(res_dir);
+            }
+            Ok(())
+        })
         .manage(AppState {
             login_flows: Mutex::new(std::collections::HashMap::new()),
             process_handles: Mutex::new(std::collections::HashMap::new()),
             current_task_id: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
+            autocast_diagnostics,
             get_config, save_config, get_default_config,
             list_kb_files, add_to_kb, delete_kb_file, get_kb_file_details,
             studio_generate_content,
@@ -2589,7 +3613,16 @@ pub fn run() {
             get_active_douyin_im_monitors,
             start_live_monitor, stop_live_monitor, get_active_monitors,
             get_live_history, resolve_live_url,
-            geo_monitor_query
+            geo_monitor_query,
+            start_hermes_gateway, stop_hermes_gateway, check_hermes_status,
+            check_hermes_gateway_health, list_hermes_sessions,
+            hermes_enable_api_server, hermes_restart_service,
+            hermes_read_api_key, hermes_set_api_key,
+            hermes_send_message, hermes_list_runs, hermes_stop_run, hermes_approve_run,
+            hermes_list_skills, hermes_install_skill, hermes_uninstall_skill, hermes_list_tools,
+            hermes_get_session_messages,
+            hermes_toggle_skill_status, hermes_toggle_tool_status,
+            hermes_search_kb
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

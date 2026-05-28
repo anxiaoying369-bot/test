@@ -1,0 +1,34 @@
+# AutoCast AI - Python 运行时依赖
+# 用法：python -m pip install -r requirements.txt
+#
+# 注意：Python 3.10+ 推荐，3.11 测试通过。
+# Windows 用户：先安装 https://www.python.org/downloads/windows/ (勾选 Add to PATH)。
+
+# ── 核心库 ─────────────────────────────────────────────────────────
+DrissionPage>=4.1.0            # 浏览器自动化 (登录/采集)
+openai>=1.0.0                  # LLM 调用
+httpx>=0.27.0                  # 异步 HTTP
+urllib3>=2.0
+websockets>=12.0               # IM bridge
+
+# ── 知识库 (KB) ────────────────────────────────────────────────────
+lancedb>=0.10.0                # 向量数据库
+pandas>=2.0.0                  # 数据处理
+pypdf>=4.0.0                   # PDF 解析
+
+# ── 抖音子模块 ─────────────────────────────────────────────────────
+# scripts/DouyinComment/requirements.txt
+pyyaml>=6.0
+tqdm
+pillow
+pillow-heif
+huggingface_hub
+
+# scripts/DouyinBarrage/requirements.txt
+requests>=2.33.1,<3.0
+websocket-client>=1.9.0,<2.0
+protobuf>=7.34.1,<8.0
+proto-plus>=1.27.0,<2.0
+
+# ── 抖音 IM 私信桥接（scripts/douyin_im/） ────────────────────────────
+PyExecJS>=1.5.1                # 通过 Node.js 执行 JS（生成签名等）

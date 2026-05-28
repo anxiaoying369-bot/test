@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio, MessageCircle, Settings, Database, Sparkles } from 'lucide-vue-next';
+import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio, MessageCircle, Settings, Database, Sparkles, Terminal } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import ResultsView from './components/ResultsView.vue';
 import LiveMonitorView from './components/LiveMonitorView.vue';
@@ -10,8 +10,9 @@ import SettingsView from './components/SettingsView.vue';
 import ChatView from './components/ChatView.vue';
 import KnowledgeBaseView from './components/KnowledgeBaseView.vue';
 import ContentStudioView from './components/ContentStudioView.vue';
+import HermesGatewayView from './components/HermesGatewayView.vue';
 
-type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio';
+type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'hermes';
 const currentPage = ref<PageKey>('accounts');
 const settingsInitialTab = ref<string>('model');
 
@@ -316,10 +317,14 @@ function isVerifying(platform: string, name: string) {
             {{ Object.values(liveMonitorRooms).filter(r => r.status === 'running').length }}
           </span>
         </a>
-        <div class="pt-4 mt-4 border-t border-gray-900">
+        <div class="pt-4 mt-4 border-t border-gray-900 space-y-1">
           <a href="#" @click="currentPage = 'settings'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'settings' ? 'bg-gray-900' : 'text-gray-400']">
             <Settings class="w-5 h-5" />
             <span>系统设置</span>
+          </a>
+          <a href="#" @click="currentPage = 'hermes'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'hermes' ? 'bg-gray-900' : 'text-gray-400']">
+            <Terminal class="w-5 h-5 text-indigo-400" />
+            <span>Hermes Agent</span>
           </a>
         </div>
       </nav>
@@ -333,6 +338,11 @@ function isVerifying(platform: string, name: string) {
     <!-- 主内容：AI 创作中心 -->
     <main v-if="currentPage === 'studio'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <ContentStudioView />
+    </main>
+
+    <!-- 主内容：Hermes 网关 -->
+    <main v-if="currentPage === 'hermes'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
+      <HermesGatewayView />
     </main>
 
     <!-- 主内容：账号管理 -->
