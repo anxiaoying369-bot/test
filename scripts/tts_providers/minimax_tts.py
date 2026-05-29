@@ -22,6 +22,9 @@ API:  http://pan.ptyxlm.com:3000/v1/audio/speech
   female-chengshu-jingpin  — 成熟女性音色-beta
   ... (更多音色参考 platform.minimaxi.com/docs/faq/system-voice-id)
 """
+import json
+import os
+import urllib.request
 from .openai_tts import OpenAITTSProvider
 
 
@@ -65,3 +68,48 @@ class MiniMaxTTSProvider(OpenAITTSProvider):
 
     def list_voices(self) -> list[dict]:
         return MINIMAX_VOICES
+
+    def synthesize(self, text: str, voice_id: str = "male-qn-badao", speed: float = 1.0, output_path: str = "") -> str:
+        """MiniMax 中转的 /audio/speech 要求 output_format 参数（hex/url），
+        标准 OpenAI 的 response_format/format 都不被接受。
+        实测无论 hex/url，该中转都直接回传 audio/mpeg 二进制流，所以直接写文件即可。
+        """
+        if not output_path:
+            raise ValueError("output_path 必填")
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+        url = f"{self.base_url}/audio/speech"
+        payload = {
+            "model": self.model,
+            "voice": voice_id,
+            "input": text,
+            "output_format": "url",   # MiniMax 中转必需；该端点实际仍回二进制音频流
+            "speed": max(0.5, min(2.0, float(speed))),
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key or ''}",
+            },
+            method="POST",
+        )
+        # 不捕获 HTTPError —— 交给上层 provider_errors 分类
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            ct = resp.headers.get("Content-Type", "")
+            data = resp.read()
+            if resp.status != 200:
+                raise RuntimeError(f"MiniMax TTS HTTP {resp.status}: {data[:300]!r}")
+            # 兼容两种返回：① 直接音频流 ② JSON 里带 url 需要再下载
+            if "application/json" in ct.lower():
+                obj = json.loads(data.decode("utf-8", errors="ignore"))
+                audio_url = (obj.get("data") or {}).get("audio") or obj.get("url") or obj.get("audio_url")
+                if not audio_url:
+                    raise RuntimeError(f"MiniMax TTS 返回 JSON 但找不到音频地址: {str(obj)[:200]}")
+                with urllib.request.urlopen(audio_url, timeout=180) as ar:
+                    data = ar.read()
+
+        with open(output_path, "wb") as f:
+            f.write(data)
+        return output_path

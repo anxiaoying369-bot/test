@@ -5,6 +5,7 @@ use crate::models::{ChatMessage, ChatSession};
 use crate::state::AppState;
 use crate::utils::{get_data_dir};
 use crate::commands::common::get_config;
+use crate::commands::knowledge_base::search_kb_internal;
 
 fn get_chats_dir() -> std::path::PathBuf {
     get_data_dir().join("chats")
@@ -109,25 +110,103 @@ pub async fn send_chat_message(
     };
     session.messages.push(user_msg.clone());
 
-    // NOTE: Here we would call the LLM and handle tools.
-    // For brevity in this refactor, I'm just returning a placeholder response
-    // to keep the logic focused on file splitting.
-    // In a real refactor, we would move the tool calling logic here as well.
-    
-    // Actually, I should keep the original logic if possible.
-    // But it was very long. Let's assume we'll implement it or it was a simple LLM call.
-    
-    // I'll put a simplified version for now to avoid 500+ lines.
+    // 用当前这条用户消息检索企业知识库，命中内容注入 system 提示
+    let kb_context = match search_kb_internal(content.clone()).await {
+        Ok(res_str) => {
+            let v: serde_json::Value = serde_json::from_str(&res_str).unwrap_or(serde_json::json!([]));
+            let mut buf = String::new();
+            if let Some(arr) = v.as_array() {
+                for item in arr.iter().take(6) {
+                    if let Some(t) = item["text"].as_str() {
+                        if !t.trim().is_empty() {
+                            buf.push_str(&format!("- {}\n", t.trim()));
+                        }
+                    }
+                }
+            }
+            buf
+        }
+        Err(_) => String::new(),
+    };
+
+    let system_content = if kb_context.is_empty() {
+        "你是 AutoCast AI 助手，一个专业、友好的中文 AI 创作与运营助理。请用简洁清晰的中文回答用户的问题。".to_string()
+    } else {
+        format!(
+            "你是 AutoCast AI 助手，一个专业、友好的中文 AI 创作与运营助理。请用简洁清晰的中文回答用户的问题。\n\n\
+            以下是企业知识库中与用户问题相关的资料，回答时请优先依据这些事实，不要编造：\n{}",
+            kb_context
+        )
+    };
+
+    // 组装发给 LLM 的消息：system 提示（含知识库） + 历史对话（只取 user/assistant）
+    let mut api_messages: Vec<serde_json::Value> = vec![serde_json::json!({
+        "role": "system",
+        "content": system_content
+    })];
+    for m in &session.messages {
+        if m.role == "user" || m.role == "assistant" {
+            api_messages.push(serde_json::json!({ "role": m.role, "content": m.content }));
+        }
+    }
+
+    let url = if config.llm.base_url.ends_with("/chat/completions") {
+        config.llm.base_url.clone()
+    } else {
+        format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/'))
+    };
+
+    let payload = serde_json::json!({
+        "model": config.llm.model,
+        "messages": api_messages,
+        "temperature": 0.7
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let response = client.post(&url)
+        .header("Authorization", format!("Bearer {}", config.llm.api_key))
+        .json(&payload)
+        .send().await
+        .map_err(|e| format!("AI 对话请求失败: {}", e))?;
+
+    let status = response.status();
+    let body_text = response.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("LLM API 错误 {}: {}", status, body_text.chars().take(300).collect::<String>()));
+    }
+
+    let res_data: serde_json::Value = serde_json::from_str(&body_text)
+        .map_err(|e| format!("LLM 响应解析失败（{}）：{}", e, body_text.chars().take(300).collect::<String>()))?;
+
+    let reply = res_data["choices"][0]["message"]["content"].as_str()
+        .or_else(|| res_data["choices"][0]["text"].as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.trim().is_empty());
+
+    let reply = match reply {
+        Some(s) => s,
+        None => {
+            if let Some(err) = res_data.get("error") {
+                return Err(format!("LLM 返回错误：{}", err));
+            }
+            return Err(format!("LLM 返回空内容。原始响应：{}", body_text.chars().take(400).collect::<String>()));
+        }
+    };
+
     let assistant_msg = ChatMessage {
         role: "assistant".to_string(),
-        content: "你好！我是 AutoCast 助手。由于代码重构中，详细功能稍后恢复。".to_string(),
+        content: reply,
         timestamp: now_secs(),
         tool_used: None,
         tool_data: None,
     };
     session.messages.push(assistant_msg.clone());
     session.updated_at = now_secs();
-    
+
     let content = serde_json::to_string_pretty(&session).map_err(|e| e.to_string())?;
     fs::write(path, content).map_err(|e| e.to_string())?;
 

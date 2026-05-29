@@ -19,6 +19,28 @@ fn resolve_scripts_dir() -> PathBuf {
         }
     }
 
+    // dev / debug 模式：优先用项目源 scripts（cwd = src-tauri/，源在 ../scripts）。
+    // 否则会用到 target/debug/_up_/scripts 这个"编译时复制的快照"，
+    // 导致改了 Python 脚本却不生效（必须重新编译才会同步）。
+    #[cfg(debug_assertions)]
+    {
+        let src = PathBuf::from("..").join("scripts");
+        if src.join("kb_manager.py").exists() {
+            return src;
+        }
+        // 兜底：从可执行文件向上找项目根的 scripts（绝对路径，避免 cwd 不确定）
+        if let Ok(exe) = std::env::current_exe() {
+            let mut dir = exe.parent().map(|p| p.to_path_buf());
+            while let Some(d) = dir {
+                let cand = d.join("scripts");
+                if cand.join("kb_manager.py").exists() {
+                    return cand;
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            }
+        }
+    }
+
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(res) = RESOURCE_DIR.get() {
         candidates.push(res.join("_up_").join("scripts"));
@@ -155,18 +177,28 @@ pub fn extract_provider_error(res: &serde_json::Value, fallback_label: &str) -> 
     }
 
     let code = res["error_code"].as_str().unwrap_or("UNKNOWN");
-    let msg = res["error_message"].as_str().unwrap_or("");
+    // provider_errors.py 输出的字段是 "error"（友好消息）+ "details"（原始返回）
+    let msg = res["error"].as_str()
+        .filter(|s| !s.is_empty())
+        .or_else(|| res["error_message"].as_str().filter(|s| !s.is_empty()))
+        .unwrap_or("");
+    let details = res["details"].as_str().unwrap_or("");
 
     let friendly = match code {
         "AUTH" => "API Key 验证失败，请检查配置是否正确。",
         "RATE_LIMIT" => "请求过于频繁，已被限流，请稍后再试。",
         "QUOTA" => "余额不足或超出配额，请检查服务商账户状态。",
         "NETWORK" => "网络请求超时或连接失败，请检查网络。",
-        "INVALID_PARAMS" => "输入参数无效（如提示词包含违禁词或尺寸不支持）。",
+        "INVALID" | "INVALID_PARAMS" => if !msg.is_empty() { msg } else { "输入参数无效（如提示词违禁、尺寸不支持、或接口参数不兼容）。" },
         _ => if !msg.is_empty() { msg } else { fallback_label },
     };
 
-    format!("{} ({})", friendly, code)
+    // 附带原始 details，方便定位（如 minimax 的 output_format 报错）
+    if !details.is_empty() {
+        format!("{} ({}) — {}", friendly, code, details.chars().take(200).collect::<String>())
+    } else {
+        format!("{} ({})", friendly, code)
+    }
 }
 
 pub fn python_executable() -> String {

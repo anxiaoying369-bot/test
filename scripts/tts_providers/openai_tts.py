@@ -39,7 +39,7 @@ class OpenAITTSProvider(TTSProvider):
             "model": self.model,
             "voice": voice_id,
             "input": text,
-            "format": "mp3",
+            "response_format": "mp3",
             "speed": max(0.25, min(4.0, float(speed))),
         }
         req = urllib.request.Request(

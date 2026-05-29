@@ -16,8 +16,10 @@ export function useVideoProjects() {
   };
 
   const createProject = async () => {
-    const title = prompt('请输入项目名称', `新项目 ${new Date().toLocaleString()}`);
-    if (!title) return;
+    // 注意：Tauri WebView 不支持 window.prompt()（直接返回 null），
+    // 所以这里用默认标题直接创建，用户可在项目里重命名。
+    const now = new Date();
+    const title = `新项目 ${now.getMonth() + 1}-${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
     const newId = crypto.randomUUID();
     const project: VideoProject = {
       id: newId,

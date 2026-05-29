@@ -49,8 +49,12 @@ def classify_http_status(status: int, body: str = "") -> tuple[str, str]:
     if status == 429:
         return "RATE_LIMIT", "请求被限流，稍后重试或降低并发"
     if status == 400:
-        # 部分 body 暗示余额不足
-        if any(k in body.lower() for k in ("insufficient", "余额", "quota", "balance")):
+        bl = body.lower()
+        # 额度 / 用量超限（含 MiniMax 业务码 2056 usage limit exceeded）
+        if any(k in bl for k in ("usage limit", "limit exceeded", "2056", "rate limit")):
+            return "QUOTA", "账户额度或调用次数已超限，请检查服务商账户用量/充值"
+        # 余额不足
+        if any(k in bl for k in ("insufficient", "余额", "quota", "balance", "欠费")):
             return "QUOTA", "账户余额或配额不足"
         return "INVALID", "请求参数有误（检查模型 ID / Prompt 是否合法）"
     if status == 404:

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Music, ImageIcon, Film, CheckCircle2 } from 'lucide-vue-next';
+import { Music, ImageIcon, Film, CheckCircle2, Loader2 } from 'lucide-vue-next';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import type { VideoMaterial } from '../../types/video-studio';
 
@@ -10,6 +10,8 @@ const props = defineProps<{
   exportSelectedAudio: string | null;
   exportSelectedImages: string[];
   exportSelectedVideos: string[];
+  isExporting?: boolean;
+  burnSubtitle: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -17,6 +19,7 @@ const emit = defineEmits<{
   (e: 'update:exportSelectedAudio', val: string | null): void;
   (e: 'update:exportSelectedImages', val: string[]): void;
   (e: 'update:exportSelectedVideos', val: string[]): void;
+  (e: 'update:burnSubtitle', val: boolean): void;
   (e: 'startExportRender'): void;
 }>();
 
@@ -160,15 +163,26 @@ const toggleExportVideo = (id: string) => {
           </p>
         </div>
 
+        <!-- 字幕选项 -->
+        <label class="flex items-center gap-2.5 p-3 bg-gray-950 border border-gray-800 rounded-xl cursor-pointer hover:border-gray-700 transition-colors">
+          <input type="checkbox" :checked="burnSubtitle"
+                 @change="e => emit('update:burnSubtitle', (e.target as HTMLInputElement).checked)"
+                 class="w-4 h-4 accent-purple-600" />
+          <span class="text-xs text-gray-300">在视频中烧录字幕</span>
+          <span class="text-[10px] text-gray-600 ml-auto">用口播文案自动对齐</span>
+        </label>
+
         <!-- 合成按钮 -->
         <button
           @click="emit('startExportRender')"
-          :disabled="!exportSelectedAudio || (exportSelectedImages.length === 0 && exportSelectedVideos.length === 0)"
+          :disabled="isExporting || !exportSelectedAudio || (exportSelectedImages.length === 0 && exportSelectedVideos.length === 0)"
           class="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-4 rounded-xl text-sm font-bold transition-all shadow-lg shadow-purple-900/30 flex items-center justify-center gap-2"
         >
-          <Film class="w-5 h-5" />
-          开始合成视频
+          <Loader2 v-if="isExporting" class="w-5 h-5 animate-spin" />
+          <Film v-else class="w-5 h-5" />
+          {{ isExporting ? '正在合成视频，请稍候...' : '开始合成视频' }}
         </button>
+        <p v-if="isExporting" class="text-[10px] text-gray-500 text-center mt-2">FFmpeg 处理中，时长取决于素材数量与时长，请勿关闭页面</p>
       </div>
     </div>
   </div>

@@ -59,6 +59,7 @@ interface VideoConfig {
   default_tts_voice?: string;
   default_tts_speed?: number;
   tts_voices?: TtsVoice[];   // 自定义音色组
+  script_system_prompt?: string;   // 脚本生成系统提示词
 }
 
 interface AppConfig {
@@ -101,6 +102,7 @@ const config = ref<AppConfig>({
     default_tts_voice: '',
     default_tts_speed: 1.0,
     tts_voices: [],
+    script_system_prompt: '',
   },
 });
 
@@ -331,37 +333,31 @@ const removeGeoPublishPlatform = (index: number) => {
 
         <!-- 视频生成设置 -->
         <div v-if="activeTab === 'video'" class="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <!-- ── 脚本生成系统提示词 ── -->
+          <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-3 shadow-xl">
+            <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+              <MessageSquare class="w-4 h-4 text-amber-500" />
+              脚本生成 · 系统提示词
+            </h3>
+            <p class="text-xs text-gray-500">
+              视频创作中心「生成脚本」时使用的系统提示词，控制脚本风格与结构。脚本生成页不显示此设置。
+              留空则使用内置默认提示词。
+            </p>
+            <textarea
+              v-model="config.video.script_system_prompt"
+              rows="6"
+              placeholder="留空使用内置默认提示词（GEO 答案前置 / 事实密度 / 场景化）"
+              class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500 transition-all leading-relaxed resize-y font-mono"
+            ></textarea>
+            <p class="text-[11px] text-gray-600">
+              提示：脚本会以固定 JSON 格式返回（标题/时长/语速/受众/口播文案/卖点关键词/素材关键词），
+              JSON 结构由系统强制约束，你只需在这里描述"风格与创作准则"即可。
+            </p>
+          </div>
+
           <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-8 space-y-8 shadow-xl">
-            <!-- fal.ai Key -->
-            <div>
-              <label class="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
-                fal.ai (Luma/Kling) API Key
-              </label>
-              <input
-                v-model="config.video.fal_key"
-                type="password"
-                placeholder="FAL_KEY"
-                class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
-              />
-              <p class="text-[11px] text-gray-500 mt-2">用于 Luma Dream Machine 等高性能模型</p>
-            </div>
-
-            <!-- Volcengine Key -->
-            <div>
-              <label class="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
-                火山引擎 (Volcengine) API Key
-              </label>
-              <input
-                v-model="config.video.volc_key"
-                type="password"
-                placeholder="AccessKey:SecretKey"
-                class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
-              />
-              <p class="text-[11px] text-gray-500 mt-2">请输入 "AccessKey:SecretKey" 格式</p>
-            </div>
-
             <!-- OpenAI Compatible -->
-            <div class="pt-4 border-t border-gray-800">
+            <div>
               <label class="block text-sm font-medium text-blue-400 mb-4 flex items-center gap-2">
                 <Globe class="w-4 h-4" />
                 OpenAI 兼容协议 (自定义服务商)
@@ -420,22 +416,15 @@ const removeGeoPublishPlatform = (index: number) => {
               <span class="text-[10px] text-gray-600">用于「口播剧本」工作流</span>
             </div>
 
-            <div class="grid grid-cols-2 gap-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-300 mb-2">TTS Provider</label>
-                <select v-model="config.video.tts_provider"
-                        class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500 transition-all">
-                  <option value="mock">测试模拟（静音占位）</option>
-                  <option value="openai">OpenAI 兼容协议</option>
-                  <option value="minimax">MiniMax 语音合成</option>
-                  <option value="volcengine">火山引擎（待接入）</option>
-                </select>
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-300 mb-2">默认语速</label>
-                <input v-model.number="config.video.default_tts_speed" type="number" step="0.05" min="0.5" max="2.0"
-                       class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500" />
-              </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-300 mb-2">TTS Provider</label>
+              <select v-model="config.video.tts_provider"
+                      class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500 transition-all">
+                <option value="mock">测试模拟（静音占位）</option>
+                <option value="openai">OpenAI 兼容协议</option>
+                <option value="minimax">MiniMax 语音合成</option>
+                <option value="volcengine">火山引擎（待接入）</option>
+              </select>
             </div>
 
             <div>
@@ -445,25 +434,19 @@ const removeGeoPublishPlatform = (index: number) => {
                      class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono text-sm" />
             </div>
 
-            <div v-if="config.video.tts_provider === 'openai'" class="grid grid-cols-2 gap-4">
+            <div v-if="config.video.tts_provider === 'openai' || config.video.tts_provider === 'minimax'" class="grid grid-cols-2 gap-4">
               <div>
                 <label class="block text-sm font-medium text-gray-300 mb-2">Base URL</label>
-                <input v-model="config.video.tts_base_url" type="text" placeholder="https://api.openai.com/v1"
+                <input v-model="config.video.tts_base_url" type="text"
+                       :placeholder="config.video.tts_provider === 'minimax' ? 'http://pan.ptyxlm.com:3000/v1' : 'https://api.openai.com/v1'"
                        class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
               </div>
               <div>
                 <label class="block text-sm font-medium text-gray-300 mb-2">模型</label>
-                <input v-model="config.video.tts_model" type="text" placeholder="tts-1"
+                <input v-model="config.video.tts_model" type="text"
+                       :placeholder="config.video.tts_provider === 'minimax' ? 'speech-2.8-hd' : 'tts-1'"
                        class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
               </div>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-gray-300 mb-2">默认音色 ID</label>
-              <input v-model="config.video.default_tts_voice" type="text"
-                     :placeholder="config.video.tts_provider === 'minimax' ? 'female-shaonv / male-qn-badao ...' : (config.video.tts_provider === 'volcengine' ? 'BV700_streaming' : 'alloy / nova / echo ...')"
-                     class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono text-sm" />
-              <p class="text-xs text-gray-500 mt-2">视频创作中心会用这个作为默认音色，可在创作时切换</p>
             </div>
 
             <!-- ── 自定义音色组 ── -->
@@ -481,7 +464,7 @@ const removeGeoPublishPlatform = (index: number) => {
 
               <div v-if="!config.video.tts_voices || config.video.tts_voices.length === 0"
                    class="text-xs text-gray-600 italic py-4 text-center border border-dashed border-gray-800 rounded-xl">
-                还没有自定义音色，点「添加音色」新增。未添加时会用上面的「默认音色 ID」。
+                还没有音色，点「添加音色」新增。视频创作中心合成口播时从这里选择。
               </div>
 
               <div v-else class="space-y-2">

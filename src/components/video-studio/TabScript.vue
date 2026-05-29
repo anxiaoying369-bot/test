@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { 
-  FileText, Loader2, RefreshCw, CheckCircle2, 
-  Music, Zap, Film 
+import {
+  FileText, Loader2, RefreshCw, CheckCircle2,
+  Music, Zap, Clock, Gauge, Users, Tag, Search
 } from 'lucide-vue-next';
-import { marked } from 'marked';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
 const props = defineProps<{
@@ -23,7 +22,6 @@ const props = defineProps<{
   isLoadingVoices: boolean;
   availableVoices: any[];
   latestVoiceoverPath: string | null;
-  isRenderingVoiceover: boolean;
   PLATFORM_OPTIONS: any[];
   SCRIPT_TYPE_OPTIONS: any[];
 }>();
@@ -42,11 +40,29 @@ const emit = defineEmits<{
   (e: 'confirmScript'): void;
   (e: 'loadVoices'): void;
   (e: 'synthesizeVoice'): void;
-  (e: 'startVoiceoverRender'): void;
   (e: 'updateResolution', ratio: string): void;
 }>();
 
-const renderedScript = computed(() => marked(props.generatedScript || ''));
+// 脚本现在是固定 JSON 字符串，解析成结构化对象供卡片展示
+interface ScriptData {
+  视频标题?: string;
+  总时长?: string;
+  语速?: number | string;
+  目标受众?: string;
+  口播文案?: string;
+  核心卖点关键词?: string[];
+  建议素材关键词?: string[];
+}
+const scriptData = computed<ScriptData | null>(() => {
+  if (!props.generatedScript) return null;
+  try {
+    return JSON.parse(props.generatedScript);
+  } catch {
+    return null;
+  }
+});
+// JSON 解析失败时的兜底原文（极少数模型不听话）
+const rawFallback = computed(() => (!scriptData.value ? props.generatedScript : ''));
 
 const localProductInfo = computed({
   get: () => props.productInfo,
@@ -72,6 +88,15 @@ const localTtsSpeed = computed({
   get: () => props.ttsSpeed,
   set: (val) => emit('update:ttsSpeed', val)
 });
+
+// 失焦时把语速夹紧到 [0.5, 2.0] 并保留两位小数
+function normalizeSpeed() {
+  let v = Number(props.ttsSpeed);
+  if (!Number.isFinite(v)) v = 1.0;
+  v = Math.min(2.0, Math.max(0.5, v));
+  v = Math.round(v * 100) / 100;
+  emit('update:ttsSpeed', v);
+}
 </script>
 
 <template>
@@ -198,14 +223,67 @@ const localTtsSpeed = computed({
           <h3 class="text-sm font-bold text-gray-200">脚本预览</h3>
           <span v-if="scriptConfirmed" class="text-[10px] px-2 py-0.5 bg-green-500/20 text-green-400 rounded-full border border-green-500/30">已确认</span>
         </div>
-        <span class="text-[10px] text-gray-600">{{ generatedScript.length }} 字</span>
       </div>
 
-      <div class="p-6 max-h-[400px] overflow-y-auto custom-scrollbar">
-        <div
-          class="script-markdown prose prose-invert prose-sm max-w-none text-gray-200 leading-relaxed"
-          v-html="renderedScript"
-        />
+      <!-- JSON 卡片展示 -->
+      <div v-if="scriptData" class="p-6 max-h-[520px] overflow-y-auto custom-scrollbar space-y-4">
+        <!-- 标题 -->
+        <div v-if="scriptData.视频标题" class="text-lg font-bold text-white leading-snug">
+          {{ scriptData.视频标题 }}
+        </div>
+
+        <!-- 元信息行：时长 / 语速 / 受众 -->
+        <div class="flex flex-wrap gap-2">
+          <span v-if="scriptData.总时长" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg text-xs text-blue-300">
+            <Clock class="w-3.5 h-3.5" /> {{ scriptData.总时长 }}
+          </span>
+          <span v-if="scriptData.语速" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-xs text-emerald-300">
+            <Gauge class="w-3.5 h-3.5" /> {{ scriptData.语速 }}x 语速
+          </span>
+          <span v-if="scriptData.目标受众" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-xs text-amber-300">
+            <Users class="w-3.5 h-3.5" /> {{ scriptData.目标受众 }}
+          </span>
+        </div>
+
+        <!-- 口播文案 -->
+        <div v-if="scriptData.口播文案" class="bg-gray-950/60 border border-gray-800 rounded-xl p-4">
+          <div class="flex items-center gap-1.5 text-[10px] font-bold text-purple-400 uppercase tracking-widest mb-2">
+            <FileText class="w-3 h-3" /> 口播文案
+          </div>
+          <p class="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">{{ scriptData.口播文案 }}</p>
+        </div>
+
+        <!-- 核心卖点关键词 -->
+        <div v-if="scriptData.核心卖点关键词?.length">
+          <div class="flex items-center gap-1.5 text-[10px] font-bold text-pink-400 uppercase tracking-widest mb-2">
+            <Tag class="w-3 h-3" /> 核心卖点关键词
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <span v-for="(kw, i) in scriptData.核心卖点关键词" :key="i"
+                  class="px-2.5 py-1 bg-pink-500/10 border border-pink-500/25 rounded-full text-xs text-pink-300">
+              {{ kw }}
+            </span>
+          </div>
+        </div>
+
+        <!-- 建议素材关键词 -->
+        <div v-if="scriptData.建议素材关键词?.length">
+          <div class="flex items-center gap-1.5 text-[10px] font-bold text-cyan-400 uppercase tracking-widest mb-2">
+            <Search class="w-3 h-3" /> 建议素材关键词
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <span v-for="(kw, i) in scriptData.建议素材关键词" :key="i"
+                  class="px-2.5 py-1 bg-cyan-500/10 border border-cyan-500/25 rounded-full text-xs text-cyan-300 font-mono">
+              {{ kw }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- JSON 解析失败兜底：原文展示 -->
+      <div v-else class="p-6 max-h-[400px] overflow-y-auto custom-scrollbar">
+        <div class="text-[11px] text-amber-400 mb-2">⚠ 脚本未按标准 JSON 返回，显示原始内容：</div>
+        <pre class="text-xs text-gray-300 whitespace-pre-wrap leading-relaxed">{{ rawFallback }}</pre>
       </div>
 
       <!-- 反馈 + 重生成 -->
@@ -270,9 +348,11 @@ const localTtsSpeed = computed({
           </div>
           <div>
             <label class="block text-xs font-medium text-gray-400 mb-2">语速</label>
-            <input v-model.number="localTtsSpeed" type="number" step="0.05" min="0.5" max="2.0"
+            <input v-model.number="localTtsSpeed" type="number" step="0.01" min="0.5" max="2.0"
                    :disabled="isSynthesizingVoice"
+                   @blur="normalizeSpeed"
                    class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200" />
+            <p class="text-[10px] text-gray-600 mt-1">支持两位小数，如 1.25（范围 0.5 ~ 2.0）</p>
           </div>
         </div>
 
@@ -291,29 +371,14 @@ const localTtsSpeed = computed({
         <!-- 合成按钮 -->
         <div class="flex items-center justify-between gap-4 pt-2">
           <p class="text-[11px] text-gray-500 flex-1 leading-relaxed">
-            将口播脚本里的文本送入 TTS Provider 合成为旁白音频。后续会用此音频时长决定素材轮播节奏。
+            将脚本中的「口播文案」送入 TTS 合成为旁白音频，自动保存到素材库（可在「素材库」标签查看/试听）。
           </p>
           <button @click="emit('synthesizeVoice')"
-                  :disabled="isSynthesizingVoice || !ttsVoiceId || !generatedScript"
+                  :disabled="isSynthesizingVoice || !ttsVoiceId || !scriptData?.口播文案"
                   class="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white px-6 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 shadow-lg shadow-purple-900/30 flex-shrink-0">
             <Loader2 v-if="isSynthesizingVoice" class="w-4 h-4 animate-spin" />
             <Music v-else class="w-4 h-4" />
             {{ isSynthesizingVoice ? '合成中...' : (latestVoiceoverPath ? '重新合成' : '合成口播音频') }}
-          </button>
-        </div>
-
-        <!-- 最终合成按钮 -->
-        <div v-if="latestVoiceoverPath" class="pt-4 mt-4 border-t border-purple-500/20 flex items-center justify-between gap-4">
-          <div class="flex-1">
-            <h4 class="text-xs font-bold text-purple-300 mb-1">最后一步：合成视频</h4>
-            <p class="text-[10px] text-gray-500">将上方音频与素材库中所有图片/视频按比例自动对齐拼接。</p>
-          </div>
-          <button @click="emit('startVoiceoverRender')"
-                  :disabled="isRenderingVoiceover"
-                  class="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white px-6 py-3 rounded-xl font-bold text-sm flex items-center gap-2 shadow-lg shadow-indigo-900/30">
-            <Loader2 v-if="isRenderingVoiceover" class="w-4 h-4 animate-spin" />
-            <Film v-else class="w-4 h-4" />
-            {{ isRenderingVoiceover ? '正在合成成片...' : '合成最终视频' }}
           </button>
         </div>
       </div>

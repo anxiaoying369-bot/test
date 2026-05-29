@@ -141,6 +141,18 @@ pub struct VideoConfig {
     /// 用户在设置页自定义的音色组：voice_id 传给 OpenAI 协议，name 仅前端显示
     #[serde(default)]
     pub tts_voices: Vec<TtsVoice>,
+    /// 脚本生成的系统提示词（可在设置页编辑；脚本生成页不可见）
+    #[serde(default = "default_script_system_prompt")]
+    pub script_system_prompt: String,
+}
+
+pub fn default_script_system_prompt() -> String {
+    "你是一位资深的短视频带货编剧和内容营销专家，擅长编写极具传播力和转化力的口播脚本。\n\n\
+    【核心创作准则 (GEO)】\n\
+    1. 答案前置：第一句话必须抓住用户眼球（情绪钩子），直接展示产品最核心的痛点解决或价值。\n\
+    2. 事实密度：拒绝空洞赞美（如\"非常好用\"），多使用具体规格、成分、数据和使用场景。\n\
+    3. 场景化：让脚本听起来像真实推荐或体验过程，而非生硬广告。\n\
+    4. 必须充分引用企业知识库中的事实资料，并遵循指定平台的风格。".to_string()
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]

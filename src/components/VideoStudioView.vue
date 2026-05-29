@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import { 
   ShoppingBag, FileText, Settings2, Film
 } from 'lucide-vue-next';
@@ -65,12 +66,13 @@ const isSynthesizingVoice = ref(false);
 const isLoadingVoices = ref(false);
 const availableVoices = ref<any[]>([]);
 const latestVoiceoverPath = ref<string | null>(null);
-const isRenderingVoiceover = ref(false);
 
 // Export State
 const exportSelectedAudio = ref<string | null>(null);
 const exportSelectedImages = ref<string[]>([]);
 const exportSelectedVideos = ref<string[]>([]);
+const isExporting = ref(false);
+const burnSubtitle = ref(false);
 
 // Modal States
 const showImageGenModal = ref(false);
@@ -108,6 +110,8 @@ watch(currentProject, async (newVal) => {
     selectedPlatform.value = cfg.selectedPlatform || 'douyin';
     selectedScriptType.value = cfg.selectedScriptType || 'voiceover';
     videoRatio.value = cfg.videoRatio || '9:16';
+    // 恢复已确认脚本的项目时，自动加载音色（无需手动刷新）
+    if (scriptConfirmed.value) loadVoices();
   }
 });
 
@@ -159,47 +163,26 @@ const resetScriptFlow = () => {
 const confirmScript = () => {
   scriptConfirmed.value = true;
   saveProjectConfig();
+  // 进入 TTS 步骤时自动加载音色列表，无需手动刷新
+  loadVoices();
 };
 
 const loadVoices = async () => {
   isLoadingVoices.value = true;
   try {
-    // 1. 用户在设置页自定义的音色组（优先，归一化成 {id, name}）
-    const customVoices = (appConfig.value.video.tts_voices || [])
+    // 先拉最新配置，避免用户在设置页改了音色/Provider 后这里还是旧值
+    await loadSettings();
+    // 只显示用户在设置页自定义的音色组（不再合并 Provider 内置音色）
+    availableVoices.value = (appConfig.value.video.tts_voices || [])
       .filter((v: any) => v.voice_id)
-      .map((v: any) => ({ id: v.voice_id, name: v.name || v.voice_id, custom: true }));
-
-    // 2. Provider 内置音色（作为补充）
-    let builtinVoices: any[] = [];
-    try {
-      const res = await invoke<any>('tts_list_voices', {
-        provider: appConfig.value.video.tts_provider,
-        apiKey: appConfig.value.video.tts_api_key,
-        baseUrl: appConfig.value.video.tts_base_url,
-        model: appConfig.value.video.tts_model,
-      });
-      builtinVoices = res.voices || [];
-    } catch (e) {
-      // 内置音色拉取失败不阻塞，仍可用自定义音色
-      if (customVoices.length === 0) throw e;
-    }
-
-    // 合并：自定义在前，去掉与自定义 id 重复的内置项
-    const customIds = new Set(customVoices.map((v: any) => v.id));
-    availableVoices.value = [
-      ...customVoices,
-      ...builtinVoices.filter((v: any) => !customIds.has(v.id)),
-    ];
+      .map((v: any) => ({ id: v.voice_id, name: v.name || v.voice_id }));
 
     if (availableVoices.value.length > 0 && !ttsVoiceId.value) {
-      // 默认选中：配置的 default_tts_voice 优先，否则第一个
       const def = appConfig.value.video.default_tts_voice;
       ttsVoiceId.value = (def && availableVoices.value.some((v: any) => v.id === def))
         ? def
         : availableVoices.value[0].id;
     }
-  } catch (e) {
-    alert('获取音色列表失败: ' + e);
   } finally {
     isLoadingVoices.value = false;
   }
@@ -207,11 +190,27 @@ const loadVoices = async () => {
 
 const synthesizeVoice = async () => {
   if (!currentProject.value) return;
+
+  // 只取脚本 JSON 里的「口播文案」字段
+  let voiceText = '';
+  try {
+    const data = JSON.parse(generatedScript.value);
+    voiceText = (data['口播文案'] || '').toString().trim();
+  } catch {
+    voiceText = '';
+  }
+  if (!voiceText) {
+    alert('脚本中没有「口播文案」字段，无法合成。请重新生成脚本。');
+    return;
+  }
+
   isSynthesizingVoice.value = true;
   try {
+    // 合成前刷新配置，确保用的是设置页最新的 Provider / Base URL / 模型
+    await loadSettings();
     const path = await invoke<string>('tts_synthesize', {
       projectId: currentProject.value.id,
-      text: generatedScript.value,
+      text: voiceText,
       voiceId: ttsVoiceId.value,
       speed: ttsSpeed.value,
       provider: appConfig.value.video.tts_provider,
@@ -220,6 +219,7 @@ const synthesizeVoice = async () => {
       model: appConfig.value.video.tts_model,
     });
     latestVoiceoverPath.value = path;
+    // 重新加载素材库，确保音频出现在素材列表
     await loadMaterials(currentProject.value.id);
   } catch (e) {
     alert('合成失败: ' + e);
@@ -228,12 +228,125 @@ const synthesizeVoice = async () => {
   }
 };
 
-const startVoiceoverRender = async () => {
-  alert('功能开发中 (Phase 5)...');
+const startExportRender = async () => {
+  if (!currentProject.value) return;
+
+  const audio = audioMaterials.value.find(m => m.id === exportSelectedAudio.value);
+  if (!audio?.local_path) {
+    alert('请先选择主音频');
+    return;
+  }
+  const visuals = [
+    ...imageMaterials.value.filter(m => exportSelectedImages.value.includes(m.id)),
+    ...videoMaterials.value.filter(m => exportSelectedVideos.value.includes(m.id)),
+  ];
+  const visualPaths = visuals.map(m => m.local_path).filter((p): p is string => !!p);
+  if (visualPaths.length === 0) {
+    alert('请至少选择一个图片或视频素材');
+    return;
+  }
+
+  // 字幕文本：从脚本 JSON 取「口播文案」（与 TTS 配音一致）
+  let subtitleText = '';
+  if (burnSubtitle.value) {
+    try {
+      const data = JSON.parse(generatedScript.value);
+      subtitleText = (data['口播文案'] || '').toString().trim();
+    } catch {
+      subtitleText = '';
+    }
+    if (!subtitleText) {
+      alert('勾选了字幕，但脚本里没有「口播文案」。请先生成脚本，或取消字幕勾选。');
+      return;
+    }
+  }
+
+  isExporting.value = true;
+  try {
+    // video_export_render 内部 await ffmpeg 完成后才返回，返回成片绝对路径
+    const outputPath = await invoke<string>('video_export_render', {
+      projectId: currentProject.value.id,
+      audioPath: audio.local_path,
+      visualPaths,
+      burnSubtitle: burnSubtitle.value,
+      subtitleText: subtitleText || null,
+    });
+    // 刷新素材库（成片已作为 video 素材入库）
+    await loadMaterials(currentProject.value.id);
+    // 切到素材库并预览成片
+    const newMat = materials.value.find(m => m.local_path === outputPath);
+    if (newMat) {
+      activeTab.value = 'material';
+      openPreview(newMat);
+    } else {
+      alert('合成完成！成片已保存到素材库。');
+    }
+  } catch (e) {
+    alert('合成失败: ' + e);
+  } finally {
+    isExporting.value = false;
+  }
 };
 
-const startExportRender = async () => {
-  alert('功能开发中 (Phase 5)...');
+// 选择本地参考图（图生图用）
+const pickImageGenReference = async () => {
+  const selected = await open({
+    multiple: false,
+    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+  });
+  if (selected && !Array.isArray(selected)) {
+    imageGenRefPath.value = selected;
+  }
+};
+
+// AI 生成图片素材
+const generateImageMaterial = async () => {
+  if (!currentProject.value) return;
+  if (!imageGenPrompt.value.trim()) {
+    alert('请先填写图片描述（提示词）');
+    return;
+  }
+  // 用最新配置（避免前端缓存旧 provider/key）
+  await loadSettings();
+  const v = appConfig.value.video;
+
+  // 图片生成的 Provider 凭证：复用 OpenAI 兼容协议的 key/base_url
+  let apiKey = '';
+  let baseUrl = '';
+  let model = '';
+  if (imageGenProvider.value === 'openai') {
+    apiKey = v.openai_api_key || '';
+    baseUrl = v.openai_base_url || '';
+    model = v.openai_model || '';
+  } else if (imageGenProvider.value === 'fal') {
+    apiKey = v.fal_key || '';
+  } else if (imageGenProvider.value === 'volcengine') {
+    apiKey = v.volc_key || '';
+  }
+  // mock 不需要 key
+
+  isGeneratingImage.value = true;
+  try {
+    await invoke('video_generate_image', {
+      projectId: currentProject.value.id,
+      prompt: imageGenPrompt.value.trim(),
+      size: imageGenSize.value,
+      provider: imageGenProvider.value,
+      apiKey,
+      referenceImagePath: imageGenRefPath.value || null,
+      baseUrl: baseUrl || null,
+      model: model || null,
+    });
+    await loadMaterials(currentProject.value.id);
+    // 关闭弹窗、清空输入
+    showImageGenModal.value = false;
+    imageGenPrompt.value = '';
+    imageGenRefPath.value = '';
+  } catch (e) {
+    alert('图片生成失败: ' + e);
+  } finally {
+    isGeneratingImage.value = false;
+  }
 };
 
 const openPreview = (m: VideoMaterial) => {
@@ -318,7 +431,6 @@ const updateResolution = (r: string) => {
             :isLoadingVoices="isLoadingVoices"
             :availableVoices="availableVoices"
             :latestVoiceoverPath="latestVoiceoverPath"
-            :isRenderingVoiceover="isRenderingVoiceover"
             :PLATFORM_OPTIONS="PLATFORM_OPTIONS"
             :SCRIPT_TYPE_OPTIONS="SCRIPT_TYPE_OPTIONS"
             @generateScript="generateScript"
@@ -326,7 +438,6 @@ const updateResolution = (r: string) => {
             @confirmScript="confirmScript"
             @loadVoices="loadVoices"
             @synthesizeVoice="synthesizeVoice"
-            @startVoiceoverRender="startVoiceoverRender"
             @updateResolution="updateResolution"
           />
 
@@ -351,6 +462,8 @@ const updateResolution = (r: string) => {
             :audioMaterials="audioMaterials"
             :imageMaterials="imageMaterials"
             :videoMaterials="videoMaterials"
+            :isExporting="isExporting"
+            v-model:burnSubtitle="burnSubtitle"
             @update:activeTab="t => activeTab = t as any"
             @startExportRender="startExportRender"
           />
@@ -391,6 +504,8 @@ const updateResolution = (r: string) => {
       :MIN_ZOOM="0.5"
       @closePreview="closePreview"
       @pickReferenceImage="id => referenceImageId = id"
+      @generateImageMaterial="generateImageMaterial"
+      @pickImageGenReference="pickImageGenReference"
     />
   </div>
 </template>
