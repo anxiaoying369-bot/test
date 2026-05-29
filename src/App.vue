@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio, MessageCircle, Settings, Database, Sparkles, Terminal } from 'lucide-vue-next';
+import { MessageSquare, Users, RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, Search, FileText, Radio, Settings, Database, Sparkles, Terminal } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import ResultsView from './components/ResultsView.vue';
 import LiveMonitorView from './components/LiveMonitorView.vue';
-import DouyinIMView from './components/DouyinIMView.vue';
 import SettingsView from './components/SettingsView.vue';
 import ChatView from './components/ChatView.vue';
 import KnowledgeBaseView from './components/KnowledgeBaseView.vue';

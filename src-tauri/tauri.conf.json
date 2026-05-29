@@ -21,13 +21,16 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost",
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost https://asset.localhost; media-src 'self' asset: http://asset.localhost https://asset.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": [
           "$LOCALAPPDATA/AutoCastAI/scraper_data/**",
+          "$LOCALAPPDATA/AutoCastAI/video_studio/**",
           "$APPDATA/AutoCastAI/scraper_data/**",
-          "$DATA/AutoCastAI/scraper_data/**"
+          "$APPDATA/AutoCastAI/video_studio/**",
+          "$DATA/AutoCastAI/scraper_data/**",
+          "$DATA/AutoCastAI/video_studio/**"
         ]
       }
     }
@@ -46,6 +49,9 @@
       "../scripts/*.py",
       "../scripts/*.json",
       "../scripts/static/*",
+      "../scripts/video_providers/*.py",
+      "../scripts/image_providers/*.py",
+      "../scripts/tts_providers/*.py",
       "../scripts/DouyinComment/*.py",
       "../scripts/DouyinComment/*.yaml",
       "../scripts/DouyinComment/*.txt",

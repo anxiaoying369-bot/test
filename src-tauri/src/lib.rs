@@ -1,3 +1,4 @@
+use base64 as base64_engine;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -256,6 +257,20 @@ pub struct VideoConfig {
     pub openai_model: String,
     #[serde(default)]
     pub default_provider: String,
+
+    // ── TTS（语音合成）相关 ──
+    #[serde(default)]
+    pub tts_provider: String,       // "mock" / "openai" / "volcengine"
+    #[serde(default)]
+    pub tts_api_key: String,
+    #[serde(default)]
+    pub tts_base_url: String,       // OpenAI 兼容服务用
+    #[serde(default)]
+    pub tts_model: String,          // 默认 "tts-1"
+    #[serde(default)]
+    pub default_tts_voice: String,
+    #[serde(default)]
+    pub default_tts_speed: f32,
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -1348,9 +1363,15 @@ async fn generate_live_reply(user_name: String, content: String) -> Result<Strin
         .json(&payload)
         .send().await.map_err(|e| format!("请求失败: {}", e))?;
 
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         let err_text = response.text().await.unwrap_or_default();
-        return Err(format!("LLM API 错误: {}", err_text));
+        return match status.as_u16() {
+            401 => Err("LLM API Key 无效或已过期，请检查配置".to_string()),
+            403 => Err("LLM 权限不足，请确认模型权限或 API 状态".to_string()),
+            429 => Err("LLM 请求过于频繁，请稍后再试".to_string()),
+            _ => Err(format!("LLM API 错误 ({}): {}", status, err_text)),
+        };
     }
 
     let resp_data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
@@ -1439,9 +1460,15 @@ async fn analyze_comments(comments: Vec<serde_json::Value>) -> Result<String, St
         .json(&payload)
         .send().await.map_err(|e| format!("请求失败: {}", e))?;
 
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         let err_text = response.text().await.unwrap_or_default();
-        return Err(format!("LLM API 错误: {}", err_text));
+        return match status.as_u16() {
+            401 => Err("LLM API Key 无效或已过期，请检查配置".to_string()),
+            403 => Err("LLM 权限不足，请确认模型权限或 API 状态".to_string()),
+            429 => Err("LLM 请求过于频繁，请稍后再试".to_string()),
+            _ => Err(format!("LLM API 错误 ({}): {}", status, err_text)),
+        };
     }
 
     let resp_data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
@@ -1838,6 +1865,12 @@ async fn get_default_config() -> Result<AppConfig, String> {
             openai_base_url: "https://api.openai.com/v1".to_string(),
             openai_model: "v0".to_string(),
             default_provider: "fal".to_string(),
+            tts_provider: "mock".to_string(),
+            tts_api_key: "".to_string(),
+            tts_base_url: "https://api.openai.com/v1".to_string(),
+            tts_model: "tts-1".to_string(),
+            default_tts_voice: "".to_string(),
+            default_tts_speed: 1.0,
         },
     })
 }
@@ -2448,6 +2481,266 @@ async fn studio_generate_content(
     studio_generate_internal(topic, material, mode, platform, platform_prompt).await
 }
 
+/// 根据平台 ID 拿到对应的 system_prompt 风格指令。
+/// 1. 先从用户在设置页配置的 geo_publish_platforms 中匹配（name 或拼音 id）
+/// 2. 找不到就用内置默认（抖音/快手/视频号/小红书）
+fn resolve_platform_prompt(config: &AppConfig, platform_id: &str) -> String {
+    let id = platform_id.trim();
+    if id.is_empty() { return String::new(); }
+
+    // 先在用户配置里找：name 完全匹配 / 名称包含 id / id 包含名称（中英文宽松匹配）
+    for p in &config.llm.geo_publish_platforms {
+        let n = p.name.trim();
+        if n.is_empty() { continue; }
+        if n == id || n.contains(id) || id.contains(n) {
+            if !p.system_prompt.trim().is_empty() {
+                return format!("\n【平台风格 · {}】\n{}\n", n, p.system_prompt.trim());
+            }
+        }
+    }
+
+    // 内置默认（用户没配置时兜底）
+    let (label, prompt) = match id {
+        "douyin" | "抖音" => ("抖音",
+            "前 3 秒强情绪钩子（疑问/反差/惊吓），口语化短句，每句不超过 12 字。\
+             中间段卖点高密度，节奏快。结尾必带强 CTA（点购物车/关注/下方链接）。\
+             不要书面语，禁止用'今天我要给大家介绍'这种开头。"),
+        "kuaishou" | "快手" => ("快手",
+            "走老铁文化路线：接地气、性价比、信任感。开头直白点出产品和价格优势，\
+             多用'家人们''老铁''咱家'这类词。中段用对比/亲测展示效果。结尾给福利感（限时/包邮/赠品）。"),
+        "wechat-channel" | "视频号" | "video-channel" => ("视频号",
+            "调性偏朋友圈：稳重、信任、有人情味。可以中长（30-60s），叙述完整，\
+             适当带'我自己用过''朋友推荐''家人都说好'这类背书。CTA 偏柔和，'点小心心''加个好友咨询'。"),
+        "xiaohongshu" | "小红书" => ("小红书",
+            "种草调性：精致、闺蜜推荐感、关键词扎堆。开头用 emoji + 关键词，\
+             中段分点列卖点（'✅' 符号开头），强调真实体验和细节，植入热门 tag 关键词。\
+             结尾'冲！''快囤''姐妹们跟上'类号召。"),
+        _ => ("通用", "针对短视频平台优化：开头钩子强，中段信息密集，结尾有行动指令。"),
+    };
+    format!("\n【平台风格 · {}】\n{}\n", label, prompt)
+}
+
+/// 视频脚本生成 / 重生成。
+/// 流程（对应用户期望）：
+///   1. 用产品信息检索知识库（第 1 次）→ 拼成 system prompt
+///   2. 再做一次"综合检索"（第 2 次）：用产品 + 参考脚本 + 比例做 query
+///   3. 把两次检索结果 + 视频比例 + 产品 + 参考脚本 + （可选）反馈
+///      统一交给 AI 助理用的 LLM（config.llm）生成短视频脚本
+///   4. 返回纯文本脚本，前端预览
+///
+/// 重新生成只是在 user_message 里追加"上版脚本 + 用户反馈"，模型自然能改稿。
+#[tauri::command]
+async fn video_generate_script(
+    product: String,
+    reference_script: Option<String>,
+    video_ratio: String,
+    platform: Option<String>,        // "douyin" | "kuaishou" | "wechat-channel" | "xiaohongshu" | "" (任意/无)
+    script_type: Option<String>,     // "voiceover" | "ai-video"（P3 用，P1 先接住参数）
+    previous_script: Option<String>,
+    feedback: Option<String>,
+) -> Result<String, String> {
+    let config = get_config().await?;
+    if config.llm.api_key.is_empty() {
+        return Err("请先在设置中配置 AI 助理的 LLM API Key".to_string());
+    }
+    if product.trim().is_empty() {
+        return Err("请先填写要卖的产品信息".to_string());
+    }
+
+    // 平台 prompt：先从用户配置的 geo_publish_platforms 找匹配，否则用内置默认
+    let platform_id = platform.unwrap_or_default();
+    let platform_prompt = resolve_platform_prompt(&config, &platform_id);
+
+    // 剧本类型 prompt：P3 会进一步细化，这里先放一个占位
+    let script_type_id = script_type.unwrap_or_else(|| "voiceover".to_string());
+
+    // ─── 第 1 次知识库检索：用产品名做 query，捞品牌/规格/历史话术 ───
+    let kb_brand_ctx = match search_kb_internal(product.clone()).await {
+        Ok(s) => {
+            let v: serde_json::Value = serde_json::from_str(&s).unwrap_or(serde_json::json!([]));
+            let mut buf = String::new();
+            if let Some(arr) = v.as_array() {
+                for item in arr.iter().take(8) {
+                    if let Some(t) = item["text"].as_str() {
+                        buf.push_str(&format!("- {}\n", t.trim()));
+                    }
+                }
+            }
+            buf
+        }
+        Err(_) => String::new(),
+    };
+
+    // ─── 第 2 次知识库检索：综合 query（产品 + 参考脚本片段 + 比例语义） ───
+    let ratio_hint = match video_ratio.as_str() {
+        "9:16" => "竖屏短视频（抖音/快手/小红书）",
+        "16:9" => "横屏视频（B站/YouTube/视频号横屏）",
+        "1:1"  => "方形视频（Instagram/朋友圈）",
+        _      => "短视频",
+    };
+    let mix_query = format!(
+        "{} {} {}",
+        product.trim(),
+        reference_script.as_deref().unwrap_or("").chars().take(80).collect::<String>(),
+        ratio_hint
+    );
+    let kb_mix_ctx = match search_kb_internal(mix_query).await {
+        Ok(s) => {
+            let v: serde_json::Value = serde_json::from_str(&s).unwrap_or(serde_json::json!([]));
+            let mut buf = String::new();
+            if let Some(arr) = v.as_array() {
+                for item in arr.iter().take(6) {
+                    if let Some(t) = item["text"].as_str() {
+                        buf.push_str(&format!("- {}\n", t.trim()));
+                    }
+                }
+            }
+            buf
+        }
+        Err(_) => String::new(),
+    };
+
+    // ─── 构造 system prompt：通用部分 + 剧本类型差异化 ───
+    let common_intro =
+        "你是一位资深的短视频带货脚本编剧，擅长把产品卖点转化成口播脚本。\n\
+         产出要求：\n\
+         1. 开头 3 秒钩子要强，能立刻抓住注意力；\n\
+         2. 中段卖点密集，每一句话都要有信息量；\n\
+         3. 结尾给明确行动指令（点购物车/点关注/留言等）；\n\
+         4. 整体节奏匹配视频比例（竖屏快节奏、横屏可稍长）。\n\n";
+
+    let type_format = match script_type_id.as_str() {
+        // 口播剧本：用素材库素材轮播 + TTS，所以剧本是连贯的口播段落，**不要分镜**
+        "voiceover" => "【剧本类型：口播剧本】\n\
+            该剧本会用 TTS 合成成连续的旁白音频，配合素材库里的图片/视频轮播。\n\
+            因此请输出**连贯的口播稿**，不要分镜，不要画面描述。\n\
+            【输出格式严格遵守】请直接输出 Markdown：\n\
+            \n\
+            # 视频标题：<一句话>\n\
+            > 总时长：<秒数> | 语速：<慢/中/快> | 目标受众：<人群>\n\n\
+            ## 口播文案\n\
+            <第一段：开头钩子。每段 30-50 字，便于 TTS 合成。>\n\n\
+            <第二段：核心卖点 1>\n\n\
+            <第三段：核心卖点 2>\n\n\
+            <...更多段落>\n\n\
+            <最后一段：行动号召>\n\n\
+            ---\n\
+            **核心卖点关键词**：`关键词1` `关键词2` `关键词3`\n\
+            **建议素材关键词**（给上层匹配素材用）：`素材关键词1` `素材关键词2` ...\n",
+
+        // AI 视频：每个分镜会对应一次视频生成，需要画面描述
+        _ /* "ai-video" 或其他 */ => "【剧本类型：AI 视频】\n\
+            该剧本的每个分镜都会作为视频生成模型的 prompt，所以**画面描述必须具体**\n\
+            （包含主体、场景、镜头语言、光线、风格）。\n\
+            【输出格式严格遵守】请直接输出 Markdown：\n\
+            \n\
+            # 视频标题：<一句话>\n\
+            > 总时长：<秒数> | 节奏：<节奏描述> | 目标受众：<人群>\n\n\
+            ## 分镜 1 · 0-3s · 钩子\n\
+            **口播**：「<口播台词>」\n\
+            **画面**：<具体的画面描述，给 AI 视频模型用>\n\
+            **运镜**：<运镜方式：推/拉/摇/移/特写...>\n\n\
+            ## 分镜 2 · 3-10s · 卖点\n\
+            ...\n\n\
+            ## 分镜 N · 最后 3s · 行动号召\n\
+            **口播**：「...」\n\
+            **画面**：...\n\n\
+            ---\n\
+            **核心卖点关键词**：`关键词1` `关键词2` `关键词3`\n",
+    };
+
+    let mut system_prompt = format!("{}{}", common_intro, type_format);
+
+    if !kb_brand_ctx.is_empty() {
+        system_prompt.push_str("\n以下是企业知识库中关于该产品/品牌的背景资料，请在脚本中合理引用：\n");
+        system_prompt.push_str(&kb_brand_ctx);
+    }
+    if !platform_prompt.is_empty() {
+        system_prompt.push_str(&platform_prompt);
+    }
+
+    // ─── 构造 user message（第 2 次检索结果 + 用户输入 + 反馈） ───
+    let mut user_msg = String::new();
+    user_msg.push_str(&format!("【视频比例】{}（{}）\n", video_ratio, ratio_hint));
+    user_msg.push_str(&format!("【要卖的产品】\n{}\n", product.trim()));
+    if let Some(ref ref_script) = reference_script {
+        if !ref_script.trim().is_empty() {
+            user_msg.push_str(&format!("\n【用户提供的参考脚本】（仅参考结构与风格，不要照抄）\n{}\n", ref_script.trim()));
+        }
+    }
+    if !kb_mix_ctx.is_empty() {
+        user_msg.push_str("\n【知识库补充检索】\n");
+        user_msg.push_str(&kb_mix_ctx);
+    }
+
+    if let (Some(prev), Some(fb)) = (previous_script.as_ref(), feedback.as_ref()) {
+        if !prev.trim().is_empty() && !fb.trim().is_empty() {
+            user_msg.push_str(&format!(
+                "\n【上一版脚本】\n{}\n\n【用户对上一版的修改意见】\n{}\n\n请根据修改意见重新生成完整脚本（不是 diff，是整篇）。",
+                prev.trim(),
+                fb.trim()
+            ));
+        } else {
+            user_msg.push_str("\n请按上述要求生成一份完整的短视频脚本。");
+        }
+    } else {
+        user_msg.push_str("\n请按上述要求生成一份完整的短视频脚本。");
+    }
+
+    // ─── 调用 AI 助理用的同一个 LLM ───
+    let url = if config.llm.base_url.ends_with("/chat/completions") {
+        config.llm.base_url.clone()
+    } else {
+        format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/'))
+    };
+    let body = serde_json::json!({
+        "model": config.llm.model,
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_msg }
+        ],
+        "temperature": 0.7
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
+        
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.llm.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("LLM 请求失败: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let err_text = response.text().await.unwrap_or_default();
+        return match status.as_u16() {
+            401 => Err("LLM API Key 无效或已过期，请检查配置".to_string()),
+            403 => Err("LLM 权限不足，请确认模型权限或 API 状态".to_string()),
+            429 => Err("LLM 请求过于频繁，请稍后再试".to_string()),
+            _ => Err(format!("LLM API 错误 ({}): {}", status, err_text)),
+        };
+    }
+
+    let resp: serde_json::Value = response.json()
+        .await
+        .map_err(|e| format!("LLM 响应解析失败: {}", e))?;
+
+    if let Some(err) = resp.get("error") {
+        return Err(format!("LLM 返回业务错误: {}", err));
+    }
+    let script = resp["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or("LLM 返回内容为空")?
+        .to_string();
+    Ok(script)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GeoQueryResult {
     pub model_name: String,
@@ -2713,6 +3006,10 @@ pub struct VideoProject {
     pub description: Option<String>,
     pub config: Option<serde_json::Value>,
     pub status: String,
+    #[serde(default)]
+    pub is_locked: bool,
+    pub locked_at: Option<String>,
+    pub final_video_path: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -2738,8 +3035,12 @@ pub struct VideoMaterial {
     pub local_path: Option<String>,
     pub remote_url: Option<String>,
     pub meta: Option<serde_json::Value>,
+    #[serde(default = "default_source")]
+    pub source: String,
     pub created_at: Option<String>,
 }
+
+fn default_source() -> String { "uploaded".to_string() }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RenderConfig {
@@ -2795,26 +3096,122 @@ async fn video_run_ffmpeg(
     task_id: String,
     args: Vec<String>
 ) -> Result<(), String> {
-    ffmpeg::run_ffmpeg_with_progress(task_id, args, app).await
+    ffmpeg::run_ffmpeg_with_progress(task_id, args, app, "processing".to_string()).await
+}
+
+/// 校验项目是否被锁定。锁定后所有修改类操作都应该被拒绝。
+/// 注意：调用方需要先持有 video_db 的 MutexGuard。
+fn ensure_not_locked(db: &rusqlite::Connection, project_id: &str) -> Result<(), String> {
+    let locked: i64 = db
+        .query_row(
+            "SELECT COALESCE(is_locked, 0) FROM video_projects WHERE id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if locked != 0 {
+        return Err("项目已完成并锁定，无法修改。如需调整请克隆为新项目。".to_string());
+    }
+    Ok(())
+}
+
+/// 锁定项目：标记完成、设置 locked_at、记录最终视频路径。
+#[tauri::command]
+async fn video_lock_project(
+    state: State<'_, AppState>,
+    id: String,
+    final_video_path: Option<String>,
+) -> Result<(), String> {
+    let db = state.video_db.lock().map_err(|e| e.to_string())?;
+    db.execute(
+        "UPDATE video_projects
+         SET is_locked = 1,
+             locked_at = CURRENT_TIMESTAMP,
+             status = 'completed',
+             final_video_path = COALESCE(?2, final_video_path),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?1",
+        rusqlite::params![&id, &final_video_path],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 克隆项目：把现有项目（含 config）复制一份，但去掉"内容产物"字段，作为新草稿。
+/// 不复制 materials（用户主动决定要不要带过去）。
+#[tauri::command]
+async fn video_clone_project(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<VideoProject, String> {
+    let db = state.video_db.lock().map_err(|e| e.to_string())?;
+
+    // 先读出来
+    let mut stmt = db.prepare(
+        "SELECT title, description, config FROM video_projects WHERE id = ?1"
+    ).map_err(|e| e.to_string())?;
+    let (title, description, config_str): (String, Option<String>, Option<String>) = stmt
+        .query_row([&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|e| format!("源项目不存在: {}", e))?;
+
+    // 解析并清洗 config —— 去掉已生成的脚本/视频路径，保留产品信息和平台选择
+    let mut config_val: serde_json::Value = config_str
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::json!({}));
+    if let Some(script_obj) = config_val.get_mut("script").and_then(|v| v.as_object_mut()) {
+        script_obj.remove("generatedScript");
+        script_obj.remove("generationPrompt");
+        script_obj.insert("scriptConfirmed".into(), serde_json::json!(false));
+        // 保留 productInfo / referenceScript / videoRatio / platform / scriptType
+    }
+
+    let new_id = Uuid::new_v4().to_string();
+    let new_title = format!("{}（副本）", title);
+    let new_config_str = serde_json::to_string(&config_val).unwrap_or_default();
+
+    db.execute(
+        "INSERT INTO video_projects (id, title, description, config, status, is_locked)
+         VALUES (?1, ?2, ?3, ?4, 'draft', 0)",
+        rusqlite::params![&new_id, &new_title, &description, &new_config_str],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(VideoProject {
+        id: new_id,
+        title: new_title,
+        description,
+        config: Some(config_val),
+        status: "draft".to_string(),
+        is_locked: false,
+        locked_at: None,
+        final_video_path: None,
+        created_at: None,
+        updated_at: None,
+    })
 }
 
 #[tauri::command]
 async fn video_list_projects(state: State<'_, AppState>) -> Result<Vec<VideoProject>, String> {
     let db = state.video_db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = db.prepare("SELECT id, title, description, config, status, created_at, updated_at FROM video_projects ORDER BY updated_at DESC")
-        .map_err(|e| e.to_string())?;
-    
+    let mut stmt = db.prepare(
+        "SELECT id, title, description, config, status, is_locked, locked_at, final_video_path, created_at, updated_at
+         FROM video_projects ORDER BY updated_at DESC"
+    ).map_err(|e| e.to_string())?;
+
     let rows = stmt.query_map([], |row| {
         let config_str: Option<String> = row.get(3)?;
         let config = config_str.and_then(|s| serde_json::from_str(&s).ok());
+        let locked_raw: Option<i64> = row.get(5).ok();
         Ok(VideoProject {
             id: row.get(0)?,
             title: row.get(1)?,
             description: row.get(2)?,
             config,
             status: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
+            is_locked: locked_raw.unwrap_or(0) != 0,
+            locked_at: row.get(6).ok(),
+            final_video_path: row.get(7).ok(),
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
         })
     }).map_err(|e| e.to_string())?;
 
@@ -2828,16 +3225,34 @@ async fn video_list_projects(state: State<'_, AppState>) -> Result<Vec<VideoProj
 #[tauri::command]
 async fn video_upsert_project(state: State<'_, AppState>, project: VideoProject) -> Result<(), String> {
     let db = state.video_db.lock().map_err(|e| e.to_string())?;
+
+    // 已锁定项目只允许更新标题/描述这些元数据，不允许改 config / status
+    let locked: i64 = db
+        .query_row(
+            "SELECT COALESCE(is_locked, 0) FROM video_projects WHERE id = ?1",
+            [&project.id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if locked != 0 {
+        // 锁定后仅更新 title / description
+        db.execute(
+            "UPDATE video_projects SET title=?2, description=?3, updated_at=CURRENT_TIMESTAMP WHERE id=?1",
+            rusqlite::params![&project.id, &project.title, &project.description],
+        ).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
     let config_json = project.config.as_ref().map(|c| serde_json::to_string(c).unwrap_or_default());
-    
     db.execute(
-        "INSERT INTO video_projects (id, title, description, config, status, updated_at) 
+        "INSERT INTO video_projects (id, title, description, config, status, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
-         ON CONFLICT(id) DO UPDATE SET 
-            title=excluded.title, 
-            description=excluded.description, 
-            config=excluded.config, 
-            status=excluded.status, 
+         ON CONFLICT(id) DO UPDATE SET
+            title=excluded.title,
+            description=excluded.description,
+            config=excluded.config,
+            status=excluded.status,
             updated_at=CURRENT_TIMESTAMP",
         (project.id, project.title, project.description, config_json, project.status),
     ).map_err(|e| e.to_string())?;
@@ -2857,7 +3272,59 @@ async fn video_delete_project(state: State<'_, AppState>, id: String) -> Result<
     // 3. 删除项目本身
     db.execute("DELETE FROM video_projects WHERE id = ?1", [&id]).map_err(|e| e.to_string())?;
     
+    // 4. 清理磁盘文件
+    let data_dir = get_data_dir().join("video_studio");
+    let dirs_to_clean = vec!["materials", "voiceovers", "output"];
+    for sub in dirs_to_clean {
+        let path = data_dir.join(sub).join(&id);
+        if path.exists() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+    
     Ok(())
+}
+
+/// 通用 AI 错误映射：将原始 API 报错或 Python 报错转换为用户友好的中文提示。
+/// 从 Python provider_errors 输出的 JSON 中提取最友好的错误描述。
+/// Python 端结构（provider_errors.classify_exception 的输出）：
+///   { "status": "error", "error": "...", "error_code": "AUTH|RATE_LIMIT|...", "http_status": 401, "details": "..." }
+/// 优先用 "error"（已是中文友好提示），失败时回退到 map_ai_error 兜底关键词匹配。
+fn extract_provider_error(res: &serde_json::Value, fallback_label: &str) -> String {
+    if let Some(msg) = res.get("error").and_then(|v| v.as_str()) {
+        let code = res.get("error_code").and_then(|v| v.as_str()).unwrap_or("");
+        let status = res.get("http_status").and_then(|v| v.as_i64()).unwrap_or(0);
+        // 已经是 provider_errors 输出 → 直接给前端清晰文案
+        if !code.is_empty() {
+            return if status > 0 {
+                format!("[{}] {} (HTTP {})", code, msg, status)
+            } else {
+                format!("[{}] {}", code, msg)
+            };
+        }
+        // 老版 Provider 直接 str(e) 的情况，过一遍关键词映射
+        return map_ai_error(msg);
+    }
+    format!("{}（未知错误）", fallback_label)
+}
+
+fn map_ai_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("401") || lower.contains("unauthorized") || lower.contains("invalid_api_key") {
+        "API Key 无效或已过期，请检查设置中的配置".to_string()
+    } else if lower.contains("403") || lower.contains("forbidden") || lower.contains("not allowed") {
+        "权限不足，请确认您的账号有权访问该模型或 API".to_string()
+    } else if lower.contains("429") || lower.contains("too many requests") || lower.contains("rate limit") {
+        "请求过于频繁（限流），请稍后再试".to_string()
+    } else if lower.contains("not supported on /v1/images/generations") || lower.contains("not supported on /v1/images/edits") {
+        "中转站不支持该模型用于图片生成。请在设置中将模型名改为 'dall-e-3' 或中转站建议的名字".to_string()
+    } else if lower.contains("insufficient_quota") || lower.contains("billing_hard_limit") || lower.contains("quota exceeded") {
+        "API 额度不足或账号欠费，请前往 Provider 后台检查".to_string()
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        "连接超时，请检查网络设置或稍后重试".to_string()
+    } else {
+        raw.to_string()
+    }
 }
 
 #[tauri::command]
@@ -2871,18 +3338,56 @@ async fn video_start_generation(
     ratio: String,
     base_url: Option<String>,
     model: Option<String>,
+    reference_material_id: Option<String>,   // ★ 新增：素材库中作为参考图的素材 ID
 ) -> Result<String, String> {
+    // 查参考图路径（如果有）
+    let reference_path: Option<String> = if let Some(mid) = reference_material_id.as_deref() {
+        if mid.is_empty() {
+            None
+        } else {
+            let db = state.video_db.lock().map_err(|e| e.to_string())?;
+            ensure_not_locked(&db, &project_id)?;
+            let row: Option<(Option<String>, String)> = db
+                .query_row(
+                    "SELECT local_path, type FROM video_materials WHERE id = ?1 AND project_id = ?2",
+                    [mid, &project_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
+            match row {
+                Some((Some(p), t)) if t == "image" => Some(p),
+                Some((_, t)) if t != "image" => return Err(format!("参考图必须是图片素材，但选中的是 {}", t)),
+                _ => return Err("参考图素材不存在".to_string()),
+            }
+        }
+    } else {
+        let db = state.video_db.lock().map_err(|e| e.to_string())?;
+        ensure_not_locked(&db, &project_id)?;
+        None
+    };
+
     let scripts = get_scripts_dir();
     let manager_py = scripts.join("video_manager.py");
-    
+
+    // 模式逻辑：有参考图 → 强制 image 模式；无参考图 → 用传入的 mode（通常是 text）
+    let effective_mode = if reference_path.is_some() {
+        "image".to_string()
+    } else {
+        mode.clone()
+    };
+
     let mut cmd = python_cmd();
     cmd.arg(&manager_py)
         .arg("start")
         .arg("--provider").arg(&provider)
         .arg("--api-key").arg(&api_key)
         .arg("--prompt").arg(&prompt)
-        .arg("--mode").arg(&mode)
+        .arg("--mode").arg(&effective_mode)
         .arg("--ratio").arg(&ratio);
+
+    if let Some(ref p) = reference_path {
+        cmd.arg("--image-url").arg(p);
+    }
 
     if let Some(url) = base_url {
         if !url.is_empty() {
@@ -2903,7 +3408,7 @@ async fn video_start_generation(
     let res: serde_json::Value = serde_json::from_str(&stdout).map_err(|_| format!("Python error: {}", stdout))?;
     
     if res["status"] == "error" {
-        return Err(res["error"].as_str().unwrap_or("Unknown AI error").to_string());
+        return Err(extract_provider_error(&res, "AI 视频生成失败"));
     }
 
     let task_id = res["task_id"].as_str().ok_or("No task_id returned")?.to_string();
@@ -2953,7 +3458,13 @@ async fn video_poll_task_status(
         .map_err(|e| e.to_string())?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let res: serde_json::Value = serde_json::from_str(&stdout).map_err(|_| format!("Python error: {}", stdout))?;
+    let mut res: serde_json::Value = serde_json::from_str(&stdout).map_err(|_| format!("Python error: {}", stdout))?;
+
+    // 如果状态是 error，覆写为分类后的友好信息
+    if res["status"] == "error" {
+        let friendly = extract_provider_error(&res, "任务查询失败");
+        res["error"] = serde_json::json!(friendly);
+    }
 
     // 更新数据库状态
     let status = res["status"].as_str().unwrap_or("processing");
@@ -2972,12 +3483,15 @@ async fn video_poll_task_status(
 #[tauri::command]
 async fn video_list_materials(state: State<'_, AppState>, project_id: String) -> Result<Vec<VideoMaterial>, String> {
     let db = state.video_db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = db.prepare("SELECT id, project_id, type, local_path, remote_url, meta, created_at FROM video_materials WHERE project_id = ?1 ORDER BY created_at DESC")
-        .map_err(|e| e.to_string())?;
-    
+    let mut stmt = db.prepare(
+        "SELECT id, project_id, type, local_path, remote_url, meta, source, created_at
+         FROM video_materials WHERE project_id = ?1 ORDER BY created_at DESC"
+    ).map_err(|e| e.to_string())?;
+
     let rows = stmt.query_map([project_id], |row| {
         let meta_str: Option<String> = row.get(5)?;
         let meta = meta_str.and_then(|s| serde_json::from_str(&s).ok());
+        let source: Option<String> = row.get(6).ok();
         Ok(VideoMaterial {
             id: row.get(0)?,
             project_id: row.get(1)?,
@@ -2985,7 +3499,8 @@ async fn video_list_materials(state: State<'_, AppState>, project_id: String) ->
             local_path: row.get(3)?,
             remote_url: row.get(4)?,
             meta,
-            created_at: row.get(6)?,
+            source: source.unwrap_or_else(|| "uploaded".to_string()),
+            created_at: row.get(7)?,
         })
     }).map_err(|e| e.to_string())?;
 
@@ -2994,6 +3509,365 @@ async fn video_list_materials(state: State<'_, AppState>, project_id: String) ->
         materials.push(row.map_err(|e| e.to_string())?);
     }
     Ok(materials)
+}
+
+// ============ TTS 语音合成 ============
+
+#[tauri::command]
+async fn tts_list_voices(
+    provider: String,
+    api_key: String,
+    base_url: Option<String>,
+    model: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let scripts = get_scripts_dir();
+    let manager_py = scripts.join("tts_manager.py");
+
+    let mut cmd = python_cmd();
+    cmd.arg(&manager_py)
+        .arg("list-voices")
+        .arg("--provider").arg(&provider)
+        .arg("--api-key").arg(&api_key);
+    if let Some(u) = base_url.as_ref().filter(|s| !s.is_empty()) {
+        cmd.arg("--base-url").arg(u);
+    }
+    if let Some(m) = model.as_ref().filter(|s| !s.is_empty()) {
+        cmd.arg("--model").arg(m);
+    }
+
+    let output = cmd.output().await.map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Err(format!("TTS list-voices 无输出: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+    let val: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|_| format!("TTS list-voices 返回非 JSON: {}", stdout))?;
+    Ok(val)
+}
+
+/// 合成语音到本地文件，返回保存路径。
+/// 文件落到 <data_dir>/video_studio/voiceovers/<project_id>/voice_<id8>.mp3
+/// 同时插入 video_materials 表（type='audio', source='ai-generated'）。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn tts_synthesize(
+    state: State<'_, AppState>,
+    project_id: String,
+    text: String,
+    voice_id: String,
+    speed: f32,
+    provider: String,
+    api_key: String,
+    base_url: Option<String>,
+    model: Option<String>,
+) -> Result<String, String> {
+    {
+        let db = state.video_db.lock().map_err(|e| e.to_string())?;
+        ensure_not_locked(&db, &project_id)?;
+    }
+    if text.trim().is_empty() {
+        return Err("文本不能为空".to_string());
+    }
+
+    let save_dir = get_data_dir()
+        .join("video_studio")
+        .join("voiceovers")
+        .join(&project_id);
+    fs::create_dir_all(&save_dir).map_err(|e| e.to_string())?;
+
+    let material_id = Uuid::new_v4().to_string();
+    let filename = format!("voice_{}.mp3", &material_id[..8]);
+    let save_path = save_dir.join(&filename);
+    let save_path_str = save_path.to_string_lossy().to_string();
+
+    let scripts = get_scripts_dir();
+    let manager_py = scripts.join("tts_manager.py");
+
+    let mut cmd = python_cmd();
+    cmd.arg(&manager_py)
+        .arg("synthesize")
+        .arg("--provider").arg(&provider)
+        .arg("--api-key").arg(&api_key)
+        .arg("--text").arg(&text)
+        .arg("--voice").arg(&voice_id)
+        .arg("--speed").arg(format!("{}", speed))
+        .arg("--output").arg(&save_path_str);
+    if let Some(u) = base_url.as_ref().filter(|s| !s.is_empty()) {
+        cmd.arg("--base-url").arg(u);
+    }
+    if let Some(m) = model.as_ref().filter(|s| !s.is_empty()) {
+        cmd.arg("--model").arg(m);
+    }
+
+    let output = cmd.output().await.map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Err(format!("TTS 无输出: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+    let res: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|_| format!("TTS 返回非 JSON: {}", stdout))?;
+    if res["status"] == "error" {
+        return Err(extract_provider_error(&res, "TTS 合成失败"));
+    }
+    let audio_path = res["audio_path"].as_str().unwrap_or(&save_path_str).to_string();
+
+    let db = state.video_db.lock().map_err(|e| e.to_string())?;
+    let meta_json = serde_json::json!({
+        "voice_id": voice_id,
+        "speed": speed,
+        "provider": provider,
+        "text_length": text.chars().count(),
+    }).to_string();
+    db.execute(
+        "INSERT INTO video_materials (id, project_id, type, local_path, remote_url, meta, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            &material_id,
+            &project_id,
+            &"audio".to_string(),
+            &audio_path,
+            &Option::<String>::None,
+            &meta_json,
+            &"ai-generated".to_string(),
+        ),
+    ).map_err(|e| format!("写入数据库失败: {}", e))?;
+
+    Ok(audio_path)
+}
+
+/// AI 文生图：调 image_manager.py → 下载到项目素材目录 → 入库（source='ai-generated'）。
+///
+/// 入参：
+///   - provider:      "fal" | "volcengine" | "openai" | "mock"
+///   - prompt:        提示词（必填）
+///   - size:          "1024x1024" / "720x1280" 等
+///   - reference_image_path: 可选，传本地路径或 URL（图生图）
+///   - api_key / base_url / model: 各 Provider 配置
+/// 返回：新插入的 material_id
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn video_generate_image(
+    state: State<'_, AppState>,
+    project_id: String,
+    prompt: String,
+    size: String,
+    provider: String,
+    api_key: String,
+    reference_image_path: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+) -> Result<String, String> {
+    {
+        let db = state.video_db.lock().map_err(|e| e.to_string())?;
+        ensure_not_locked(&db, &project_id)?;
+    }
+
+    if prompt.trim().is_empty() {
+        return Err("提示词不能为空".to_string());
+    }
+
+    let scripts = get_scripts_dir();
+    let manager_py = scripts.join("image_manager.py");
+
+    let mut cmd = python_cmd();
+    cmd.arg(&manager_py)
+        .arg("--provider").arg(&provider)
+        .arg("--api-key").arg(&api_key)
+        .arg("--prompt").arg(&prompt)
+        .arg("--size").arg(&size);
+
+    if let Some(p) = reference_image_path.as_ref().filter(|s| !s.is_empty()) {
+        cmd.arg("--reference-image").arg(p);
+    }
+    if let Some(u) = base_url.as_ref().filter(|s| !s.is_empty()) {
+        cmd.arg("--base-url").arg(u);
+    }
+    if let Some(m) = model.as_ref().filter(|s| !s.is_empty()) {
+        cmd.arg("--model").arg(m);
+    }
+
+    let output = cmd.output().await.map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stdout.is_empty() {
+        return Err(format!("图片生成无输出 (exit={:?}): {}", output.status.code(), stderr));
+    }
+
+    let res: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|_| format!("图片生成返回非 JSON: {}", stdout))?;
+    if res["status"] == "error" {
+        return Err(extract_provider_error(&res, "AI 图片生成失败"));
+    }
+    let image_url = res["image_url"].as_str().ok_or("缺少 image_url 字段")?.to_string();
+
+    // ─── 下载到项目目录 ───
+    let material_id = Uuid::new_v4().to_string();
+    let save_dir = get_data_dir()
+        .join("video_studio")
+        .join("materials")
+        .join(&project_id);
+    fs::create_dir_all(&save_dir).map_err(|e| format!("创建素材目录失败: {}", e))?;
+
+    let (bytes, ext) = if let Some(b64) = image_url.strip_prefix("data:") {
+        // data:image/png;base64,XXXX
+        let comma = b64.find(',').ok_or("data URL 格式错误")?;
+        let header = &b64[..comma];
+        let payload = &b64[comma + 1..];
+        let mime = header.split(';').next().unwrap_or("image/png");
+        let ext = if mime.contains("jpeg") || mime.contains("jpg") { "jpg" }
+                  else if mime.contains("webp") { "webp" }
+                  else { "png" };
+        use base64_engine::{engine::general_purpose::STANDARD, Engine};
+        let bytes = STANDARD.decode(payload).map_err(|e| format!("base64 解码失败: {}", e))?;
+        (bytes, ext.to_string())
+    } else {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build().map_err(|e| e.to_string())?;
+        let resp = client.get(&image_url).send().await
+            .map_err(|e| format!("下载图片失败: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("下载图片 HTTP {}", resp.status()));
+        }
+        // 从 URL 推断扩展名
+        let ext = image_url
+            .split('?').next().unwrap_or("")
+            .rsplit('.').next().unwrap_or("png");
+        let ext = if ["png", "jpg", "jpeg", "webp", "gif"].contains(&ext.to_lowercase().as_str()) {
+            ext.to_lowercase()
+        } else {
+            "png".to_string()
+        };
+        let bytes = resp.bytes().await.map_err(|e| e.to_string())?.to_vec();
+        (bytes, ext)
+    };
+
+    let filename = format!("ai_{}_{}.{}", &material_id[..8], chrono_like_now(), ext);
+    let save_path = save_dir.join(&filename);
+    fs::write(&save_path, bytes).map_err(|e| format!("写入图片文件失败: {}", e))?;
+    let local_path_str = save_path.to_string_lossy().to_string();
+
+    // 入库
+    let db = state.video_db.lock().map_err(|e| e.to_string())?;
+    let meta_json = serde_json::json!({ "prompt": prompt, "size": size, "provider": provider }).to_string();
+    db.execute(
+        "INSERT INTO video_materials (id, project_id, type, local_path, remote_url, meta, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            &material_id,
+            &project_id,
+            &"image".to_string(),
+            &local_path_str,
+            &Option::<String>::None,
+            &meta_json,
+            &"ai-generated".to_string(),
+        ),
+    ).map_err(|e| format!("写入数据库失败: {}", e))?;
+
+    Ok(material_id)
+}
+
+/// 用一个时间戳前缀让生成的图片文件名不重复
+fn chrono_like_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!("{}", secs)
+}
+
+/// 用户主动上传素材：把本地任意路径的图片/视频复制进项目素材目录。
+///
+/// - `source_path`: 用户在文件对话框选中的绝对路径（图片或视频）
+/// - `material_type`: 上层 Vue 端判断好的 "image" / "video"
+/// - 复制到 `<data_dir>/video_studio/materials/<project_id>/uploaded_<id8>_<原文件名>`
+/// - 插入 `video_materials` 表（`remote_url` 留空表示本地上传）
+#[tauri::command]
+async fn video_upload_material(
+    state: State<'_, AppState>,
+    project_id: String,
+    source_path: String,
+    material_type: String,
+) -> Result<String, String> {
+    {
+        let db = state.video_db.lock().map_err(|e| e.to_string())?;
+        ensure_not_locked(&db, &project_id)?;
+    }
+
+    let src = PathBuf::from(&source_path);
+    if !src.exists() {
+        return Err(format!("源文件不存在: {}", source_path));
+    }
+    let filename = src.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("uploaded")
+        .to_string();
+
+    let material_id = Uuid::new_v4().to_string();
+    let save_dir = get_data_dir()
+        .join("video_studio")
+        .join("materials")
+        .join(&project_id);
+    fs::create_dir_all(&save_dir).map_err(|e| format!("创建素材目录失败: {}", e))?;
+
+    let local_filename = format!("uploaded_{}_{}", &material_id[..8], filename);
+    let save_path = save_dir.join(&local_filename);
+
+    // 大文件用流式拷贝，避免一次性读到内存
+    fs::copy(&src, &save_path).map_err(|e| format!("拷贝文件失败: {}", e))?;
+
+    let local_path_str = save_path.to_string_lossy().to_string();
+
+    let db = state.video_db.lock().map_err(|e| e.to_string())?;
+    db.execute(
+        "INSERT INTO video_materials (id, project_id, type, local_path, remote_url, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        (
+            &material_id,
+            &project_id,
+            &material_type,
+            &local_path_str,
+            &Option::<String>::None,
+            &"uploaded".to_string(),
+        ),
+    ).map_err(|e| format!("写入数据库失败: {}", e))?;
+
+    Ok(local_path_str)
+}
+
+/// 删除一条素材记录 + 磁盘文件（若文件还在项目目录里）。
+#[tauri::command]
+async fn video_delete_material(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let db = state.video_db.lock().map_err(|e| e.to_string())?;
+
+    // 先查 local_path + 所属 project_id（用于锁定校验）
+    let row: Option<(Option<String>, String)> = db
+        .query_row(
+            "SELECT local_path, project_id FROM video_materials WHERE id = ?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+
+    let (local_path, project_id) = match row {
+        Some((p, pid)) => (p, pid),
+        None => return Err("素材不存在".to_string()),
+    };
+
+    // 锁定项目不允许删素材
+    ensure_not_locked(&db, &project_id)?;
+
+    db.execute("DELETE FROM video_materials WHERE id = ?1", [&id])
+        .map_err(|e| format!("删除记录失败: {}", e))?;
+
+    // 仅删除我们项目目录里的文件，避免误删用户原始文件
+    if let Some(p) = local_path {
+        let path = PathBuf::from(&p);
+        let video_studio_root = get_data_dir().join("video_studio");
+        if path.starts_with(&video_studio_root) && path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -3025,11 +3899,11 @@ async fn video_download_material(
     
     let local_path_str = save_path.to_string_lossy().to_string();
 
-    // 记录到数据库
+    // 记录到数据库（远程下载的视频来自 AI 生成 → source='ai-generated'）
     let db = state.video_db.lock().map_err(|e| e.to_string())?;
     db.execute(
-        "INSERT INTO video_materials (id, project_id, type, local_path, remote_url) VALUES (?1, ?2, ?3, ?4, ?5)",
-        (&material_id, &project_id, &material_type, &local_path_str, &url),
+        "INSERT INTO video_materials (id, project_id, type, local_path, remote_url, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        (&material_id, &project_id, &material_type, &local_path_str, &url, &"ai-generated".to_string()),
     ).map_err(|e| e.to_string())?;
 
     Ok(local_path_str)
@@ -3099,7 +3973,7 @@ async fn get_video_duration(path: &str) -> Result<f64, String> {
         ])
         .output()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("无法执行 ffprobe ({})，请确保已安装 FFmpeg 环境: {}", ffprobe, e))?;
 
     let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
     s.parse::<f64>().map_err(|e| format!("Failed to parse duration '{}': {}", s, e))
@@ -3114,6 +3988,10 @@ async fn video_render_advanced(
     bgm_path: Option<String>,
     config: RenderConfig,
 ) -> Result<String, String> {
+    {
+        let db = state.video_db.lock().map_err(|e| e.to_string())?;
+        ensure_not_locked(&db, &project_id)?;
+    }
     if video_paths.is_empty() {
         return Err("No video clips provided".to_string());
     }
@@ -3248,13 +4126,143 @@ async fn video_render_advanced(
     let app_clone = app.clone();
     let task_id_clone = task_id.clone();
     tauri::async_runtime::spawn(async move {
-        match ffmpeg::run_ffmpeg_with_progress(task_id_clone.clone(), args, app_clone.clone()).await {
+        match ffmpeg::run_ffmpeg_with_progress(task_id_clone.clone(), args, app_clone.clone(), "rendering".to_string()).await {
             Ok(_) => {
                 let state = app_clone.state::<AppState>();
                 let db = state.video_db.lock().unwrap();
                 let _ = db.execute(
                     "UPDATE video_tasks SET status='completed', result_path=?1, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
                     (&output_path_str, &task_id_clone),
+                );
+            }
+            Err(e) => {
+                {
+                    let state = app_clone.state::<AppState>();
+                    let db = state.video_db.lock().unwrap();
+                    let _ = db.execute(
+                        "UPDATE video_tasks SET status='error', error_msg=?1, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+                        (&e, &task_id_clone),
+                    );
+                }
+            }
+        }
+    });
+
+    Ok(task_id)
+}
+
+/// 导出合成管线（不锁定项目）：用户选择1个音频+多张图片/多个视频，按音频时长拼接。
+#[tauri::command]
+async fn video_export_render(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    audio_path: String,
+    image_paths: Vec<String>,
+    video_paths: Vec<String>,
+    config: RenderConfig,
+) -> Result<String, String> {
+    let mut all_visual_paths: Vec<String> = Vec::new();
+    all_visual_paths.extend(image_paths);
+    all_visual_paths.extend(video_paths);
+
+    if all_visual_paths.is_empty() {
+        return Err("请至少选择一个视觉素材".to_string());
+    }
+
+    let audio_duration = get_video_duration(&audio_path).await?;
+
+    let task_id = format!("export_{}", &Uuid::new_v4().to_string()[..8]);
+    let output_dir = get_data_dir().join("video_studio").join("output").join(&project_id);
+    fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+
+    let output_path = output_dir.join(format!("export_{}.mp4", &task_id[..8]));
+    let output_path_str = output_path.to_string_lossy().to_string();
+
+    let n = all_visual_paths.len();
+
+    // 构建 FFmpeg 参数
+    let mut args = Vec::new();
+    for path in &all_visual_paths {
+        args.push("-i".to_string());
+        args.push(path.clone());
+    }
+    args.push("-i".to_string());
+    args.push(audio_path.clone());
+
+    // 滤镜链：图片最多3秒，视频循环
+    let mut filter_complex = String::new();
+    for i in 0..n {
+        let path = &all_visual_paths[i];
+        let is_image = path.to_lowercase().ends_with(".png")
+            || path.to_lowercase().ends_with(".jpg")
+            || path.to_lowercase().ends_with(".jpeg")
+            || path.to_lowercase().ends_with(".webp")
+            || path.to_lowercase().ends_with(".gif")
+            || path.to_lowercase().ends_with(".bmp");
+        let base_v = format!("pre{}", i);
+        if is_image {
+            filter_complex.push_str(&format!(
+                "[{}:v]scale={}:{}:force_original_aspect_ratio=increase,crop={1}:{2}:(iw-{1})/2:(ih-{2})/2,setsar=1,trim=duration=3,setpts=PTS-STARTPTS[{}];",
+                i, config.width, config.height, base_v
+            ));
+        } else {
+            filter_complex.push_str(&format!(
+                "[{}:v]scale={}:{}:force_original_aspect_ratio=increase,crop={1}:{2}:(iw-{1})/2:(ih-{2})/2,setsar=1,loop=loop=-1:size=0:start=0[{}];",
+                i, config.width, config.height, base_v
+            ));
+        }
+        filter_complex.push_str(&format!(";[{}]null[v{}];", base_v, i));
+    }
+
+    let mut concat_inputs = String::new();
+    for i in 0..n { concat_inputs.push_str(&format!("[v{}]", i)); }
+    filter_complex.push_str(&format!(
+        "{}concat=n={}:v=1:a=0[v_final];",
+        concat_inputs, n
+    ));
+
+    let tts_idx = n;
+    filter_complex.push_str(&format!("[{}:a]anull[a_final]", tts_idx));
+
+    args.push("-filter_complex".to_string());
+    args.push(filter_complex);
+    args.push("-map".to_string()); args.push("[v_final]".to_string());
+    args.push("-map".to_string()); args.push("[a_final]".to_string());
+    args.push("-c:v".to_string()); args.push("libx264".to_string());
+    args.push("-preset".to_string()); args.push("veryfast".to_string());
+    args.push("-crf".to_string()); args.push("23".to_string());
+    args.push("-c:a".to_string()); args.push("aac".to_string());
+    args.push("-shortest".to_string());
+    args.push("-y".to_string());
+    args.push(output_path_str.clone());
+
+    {
+        let db = state.video_db.lock().map_err(|e| e.to_string())?;
+        db.execute(
+            "INSERT INTO video_tasks (id, project_id, type, status) VALUES (?1, ?2, ?3, ?4)",
+            (&task_id, &project_id, "export", "processing"),
+        ).map_err(|e| e.to_string())?;
+    }
+
+    let app_clone = app.clone();
+    let task_id_clone = task_id.clone();
+    let project_id_clone = project_id.clone();
+    let final_path_clone = output_path_str.clone();
+
+    tauri::async_runtime::spawn(async move {
+        match ffmpeg::run_ffmpeg_with_progress(task_id_clone.clone(), args, app_clone.clone(), "rendering".to_string()).await {
+            Ok(_) => {
+                let state = app_clone.state::<AppState>();
+                let db = state.video_db.lock().unwrap();
+                let _ = db.execute(
+                    "UPDATE video_tasks SET status='completed', result_path=?1, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+                    (&final_path_clone, &task_id_clone),
+                );
+                let mat_id = Uuid::new_v4().to_string();
+                let _ = db.execute(
+                    "INSERT INTO video_materials (id, project_id, type, local_path, remote_url, meta, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    (&mat_id, &project_id_clone, &"video".to_string(), &final_path_clone, &Option::<String>::None, &"{}".to_string(), &"exported".to_string()),
                 );
             }
             Err(e) => {
@@ -3270,6 +4278,7 @@ async fn video_render_advanced(
 
     Ok(task_id)
 }
+
 
 #[tauri::command]
 async fn video_concat_materials(
@@ -3325,7 +4334,7 @@ async fn video_concat_materials(
     
     // 异步执行并更新数据库
     tauri::async_runtime::spawn(async move {
-        match ffmpeg::run_ffmpeg_with_progress(task_id_clone.clone(), args, app_clone.clone()).await {
+        match ffmpeg::run_ffmpeg_with_progress(task_id_clone.clone(), args, app_clone.clone(), "concatenating".to_string()).await {
             Ok(_) => {
                 let state = app_clone.state::<AppState>();
                 let db = state.video_db.lock().unwrap();
@@ -3337,12 +4346,14 @@ async fn video_concat_materials(
                 let _ = fs::remove_file(list_path);
             }
             Err(e) => {
-                let state = app_clone.state::<AppState>();
-                let db = state.video_db.lock().unwrap();
-                let _ = db.execute(
-                    "UPDATE video_tasks SET status='error', error_msg=?1, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
-                    (&e, &task_id_clone),
-                );
+                {
+                    let state = app_clone.state::<AppState>();
+                    let db = state.video_db.lock().unwrap();
+                    let _ = db.execute(
+                        "UPDATE video_tasks SET status='error', error_msg=?1, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+                        (&e, &task_id_clone),
+                    );
+                }
             }
         }
     });
@@ -3769,6 +4780,23 @@ async fn hermes_toggle_tool_status(name: String, enable: bool) -> Result<(), Str
     }
 }
 
+/// 在 Finder 中显示文件（支持 macOS）
+#[tauri::command]
+async fn open_file_in_finder(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3792,6 +4820,7 @@ pub fn run() {
             get_config, save_config, get_default_config,
             list_kb_files, add_to_kb, delete_kb_file, get_kb_file_details,
             studio_generate_content,
+            video_generate_script,
             analyze_comments, generate_live_reply, delete_scraped_user,
             list_chat_sessions, create_chat_session, delete_chat_session,
             send_chat_message, get_chat_messages,
@@ -3816,9 +4845,14 @@ pub fn run() {
             hermes_search_kb,
             video_test_ffmpeg, video_get_metadata, video_run_ffmpeg,
             video_list_projects, video_upsert_project, video_delete_project, video_start_generation, video_poll_task_status,
+            video_lock_project, video_clone_project,
             video_list_materials, video_download_material,
+            video_upload_material, video_delete_material,
+            video_generate_image,
+            tts_list_voices, tts_synthesize,
             video_list_tasks, video_concat_materials,
-            video_render_advanced,
+            video_render_advanced, video_export_render,
+            open_file_in_finder,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -46,6 +46,13 @@ interface VideoConfig {
   openai_base_url: string;
   openai_model: string;
   default_provider: string;
+  // TTS
+  tts_provider?: string;
+  tts_api_key?: string;
+  tts_base_url?: string;
+  tts_model?: string;
+  default_tts_voice?: string;
+  default_tts_speed?: number;
 }
 
 interface AppConfig {
@@ -81,6 +88,12 @@ const config = ref<AppConfig>({
     openai_base_url: 'https://api.openai.com/v1',
     openai_model: 'v0',
     default_provider: 'fal',
+    tts_provider: 'mock',
+    tts_api_key: '',
+    tts_base_url: 'https://api.openai.com/v1',
+    tts_model: 'tts-1',
+    default_tts_voice: '',
+    default_tts_speed: 1.0,
   },
 });
 
@@ -378,6 +391,63 @@ const removeGeoPublishPlatform = (index: number) => {
                 <option value="openai">OpenAI 兼容协议</option>
                 <option value="mock">测试模拟</option>
               </select>
+            </div>
+          </div>
+
+          <!-- ── TTS（语音合成）配置 ── -->
+          <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-5 shadow-xl">
+            <div class="flex items-center justify-between">
+              <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                <Cpu class="w-4 h-4 text-purple-500" />
+                语音合成（TTS）
+              </h3>
+              <span class="text-[10px] text-gray-600">用于「口播剧本」工作流</span>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">TTS Provider</label>
+                <select v-model="config.video.tts_provider"
+                        class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500 transition-all">
+                  <option value="mock">测试模拟（静音占位）</option>
+                  <option value="openai">OpenAI 兼容协议</option>
+                  <option value="minimax">MiniMax 语音合成</option>
+                  <option value="volcengine">火山引擎（待接入）</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">默认语速</label>
+                <input v-model.number="config.video.default_tts_speed" type="number" step="0.05" min="0.5" max="2.0"
+                       class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500" />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-300 mb-2">TTS API Key</label>
+              <input v-model="config.video.tts_api_key" type="password"
+                     :placeholder="config.video.tts_provider === 'volcengine' ? 'appid:access_token' : 'sk-...'"
+                     class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono text-sm" />
+            </div>
+
+            <div v-if="config.video.tts_provider === 'openai'" class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">Base URL</label>
+                <input v-model="config.video.tts_base_url" type="text" placeholder="https://api.openai.com/v1"
+                       class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">模型</label>
+                <input v-model="config.video.tts_model" type="text" placeholder="tts-1"
+                       class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-300 mb-2">默认音色 ID</label>
+              <input v-model="config.video.default_tts_voice" type="text"
+                     :placeholder="config.video.tts_provider === 'minimax' ? 'female-shaonv / male-qn-badao ...' : (config.video.tts_provider === 'volcengine' ? 'BV700_streaming' : 'alloy / nova / echo ...')"
+                     class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono text-sm" />
+              <p class="text-xs text-gray-500 mt-2">视频创作中心会用这个作为默认音色，可在创作时切换</p>
             </div>
           </div>
         </div>

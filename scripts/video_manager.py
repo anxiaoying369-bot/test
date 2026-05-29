@@ -2,6 +2,7 @@ import sys
 import json
 import argparse
 from video_providers import get_provider
+from provider_errors import classify_exception
 
 def start_task(provider_name, api_key, prompt, mode="text", **kwargs):
     provider = get_provider(provider_name, api_key, **kwargs)
@@ -58,7 +59,9 @@ def main():
         
         print(json.dumps(res))
     except Exception as e:
-        print(json.dumps({"status": "error", "error": str(e)}))
+        err = classify_exception(e)
+        out = {"status": "error", **err.to_dict()}
+        print(json.dumps(out, ensure_ascii=False))
         sys.exit(1)
 
 if __name__ == "__main__":

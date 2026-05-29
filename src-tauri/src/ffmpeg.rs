@@ -63,6 +63,7 @@ pub struct FfmpegProgress {
     pub percentage: f32,
     pub speed: String,
     pub time: String,
+    pub stage: String,
 }
 
 /// 运行 FFmpeg 并向前端发送进度
@@ -70,6 +71,7 @@ pub async fn run_ffmpeg_with_progress(
     task_id: String,
     args: Vec<String>,
     app: AppHandle,
+    stage: String,
 ) -> Result<(), String> {
     let ffmpeg = get_ffmpeg_path();
     let mut cmd = Command::new(&ffmpeg);
@@ -101,6 +103,7 @@ pub async fn run_ffmpeg_with_progress(
                     percentage: 0.0,
                     speed,
                     time,
+                    stage: stage.clone(),
                 });
             }
         }
