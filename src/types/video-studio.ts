@@ -4,7 +4,6 @@ export interface VideoProject {
   description?: string;
   config?: any;
   status: string;
-  is_locked?: boolean;
   locked_at?: string;
   final_video_path?: string;
   created_at?: string;

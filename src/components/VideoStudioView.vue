@@ -164,15 +164,39 @@ const confirmScript = () => {
 const loadVoices = async () => {
   isLoadingVoices.value = true;
   try {
-    const res = await invoke<any>('tts_list_voices', {
-      provider: appConfig.value.video.tts_provider,
-      apiKey: appConfig.value.video.tts_api_key,
-      baseUrl: appConfig.value.video.tts_base_url,
-      model: appConfig.value.video.tts_model,
-    });
-    availableVoices.value = res.voices || [];
+    // 1. 用户在设置页自定义的音色组（优先，归一化成 {id, name}）
+    const customVoices = (appConfig.value.video.tts_voices || [])
+      .filter((v: any) => v.voice_id)
+      .map((v: any) => ({ id: v.voice_id, name: v.name || v.voice_id, custom: true }));
+
+    // 2. Provider 内置音色（作为补充）
+    let builtinVoices: any[] = [];
+    try {
+      const res = await invoke<any>('tts_list_voices', {
+        provider: appConfig.value.video.tts_provider,
+        apiKey: appConfig.value.video.tts_api_key,
+        baseUrl: appConfig.value.video.tts_base_url,
+        model: appConfig.value.video.tts_model,
+      });
+      builtinVoices = res.voices || [];
+    } catch (e) {
+      // 内置音色拉取失败不阻塞，仍可用自定义音色
+      if (customVoices.length === 0) throw e;
+    }
+
+    // 合并：自定义在前，去掉与自定义 id 重复的内置项
+    const customIds = new Set(customVoices.map((v: any) => v.id));
+    availableVoices.value = [
+      ...customVoices,
+      ...builtinVoices.filter((v: any) => !customIds.has(v.id)),
+    ];
+
     if (availableVoices.value.length > 0 && !ttsVoiceId.value) {
-      ttsVoiceId.value = availableVoices.value[0].id;
+      // 默认选中：配置的 default_tts_voice 优先，否则第一个
+      const def = appConfig.value.video.default_tts_voice;
+      ttsVoiceId.value = (def && availableVoices.value.some((v: any) => v.id === def))
+        ? def
+        : availableVoices.value[0].id;
     }
   } catch (e) {
     alert('获取音色列表失败: ' + e);

@@ -60,7 +60,6 @@ pub fn run() {
             crate::commands::video_studio::project::video_list_projects,
             crate::commands::video_studio::project::video_upsert_project,
             crate::commands::video_studio::project::video_delete_project,
-            crate::commands::video_studio::project::video_lock_project,
             crate::commands::video_studio::project::video_clone_project,
             
             // Video Studio - Material

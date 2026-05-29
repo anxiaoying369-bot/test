@@ -138,6 +138,17 @@ pub struct VideoConfig {
     pub default_tts_voice: String,
     #[serde(default)]
     pub default_tts_speed: f32,
+    /// 用户在设置页自定义的音色组：voice_id 传给 OpenAI 协议，name 仅前端显示
+    #[serde(default)]
+    pub tts_voices: Vec<TtsVoice>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct TtsVoice {
+    /// 音色 ID（OpenAI 协议的 voice 字段实际值，如 alloy / nova，或第三方服务的音色编号）
+    pub voice_id: String,
+    /// 音色名称（仅前端展示用的友好名）
+    pub name: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -295,8 +306,6 @@ pub struct VideoProject {
     pub description: Option<String>,
     pub config: Option<serde_json::Value>,
     pub status: String,
-    #[serde(default)]
-    pub is_locked: bool,
     pub locked_at: Option<String>,
     pub final_video_path: Option<String>,
     pub created_at: Option<String>,

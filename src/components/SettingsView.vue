@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, inject, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { Save, RefreshCw, CheckCircle, XCircle, ShieldCheck, Globe, Cpu, Wand2, Video, MessageSquare, RotateCcw, FileText } from 'lucide-vue-next';
+import { Save, RefreshCw, CheckCircle, XCircle, ShieldCheck, Globe, Cpu, Wand2, Video, MessageSquare, RotateCcw, FileText, Plus, Trash2 } from 'lucide-vue-next';
 
 interface LLMConfig {
   api_key: string;
@@ -39,6 +39,11 @@ interface HermesConfig {
   api_key: string;
 }
 
+interface TtsVoice {
+  voice_id: string;   // OpenAI 协议实际用的 voice 值
+  name: string;       // 前端显示的友好名称
+}
+
 interface VideoConfig {
   fal_key: string;
   volc_key: string;
@@ -53,6 +58,7 @@ interface VideoConfig {
   tts_model?: string;
   default_tts_voice?: string;
   default_tts_speed?: number;
+  tts_voices?: TtsVoice[];   // 自定义音色组
 }
 
 interface AppConfig {
@@ -94,8 +100,18 @@ const config = ref<AppConfig>({
     tts_model: 'tts-1',
     default_tts_voice: '',
     default_tts_speed: 1.0,
+    tts_voices: [],
   },
 });
+
+// ── 音色组增删 ──
+function addTtsVoice() {
+  if (!config.value.video.tts_voices) config.value.video.tts_voices = [];
+  config.value.video.tts_voices.push({ voice_id: '', name: '' });
+}
+function removeTtsVoice(index: number) {
+  config.value.video.tts_voices?.splice(index, 1);
+}
 
 const settingsInitialTab = inject<ReturnType<typeof ref<string>>>('settingsInitialTab');
 const activeTab = ref(settingsInitialTab?.value || 'llm');
@@ -448,6 +464,39 @@ const removeGeoPublishPlatform = (index: number) => {
                      :placeholder="config.video.tts_provider === 'minimax' ? 'female-shaonv / male-qn-badao ...' : (config.video.tts_provider === 'volcengine' ? 'BV700_streaming' : 'alloy / nova / echo ...')"
                      class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono text-sm" />
               <p class="text-xs text-gray-500 mt-2">视频创作中心会用这个作为默认音色，可在创作时切换</p>
+            </div>
+
+            <!-- ── 自定义音色组 ── -->
+            <div class="border-t border-gray-800 pt-5">
+              <div class="flex items-center justify-between mb-3">
+                <div>
+                  <label class="block text-sm font-medium text-gray-300">音色列表</label>
+                  <p class="text-xs text-gray-500 mt-1">合成音频时从这里选择音色；「音色 ID」传给 TTS 接口，界面显示「音色名称」</p>
+                </div>
+                <button @click="addTtsVoice"
+                        class="px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/30 rounded-lg text-xs flex items-center gap-1.5 transition-colors">
+                  <Plus class="w-3.5 h-3.5" /> 添加音色
+                </button>
+              </div>
+
+              <div v-if="!config.video.tts_voices || config.video.tts_voices.length === 0"
+                   class="text-xs text-gray-600 italic py-4 text-center border border-dashed border-gray-800 rounded-xl">
+                还没有自定义音色，点「添加音色」新增。未添加时会用上面的「默认音色 ID」。
+              </div>
+
+              <div v-else class="space-y-2">
+                <div v-for="(v, i) in config.video.tts_voices" :key="i"
+                     class="flex items-center gap-2">
+                  <input v-model="v.name" type="text" placeholder="音色名称（如：温柔女声）"
+                         class="flex-1 bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
+                  <input v-model="v.voice_id" type="text" placeholder="音色 ID（如：nova）"
+                         class="flex-1 bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono" />
+                  <button @click="removeTtsVoice(i)"
+                          class="p-2 text-gray-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors flex-shrink-0">
+                    <Trash2 class="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
