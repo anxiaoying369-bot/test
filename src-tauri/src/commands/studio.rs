@@ -1,4 +1,3 @@
-use tauri::State;
 use crate::commands::common::get_config;
 use crate::commands::knowledge_base::search_kb_internal;
 

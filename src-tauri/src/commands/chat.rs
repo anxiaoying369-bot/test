@@ -5,8 +5,6 @@ use crate::models::{ChatMessage, ChatSession};
 use crate::state::AppState;
 use crate::utils::{get_data_dir};
 use crate::commands::common::get_config;
-use crate::commands::knowledge_base::search_kb_internal;
-use crate::commands::account::load_accounts;
 
 fn get_chats_dir() -> std::path::PathBuf {
     get_data_dir().join("chats")

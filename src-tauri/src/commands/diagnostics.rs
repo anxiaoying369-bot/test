@@ -1,5 +1,4 @@
-use tauri::State;
-use crate::state::{AppState, RESOURCE_DIR};
+use crate::state::RESOURCE_DIR;
 use crate::utils::{get_scripts_dir, python_executable};
 
 #[tauri::command]

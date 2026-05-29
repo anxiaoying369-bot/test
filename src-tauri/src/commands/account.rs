@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::PathBuf;
 use tauri::State;
 use uuid::Uuid;
 use crate::models::{Account, AccountView, AccountsStoreFile, LoginFlow, LoginSession, PyLoginStatus, UserInfo, VerifyResult, account_to_view};

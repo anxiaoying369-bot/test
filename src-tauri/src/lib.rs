@@ -54,6 +54,7 @@ pub fn run() {
             crate::commands::video_studio::generation::video_poll_task_status,
             crate::commands::video_studio::generation::video_generate_image,
             crate::commands::video_studio::generation::tts_synthesize,
+            crate::commands::video_studio::generation::tts_list_voices,
             
             // Video Studio - Project
             crate::commands::video_studio::project::video_list_projects,

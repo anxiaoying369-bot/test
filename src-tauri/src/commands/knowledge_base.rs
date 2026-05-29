@@ -1,4 +1,3 @@
-use tauri::State;
 use crate::utils::{get_scripts_dir, python_cmd};
 use crate::commands::common::get_config;
 

@@ -1,8 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use tauri::State;
 use crate::models::AppConfig;
-use crate::state::AppState;
 use crate::utils::get_data_dir;
 
 #[tauri::command]

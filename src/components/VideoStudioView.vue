@@ -8,6 +8,7 @@ import {
 import type { VideoProject, VideoMaterial } from '../types/video-studio';
 import { useVideoProjects, useVideoMaterials } from '../composables/useVideoStudio';
 import { useVideoTasks } from '../composables/useVideoTasks';
+import { useSettings } from '../composables/useSettings';
 
 import ProjectSidebar from './video-studio/Sidebar.vue';
 import TabScript from './video-studio/TabScript.vue';
@@ -39,6 +40,7 @@ const activeTab = ref<'script' | 'material' | 'export'>('script');
 const { projects, currentProject, loadProjects, createProject, selectProject, deleteProject } = useVideoProjects();
 const { materials, isUploadingMaterial, loadMaterials, uploadMaterial, deleteMaterial } = useVideoMaterials();
 const { activeTasks } = useVideoTasks();
+const { config: appConfig, loadSettings } = useSettings();
 
 // Material lists
 const audioMaterials = computed(() => materials.value.filter(m => m.material_type === 'audio'));
@@ -91,6 +93,7 @@ const isDragging = ref(false);
 
 onMounted(async () => {
   await loadProjects();
+  await loadSettings();
 });
 
 watch(currentProject, async (newVal) => {
@@ -161,10 +164,18 @@ const confirmScript = () => {
 const loadVoices = async () => {
   isLoadingVoices.value = true;
   try {
-    // Mock for now
-    availableVoices.value = [{ id: 'voice1', name: '磁性男声' }, { id: 'voice2', name: '温柔女声' }];
+    const res = await invoke<any>('tts_list_voices', {
+      provider: appConfig.value.video.tts_provider,
+      apiKey: appConfig.value.video.tts_api_key,
+      baseUrl: appConfig.value.video.tts_base_url,
+      model: appConfig.value.video.tts_model,
+    });
+    availableVoices.value = res.voices || [];
+    if (availableVoices.value.length > 0 && !ttsVoiceId.value) {
+      ttsVoiceId.value = availableVoices.value[0].id;
+    }
   } catch (e) {
-    console.error(e);
+    alert('获取音色列表失败: ' + e);
   } finally {
     isLoadingVoices.value = false;
   }
@@ -179,8 +190,10 @@ const synthesizeVoice = async () => {
       text: generatedScript.value,
       voiceId: ttsVoiceId.value,
       speed: ttsSpeed.value,
-      provider: 'mock',
-      apiKey: '',
+      provider: appConfig.value.video.tts_provider,
+      apiKey: appConfig.value.video.tts_api_key,
+      baseUrl: appConfig.value.video.tts_base_url,
+      model: appConfig.value.video.tts_model,
     });
     latestVoiceoverPath.value = path;
     await loadMaterials(currentProject.value.id);
