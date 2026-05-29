@@ -342,3 +342,12 @@ rm -rf "$HOME/Library/Application Support/AutoCastAI"
 - Python 脚本 stdout 如果要被 Rust 解析，应只输出 JSON；日志优先输出到 stderr。
 - 账号验证不要走 HTTP API 探测，优先使用 Chrome CDP 注入 Cookie 并读取页面状态。
 - 本地敏感数据不要提交到仓库，包括 Cookie、账号文件、日志和采集结果。
+
+## 项目重构说明 (2026-05-29)
+
+为了提高代码可维护性，本项目已完成深度重构：
+1. **指令模块化**: 后端 `lib.rs` 已拆分为多个子模块，每个文件严格控制在 500 行以内。
+2. **组件拆分**: 巨大的 Vue 组件（如 VideoStudio, HermesGateway）已按功能拆分为原子组件。
+3. **逻辑解耦**: 业务逻辑已提取至 `composables`，类型定义统一至 `types`。
+4. **架构文档**: 新增 [DOCS/ARCHITECTURE.md](DOCS/ARCHITECTURE.md) 详细描述了系统设计。
+
