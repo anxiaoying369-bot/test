@@ -128,17 +128,15 @@ pub fn chrono_now() -> String {
 
 pub fn enhanced_path() -> String {
     let current = std::env::var("PATH").unwrap_or_default();
-    let mut extra_dirs = if cfg!(target_os = "macos") {
-        vec![
-            "/opt/homebrew/bin",
-            "/opt/homebrew/sbin",
-            "/usr/local/bin",
-            "/usr/local/sbin",
-        ]
+    let mut extra_dirs: Vec<String> = if cfg!(target_os = "macos") {
+        ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     } else if cfg!(target_os = "linux") {
-        vec!["/usr/local/bin", "/snap/bin"]
+        ["/usr/local/bin", "/snap/bin"].iter().map(|s| s.to_string()).collect()
     } else {
-        vec![]
+        Vec::new()
     };
 
     // 注入内置 Node.js 路径
@@ -205,6 +203,7 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// 构建一个 tokio Command，并在 Windows 上隐藏控制台窗口。
 /// 用于 ffmpeg/ffprobe 等非 python 的子进程调用。
 pub fn tokio_command<S: AsRef<std::ffi::OsStr>>(program: S) -> tokio::process::Command {
+    #[allow(unused_mut)]
     let mut cmd = tokio::process::Command::new(program);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -213,6 +212,7 @@ pub fn tokio_command<S: AsRef<std::ffi::OsStr>>(program: S) -> tokio::process::C
 
 /// 同步版本：构建一个 std Command，并在 Windows 上隐藏控制台窗口。
 pub fn std_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    #[allow(unused_mut)]
     let mut cmd = std::process::Command::new(program);
     #[cfg(windows)]
     {
