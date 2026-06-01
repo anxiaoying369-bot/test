@@ -128,8 +128,8 @@ pub async fn audit_content_internal(content: String) -> Result<String, String> {
     Ok(resp["choices"][0]["message"]["content"].as_str().ok_or("审计返回为空")?.to_string())
 }
 
-#[tauri::command]
-pub async fn analyze_comments(comments: Vec<serde_json::Value>) -> Result<String, String> {
+#[tauri::command(rename_all = "snake_case", name = "studio_analyze_video_comments")]
+pub async fn analyze_video_comments(comments: Vec<serde_json::Value>) -> Result<String, String> {
     let config = get_config().await?;
     if config.llm.api_key.is_empty() { return Err("请先在设置中配置 LLM API Key".to_string()); }
     if comments.is_empty() { return Err("没有可分析的评论内容".to_string()); }

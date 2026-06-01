@@ -1,11 +1,10 @@
 pub mod account;
 pub mod scraper;
 pub mod knowledge_base;
-pub mod video_studio;
+pub mod studio;
 pub mod chat;
 pub mod hermes;
 pub mod diagnostics;
 pub mod common;
 pub mod live_monitor;
-pub mod studio;
 pub mod geo;

@@ -31,53 +31,23 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Diagnostics
             crate::commands::diagnostics::autocast_diagnostics,
-            
+
             // Config
             crate::commands::common::get_config,
             crate::commands::common::save_config,
             crate::commands::common::get_default_config,
-            
+
             // Knowledge Base
             crate::commands::knowledge_base::list_kb_files,
             crate::commands::knowledge_base::add_to_kb,
             crate::commands::knowledge_base::delete_kb_file,
             crate::commands::knowledge_base::get_kb_file_details,
             crate::commands::knowledge_base::kb_search,
-            
+
             // Studio
             crate::commands::studio::studio_generate_content,
-            crate::commands::studio::analyze_comments,
-            
-            // Video Studio - Generation
-            crate::commands::video_studio::generation::video_generate_script,
-            crate::commands::video_studio::generation::video_start_generation,
-            crate::commands::video_studio::generation::video_poll_task_status,
-            crate::commands::video_studio::generation::video_generate_image,
-            crate::commands::video_studio::generation::tts_synthesize,
-            crate::commands::video_studio::generation::tts_list_voices,
-            
-            // Video Studio - Project
-            crate::commands::video_studio::project::video_list_projects,
-            crate::commands::video_studio::project::video_upsert_project,
-            crate::commands::video_studio::project::video_delete_project,
-            crate::commands::video_studio::project::video_clone_project,
-            
-            // Video Studio - Material
-            crate::commands::video_studio::material::video_list_materials,
-            crate::commands::video_studio::material::video_upload_material,
-            crate::commands::video_studio::material::video_delete_material,
-            
-            // Video Studio - Rendering
-            crate::commands::video_studio::rendering::video_test_ffmpeg,
-            crate::commands::video_studio::rendering::video_get_metadata,
-            crate::commands::video_studio::rendering::video_run_ffmpeg,
-            crate::commands::video_studio::rendering::video_concat_materials,
-            crate::commands::video_studio::rendering::video_render_advanced,
-            crate::commands::video_studio::rendering::video_export_render,
-            
-            // Video Studio - Tasks
-            crate::commands::video_studio::tasks::video_list_tasks,
-            
+            crate::commands::studio::analyze_video_comments,
+
             // Accounts
             crate::commands::account::list_accounts,
             crate::commands::account::verify_account,
@@ -87,7 +57,7 @@ pub fn run() {
             crate::commands::account::get_login_status,
             crate::commands::account::finish_login,
             crate::commands::account::cleanup_login_session,
-            
+
             // Scraper
             crate::commands::scraper::start_scrape,
             crate::commands::scraper::get_scrape_progress,
@@ -100,7 +70,7 @@ pub fn run() {
             crate::commands::scraper::delete_scraped_user,
             crate::commands::scraper::resolve_user_sec_uid,
             crate::commands::scraper::open_video_in_browser,
-            
+
             // Live Monitor
             crate::commands::live_monitor::start_live_monitor,
             crate::commands::live_monitor::stop_live_monitor,
@@ -108,14 +78,14 @@ pub fn run() {
             crate::commands::live_monitor::get_live_history,
             crate::commands::live_monitor::resolve_live_url,
             crate::commands::live_monitor::generate_live_reply,
-            
+
             // Chat
             crate::commands::chat::list_chat_sessions,
             crate::commands::chat::create_chat_session,
             crate::commands::chat::delete_chat_session,
             crate::commands::chat::send_chat_message,
             crate::commands::chat::get_chat_messages,
-            
+
             // Hermes
             crate::commands::hermes::start_hermes_gateway,
             crate::commands::hermes::stop_hermes_gateway,
@@ -138,10 +108,10 @@ pub fn run() {
             crate::commands::hermes::hermes_toggle_skill_status,
             crate::commands::hermes::hermes_toggle_tool_status,
             crate::commands::hermes::hermes_search_kb,
-            
+
             // Geo
             crate::commands::geo::geo_monitor_query,
-            
+
             // Common
             crate::commands::common::open_file_in_finder,
         ])
