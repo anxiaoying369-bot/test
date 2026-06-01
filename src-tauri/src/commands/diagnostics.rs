@@ -18,7 +18,7 @@ pub async fn autocast_diagnostics() -> Result<serde_json::Value, String> {
         "import importlib,json,sys; res={{}}\nfor m in {:?}:\n  try: importlib.import_module(m); res[m]=True\n  except Exception as e: res[m]=str(e)\nprint(json.dumps(res))",
         check_modules
     );
-    let dep_result = tokio::process::Command::new(&py)
+    let dep_result = crate::utils::tokio_command(&py)
         .arg("-c")
         .arg(&probe_code)
         .output()

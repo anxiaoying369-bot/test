@@ -24,12 +24,17 @@ const searchQuery = ref('');
 
 const streamingContent = ref('');
 const streamingThinking = ref('');
+// currentRunId：仅用于追踪当前 run（供 stop/approve 调用），不代表需要授权
+const currentRunId = ref<string | null>(null);
+// activeRunId：仅当 Agent 真正请求授权时才被设置，用于弹出授权面板
 const activeRunId = ref<string | null>(null);
 
 let unlistenChunk: UnlistenFn | null = null;
 let unlistenThinking: UnlistenFn | null = null;
 let unlistenDone: UnlistenFn | null = null;
 let unlistenRunId: UnlistenFn | null = null;
+let unlistenApproval: UnlistenFn | null = null;
+let unlistenError: UnlistenFn | null = null;
 
 const currentSession = computed(() => 
   sessions.value.find(s => s.id === currentSessionId.value) || null
@@ -60,8 +65,21 @@ onMounted(async () => {
   unlistenDone = await listen<any>('hermes-done', () => {
     finishStreaming();
   });
+  // run-id 只用于追踪当前 run，不再据此弹授权面板
   unlistenRunId = await listen<any>('hermes-run-id', (e) => {
-    activeRunId.value = e.payload.run_id;
+    currentRunId.value = e.payload.run_id;
+  });
+  // 只有 Agent 真正请求授权时，才显示授权面板
+  unlistenApproval = await listen<any>('hermes-approval-required', (e) => {
+    activeRunId.value = e.payload?.run_id || currentRunId.value;
+  });
+  // 出错时清理流式与授权状态，避免面板卡住
+  unlistenError = await listen<any>('hermes-error', (e) => {
+    activeRunId.value = null;
+    isSending.value = false;
+    streamingContent.value = '';
+    streamingThinking.value = '';
+    if (e.payload?.message) alert('Hermes 错误: ' + e.payload.message);
   });
 });
 
@@ -70,6 +88,8 @@ onUnmounted(() => {
   if (unlistenThinking) unlistenThinking();
   if (unlistenDone) unlistenDone();
   if (unlistenRunId) unlistenRunId();
+  if (unlistenApproval) unlistenApproval();
+  if (unlistenError) unlistenError();
 });
 
 const checkHealth = async () => {
@@ -175,6 +195,7 @@ const finishStreaming = () => {
   streamingThinking.value = '';
   isSending.value = false;
   activeRunId.value = null;
+  currentRunId.value = null;
   saveSessions();
 };
 
@@ -191,6 +212,7 @@ const stopRun = async (runId: string) => {
   try {
     await invoke('hermes_stop_run', { gatewayUrl: gatewayUrl.value, apiKey: apiKey.value, runId });
     activeRunId.value = null;
+    currentRunId.value = null;
     isSending.value = false;
   } catch (e) {
     alert('停止任务失败: ' + e);

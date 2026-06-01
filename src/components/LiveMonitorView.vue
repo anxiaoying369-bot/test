@@ -1,288 +1,21 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, nextTick, watch } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import { 
-  Radio, StopCircle, Play, Users, MessageSquare, 
-  Heart, Gift, Trash2,
-  AlertCircle, Monitor, Hash, ExternalLink, Check,
-  Wand2, Cpu
+import {
+  Radio, StopCircle, Play, Users, MessageSquare,
+  Heart, Gift, Trash2, AlertCircle, Monitor, Hash, ExternalLink
 } from 'lucide-vue-next';
-
-// ... (existing code)
-
-const aiReplies = ref<Record<string, { content: string, loading: boolean }>>({});
-
-async function generateAiReply(msgIdx: number, user_name: string, content: string) {
-  const replyKey = `${selectedRoomId.value}_${msgIdx}`;
-  aiReplies.value[replyKey] = { content: '', loading: true };
-
-  try {
-    const reply = await invoke('generate_live_reply', { 
-      userName: user_name, 
-      content: content 
-    }) as string;
-    aiReplies.value[replyKey] = { content: reply, loading: false };
-  } catch (e) {
-    console.error('生成回复失败:', e);
-    aiReplies.value[replyKey] = { content: '生成失败: ' + e, loading: false };
-  }
-}
-
-
-const copiedId = ref<string | null>(null);
-
-async function copyToClipboard(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    copiedId.value = text;
-    setTimeout(() => {
-      if (copiedId.value === text) copiedId.value = null;
-    }, 2000);
-  } catch (err) {
-    console.error('复制失败:', err);
-  }
-}
-
-interface Account {
-  id: string;
-  platform: string;
-  name: string;
-  status: string;
-  meta: { user_id?: string; nickname?: string; avatar?: string };
-}
-
-interface LiveMessage {
-  time: string;
-  user_name: string;
-  user_id: string;
-  content?: string;
-  gift_name?: string;
-  gift_count?: number;
-  count?: number; // for likes
-  gender?: string; // for member join
-}
-
-interface LiveRoom {
-  id: string;
-  anchor_name: string;
-  status: 'connecting' | 'running' | 'stopped' | 'error';
-  messages: { type: string; payload: LiveMessage }[];
-  error?: string;
-}
+import type { LiveRoom } from '../types/live-monitor';
+import { useLiveMonitor } from '../composables/useLiveMonitor';
+import MessageItem from './live-monitor/MessageItem.vue';
 
 const props = defineProps<{
   globalRooms: Record<string, LiveRoom>
 }>();
 
-const selectedRoomId = ref<string | null>(null);
-const newRoomId = ref('');
-const accounts = ref<Account[]>([]);
-const selectedAccount = ref('');
-const messageContainer = ref<HTMLElement | null>(null);
-
-// 消息过滤器状态
-const filters = ref({
-  chat: true,
-  like: true,
-  gift: true,
-  member: true
-});
-
-const douyinAccounts = computed(() => accounts.value.filter(a => a.platform === 'douyin'));
-const activeRoomsCount = computed(() => Object.keys(props.globalRooms).length);
-const selectedRoom = computed(() => selectedRoomId.value ? props.globalRooms[selectedRoomId.value] : null);
-
-// 过滤后的消息列表
-const filteredMessages = computed(() => {
-  if (!selectedRoom.value) return [];
-  return selectedRoom.value.messages.filter(msg => {
-    if ((msg.type === 'chat' || msg.type === 'emoji') && !filters.value.chat) return false;
-    if (msg.type === 'like' && !filters.value.like) return false;
-    if (msg.type === 'gift' && !filters.value.gift) return false;
-    if (msg.type === 'member' && !filters.value.member) return false;
-    return true;
-  });
-});
-
-// 监听房间列表变化，如果有新房间加入且当前没选中，或者只有一个房间，自动选中
-watch(() => Object.keys(props.globalRooms).length, (newCount, oldCount) => {
-  if (newCount > (oldCount || 0)) {
-    const keys = Object.keys(props.globalRooms);
-    // 寻找最新添加的 ID (这里简单取最后一个)
-    const latestId = keys[keys.length - 1];
-    if (latestId && !selectedRoomId.value) {
-      selectedRoomId.value = latestId;
-    }
-  }
-}, { immediate: true });
-
-async function loadAccounts() {
-  try {
-    const res = await invoke('list_accounts', { platform: null }) as Account[];
-    accounts.value = res;
-    if (res.length > 0) {
-      selectedAccount.value = res[0].name;
-    }
-  } catch (e) {
-    console.error('加载账号失败:', e);
-  }
-}
-
-async function loadHistory(rid: string) {
-  try {
-    const history = await invoke('get_live_history', { roomId: rid }) as any[];
-    if (history.length > 0 && props.globalRooms[rid]) {
-      // 避免重复加载
-      if (props.globalRooms[rid].messages.length === 0) {
-        props.globalRooms[rid].messages = history.map(h => ({
-          type: h.data_type,
-          payload: h.payload
-        }));
-        // 如果历史记录里有主播名，也同步一下
-        const lastWithAnchor = [...history].reverse().find(h => h.anchor_name);
-        if (lastWithAnchor) {
-          props.globalRooms[rid].anchor_name = lastWithAnchor.anchor_name;
-        }
-      }
-    }
-  } catch (e) {
-    console.error('加载历史失败:', e);
-  }
-}
-
-async function addRoom() {
-  const input = newRoomId.value.trim();
-  if (!input) return;
-
-  let rid = input;
-  
-  // 如果不是纯数字，则尝试从 URL 解析
-  if (!/^\d+$/.test(input)) {
-    try {
-      rid = await invoke('resolve_live_url', { url: input });
-    } catch (e: any) {
-      alert(e);
-      return;
-    }
-  }
-  
-  if (!/^\d+$/.test(rid)) {
-    alert('无法获取有效的直播间 ID');
-    return;
-  }
-  
-  if (props.globalRooms[rid] && props.globalRooms[rid].status === 'running') {
-    selectedRoomId.value = rid;
-    newRoomId.value = '';
-    return;
-  }
-  
-  if (activeRoomsCount.value >= 10 && !props.globalRooms[rid]) {
-    alert('最多只能同时监控 10 个直播间');
-    return;
-  }
-
-  // 初始化或重置房间状态
-  if (!props.globalRooms[rid]) {
-    props.globalRooms[rid] = {
-      id: rid,
-      anchor_name: '',
-      status: 'connecting',
-      messages: []
-    };
-  } else {
-    props.globalRooms[rid].status = 'connecting';
-    props.globalRooms[rid].error = undefined;
-  }
-  
-  selectedRoomId.value = rid;
-  newRoomId.value = '';
-
-  // 先加载历史记录
-  await loadHistory(rid);
-
-  try {
-    await invoke('start_live_monitor', { 
-      roomId: rid, 
-      accountName: selectedAccount.value 
-    });
-  } catch (e: any) {
-    if (props.globalRooms[rid]) {
-      props.globalRooms[rid].status = 'error';
-      props.globalRooms[rid].error = String(e);
-    }
-  }
-}
-
-async function stopMonitor(rid: string) {
-  try {
-    await invoke('stop_live_monitor', { roomId: rid });
-    if (props.globalRooms[rid]) {
-      props.globalRooms[rid].status = 'stopped';
-    }
-  } catch (e) {
-    console.error('停止监控失败:', e);
-  }
-}
-
-function removeRoom(rid: string) {
-  stopMonitor(rid);
-  delete props.globalRooms[rid];
-  if (selectedRoomId.value === rid) {
-    selectedRoomId.value = Object.keys(props.globalRooms)[0] || null;
-  }
-}
-
-function scrollToBottom(force = false) {
-  if (messageContainer.value) {
-    const el = messageContainer.value;
-    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-    
-    if (force || isAtBottom) {
-      nextTick(() => {
-        el.scrollTop = el.scrollHeight;
-      });
-    }
-  }
-}
-
-onMounted(async () => {
-  await loadAccounts();
-  
-  // 恢复已有的监控
-  try {
-    const activeIds = await invoke('get_active_monitors') as string[];
-    for (const id of activeIds) {
-      if (!props.globalRooms[id]) {
-        props.globalRooms[id] = {
-          id,
-          anchor_name: '',
-          status: 'running',
-          messages: []
-        };
-      }
-      await loadHistory(id);
-    }
-    if (activeIds.length > 0 && !selectedRoomId.value) {
-      selectedRoomId.value = activeIds[0];
-    }
-  } catch (e) {
-    console.error('恢复活跃监控失败:', e);
-  }
-  
-  setTimeout(() => scrollToBottom(true), 150);
-});
-
-watch(selectedRoomId, () => {
-  setTimeout(() => scrollToBottom(true), 100);
-}, { immediate: true });
-
-// 监听消息长度变化，自动滚动
-watch(() => selectedRoom.value?.messages.length, () => {
-  if (selectedRoomId.value) {
-    scrollToBottom();
-  }
-});
+const {
+  selectedRoomId, newRoomId, selectedAccount, messageContainer, copiedId, aiReplies, filters,
+  douyinAccounts, activeRoomsCount, selectedRoom, filteredMessages,
+  generateAiReply, copyToClipboard, addRoom, stopMonitor, removeRoom,
+} = useLiveMonitor(props.globalRooms);
 </script>
 
 <template>
@@ -293,7 +26,7 @@ watch(() => selectedRoom.value?.messages.length, () => {
         <h2 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2 mb-4">
           <Monitor class="w-4 h-4" /> 直播监控 ({{ activeRoomsCount }}/10)
         </h2>
-        
+
         <div class="space-y-3">
           <!-- 账号选择 -->
           <div>
@@ -304,7 +37,7 @@ watch(() => selectedRoom.value?.messages.length, () => {
               </option>
             </select>
           </div>
-          
+
           <!-- 添加房间 -->
           <div class="space-y-1.5">
             <div class="flex gap-2">
@@ -328,16 +61,16 @@ watch(() => selectedRoom.value?.messages.length, () => {
           <Hash class="w-8 h-8 mx-auto mb-2 opacity-20" />
           <p class="text-xs">暂无监控房间</p>
         </div>
-        
+
         <div v-for="(room, rid) in globalRooms" :key="rid"
           @click="selectedRoomId = rid"
-          :class="['group flex items-center justify-between p-2.5 rounded-xl cursor-pointer transition-all', 
+          :class="['group flex items-center justify-between p-2.5 rounded-xl cursor-pointer transition-all',
                     selectedRoomId === rid ? 'bg-blue-600/10 border border-blue-500/50' : 'hover:bg-gray-800 border border-transparent']">
           <div class="flex items-center gap-3 min-w-0">
             <div class="relative">
-              <div :class="['w-2 h-2 rounded-full', 
-                            room.status === 'running' ? 'bg-green-500 animate-pulse' : 
-                            room.status === 'connecting' ? 'bg-blue-500 animate-pulse' : 
+              <div :class="['w-2 h-2 rounded-full',
+                            room.status === 'running' ? 'bg-green-500 animate-pulse' :
+                            room.status === 'connecting' ? 'bg-blue-500 animate-pulse' :
                             room.status === 'error' ? 'bg-red-500' : 'bg-gray-500']"></div>
             </div>
             <div class="min-w-0">
@@ -386,11 +119,11 @@ watch(() => selectedRoom.value?.messages.length, () => {
               </div>
             </div>
             <div class="flex items-center gap-2">
-              <button v-if="selectedRoom.status === 'running'" @click="stopMonitor(selectedRoomId!)" 
+              <button v-if="selectedRoom.status === 'running'" @click="stopMonitor(selectedRoomId!)"
                 class="flex items-center gap-1.5 px-3 py-1.5 bg-red-900/20 hover:bg-red-900/40 text-red-400 rounded-lg text-xs font-medium transition-all border border-red-800/30">
                 <StopCircle class="w-3.5 h-3.5" /> 停止监控
               </button>
-              <button v-else-if="selectedRoom.status !== 'connecting'" @click="newRoomId = String(selectedRoomId); addRoom()" 
+              <button v-else-if="selectedRoom.status !== 'connecting'" @click="newRoomId = String(selectedRoomId); addRoom()"
                 class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-all">
                 <Play class="w-3.5 h-3.5" /> 重新连接
               </button>
@@ -409,30 +142,30 @@ watch(() => selectedRoom.value?.messages.length, () => {
 
           <!-- 过滤器 -->
           <div class="flex items-center gap-2 bg-gray-950/50 p-1 rounded-xl border border-gray-800 w-fit">
-            <button 
+            <button
               @click="filters.chat = !filters.chat"
-              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all', 
+              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all',
                         filters.chat ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'text-gray-500 hover:text-gray-300']"
             >
               <MessageSquare class="w-3.5 h-3.5" /> 弹幕
             </button>
-            <button 
+            <button
               @click="filters.like = !filters.like"
-              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all', 
+              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all',
                         filters.like ? 'bg-red-600 text-white shadow-lg shadow-red-900/20' : 'text-gray-500 hover:text-gray-300']"
             >
               <Heart class="w-3.5 h-3.5" /> 点赞
             </button>
-            <button 
+            <button
               @click="filters.gift = !filters.gift"
-              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all', 
+              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all',
                         filters.gift ? 'bg-purple-600 text-white shadow-lg shadow-purple-900/20' : 'text-gray-500 hover:text-gray-300']"
             >
               <Gift class="w-3.5 h-3.5" /> 送礼
             </button>
-            <button 
+            <button
               @click="filters.member = !filters.member"
-              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all', 
+              :class="['flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all',
                         filters.member ? 'bg-gray-700 text-white shadow-lg shadow-gray-900/20' : 'text-gray-500 hover:text-gray-300']"
             >
               <Users class="w-3.5 h-3.5" /> 进场
@@ -460,120 +193,14 @@ watch(() => selectedRoom.value?.messages.length, () => {
             <p class="text-[10px] mt-2 opacity-50 uppercase tracking-widest">Adjust filters to see more data</p>
           </div>
 
-          <div v-for="(msg, i) in filteredMessages" :key="i" 
-            class="animate-in fade-in slide-in-from-bottom-1 duration-300">
-            <!-- 聊天消息 -->
-            <div v-if="msg.type === 'chat' || msg.type === 'emoji'" class="flex gap-3">
-              <div class="flex-shrink-0 mt-1">
-                <div class="w-2 h-2 rounded-full bg-blue-500 mt-1.5"></div>
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="flex items-baseline gap-2 mb-0.5">
-                  <span class="text-xs font-bold text-blue-400">
-                    {{ msg.payload.user_name }}
-                    <span @click="copyToClipboard(msg.payload.user_id)" 
-                      class="text-[10px] opacity-60 font-mono ml-0.5 cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1">
-                      ({{ msg.payload.user_id }})
-                      <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
-                    </span>
-                  </span>
-                  <span class="text-[10px] text-gray-600">{{ msg.payload.time }}</span>
-                </div>
-                <div class="text-sm text-gray-300 leading-relaxed bg-gray-900/50 p-2 rounded-lg border border-gray-800 inline-block relative group/msg max-w-[85%] break-words">
-                  {{ msg.payload.content }}
-                  
-                  <!-- AI 回复按钮 -->
-                  <button 
-                    @click="generateAiReply(i, msg.payload.user_name, msg.payload.content || '')"
-                    class="absolute -right-10 top-0 p-1.5 bg-gray-900 border border-gray-800 rounded-lg text-gray-500 hover:text-blue-400 opacity-0 group-hover/msg:opacity-100 transition-all shadow-xl"
-                    title="AI 生成回复建议"
-                  >
-                    <Wand2 class="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                <!-- AI 生成的内容展示 -->
-                <div v-if="aiReplies[`${selectedRoomId}_${i}`]" 
-                  class="mt-1.5 bg-blue-600/10 border border-blue-500/20 rounded-lg p-2 max-w-sm animate-in fade-in slide-in-from-top-1">
-                  <div class="flex items-center gap-1.5 mb-1">
-                    <Cpu class="w-3 h-3 text-blue-400" />
-                    <span class="text-[10px] font-bold text-blue-400 uppercase tracking-tighter">AI 建议回复</span>
-                    <div v-if="aiReplies[`${selectedRoomId}_${i}`].loading" class="flex gap-1 ml-1">
-                      <div class="w-1 h-1 bg-blue-500 rounded-full animate-bounce"></div>
-                      <div class="w-1 h-1 bg-blue-500 rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
-                    </div>
-                  </div>
-                  <p v-if="!aiReplies[`${selectedRoomId}_${i}`].loading" class="text-xs text-gray-200 leading-relaxed italic">
-                    “{{ aiReplies[`${selectedRoomId}_${i}`].content }}”
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <!-- 礼物消息 -->
-            <div v-else-if="msg.type === 'gift'" class="flex gap-3">
-              <div class="flex-shrink-0 mt-1">
-                <div class="w-2 h-2 rounded-full bg-purple-500 mt-1.5"></div>
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="flex items-baseline gap-2 mb-0.5">
-                  <span class="text-xs font-bold text-purple-400">
-                    {{ msg.payload.user_name }}
-                    <span @click="copyToClipboard(msg.payload.user_id)" 
-                      class="text-[10px] opacity-60 font-mono ml-0.5 cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1">
-                      ({{ msg.payload.user_id }})
-                      <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
-                    </span>
-                  </span>
-                  <span class="text-[10px] text-gray-600">{{ msg.payload.time }}</span>
-                </div>
-                <div class="text-sm bg-purple-500/10 border border-purple-500/30 text-purple-200 px-3 py-1.5 rounded-lg flex items-center gap-2">
-                  <Gift class="w-4 h-4 text-purple-400" />
-                  送出 <span class="font-bold">{{ msg.payload.gift_name }}</span> x{{ msg.payload.gift_count }}
-                </div>
-              </div>
-            </div>
-
-            <!-- 点赞消息 -->
-            <div v-else-if="msg.type === 'like'" class="flex gap-3">
-              <div class="flex-shrink-0 mt-1 text-red-500">
-                <Heart class="w-4 h-4" />
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="text-xs">
-                  <span class="font-bold text-red-400">
-                    {{ msg.payload.user_name }}
-                    <span @click="copyToClipboard(msg.payload.user_id)" 
-                      class="text-[10px] opacity-60 font-mono ml-0.5 cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1">
-                      ({{ msg.payload.user_id }})
-                      <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
-                    </span>
-                  </span>
-                  <span class="text-gray-500"> 连点 {{ msg.payload.count }} 个赞</span>
-                  <span class="text-[10px] text-gray-600 ml-2">{{ msg.payload.time }}</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- 进场消息 -->
-            <div v-else-if="msg.type === 'member'" class="flex gap-3">
-              <div class="flex-shrink-0 mt-1 text-gray-600">
-                <Users class="w-4 h-4" />
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="text-xs italic text-gray-500">
-                  {{ msg.payload.user_name }}
-                  <span @click="copyToClipboard(msg.payload.user_id)" 
-                    class="text-[10px] opacity-60 font-mono cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1 not-italic">
-                    ({{ msg.payload.user_id }})
-                    <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
-                  </span>
-                  来了
-                  <span class="text-[10px] text-gray-700 ml-2">{{ msg.payload.time }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          <MessageItem
+            v-for="(msg, i) in filteredMessages" :key="i"
+            :msg="msg"
+            :copiedId="copiedId"
+            :aiReply="aiReplies[`${selectedRoomId}_${i}`]"
+            @copy="copyToClipboard"
+            @generateReply="generateAiReply(i, msg.payload.user_name, msg.payload.content || '')"
+          />
         </div>
       </template>
 

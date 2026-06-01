@@ -49,7 +49,7 @@ pub async fn hermes_enable_api_server() -> Result<String, String> {
 #[tauri::command]
 pub async fn hermes_restart_service() -> Result<(), String> {
     let hermes_bin = which_hermes();
-    tokio::process::Command::new(&hermes_bin).args(["gateway", "restart"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(|e| format!("重启网关失败: {}", e))?;
+    crate::utils::tokio_command(&hermes_bin).args(["gateway", "restart"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(|e| format!("重启网关失败: {}", e))?;
     Ok(())
 }
 
@@ -59,11 +59,11 @@ pub async fn start_hermes_gateway(_app: tauri::AppHandle, state: State<'_, AppSt
     let old_child = { let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?; handles.remove(&key) };
     if let Some(mut child) = old_child { let _ = child.start_kill(); let _ = child.wait().await; tokio::time::sleep(std::time::Duration::from_millis(500)).await; }
     let hermes_bin = which_hermes();
-    let spawned = tokio::process::Command::new(&hermes_bin).args(["gateway", "restart"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    let spawned = crate::utils::tokio_command(&hermes_bin).args(["gateway", "restart"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
     match spawned {
         Ok(_) => Ok(()),
         Err(_) => {
-            let child = tokio::process::Command::new(&hermes_bin).args(["gateway", "run", "--replace"]).env("API_SERVER_ENABLED", "true").stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().map_err(|e| format!("启动 Hermes 失败 ({}): {}", hermes_bin, e))?;
+            let child = crate::utils::tokio_command(&hermes_bin).args(["gateway", "run", "--replace"]).env("API_SERVER_ENABLED", "true").stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().map_err(|e| format!("启动 Hermes 失败 ({}): {}", hermes_bin, e))?;
             let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
             handles.insert(key, child);
             Ok(())
@@ -75,7 +75,7 @@ pub async fn start_hermes_gateway(_app: tauri::AppHandle, state: State<'_, AppSt
 pub async fn stop_hermes_gateway(state: State<'_, AppState>) -> Result<(), String> {
     { let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?; if let Some(mut child) = handles.remove("hermes_gateway") { let _ = child.start_kill(); return Ok(()); } }
     let hermes_bin = which_hermes();
-    let output = tokio::process::Command::new(&hermes_bin).args(["gateway", "stop"]).output().await.map_err(|e| e.to_string())?;
+    let output = crate::utils::tokio_command(&hermes_bin).args(["gateway", "stop"]).output().await.map_err(|e| e.to_string())?;
     if output.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&output.stderr).to_string()) }
 }
 
@@ -107,7 +107,7 @@ pub struct HermesSession {
 #[tauri::command]
 pub async fn list_hermes_sessions() -> Result<Vec<HermesSession>, String> {
     let hermes_bin = which_hermes();
-    let output = tokio::process::Command::new(&hermes_bin).args(["sessions", "list", "--limit", "30"]).output().await.map_err(|e| e.to_string())?;
+    let output = crate::utils::tokio_command(&hermes_bin).args(["sessions", "list", "--limit", "30"]).output().await.map_err(|e| e.to_string())?;
     if !output.status.success() { return Ok(vec![]); }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut sessions = Vec::new();
@@ -154,7 +154,7 @@ pub async fn hermes_set_api_key(key: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn hermes_list_skills() -> Result<Vec<serde_json::Value>, String> {
     let hermes_bin = which_hermes();
-    let output = std::process::Command::new(&hermes_bin).arg("skills").arg("list").output().map_err(|e| e.to_string())?;
+    let output = crate::utils::std_command(&hermes_bin).arg("skills").arg("list").output().map_err(|e| e.to_string())?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut skills = vec![];
     for line in stdout.lines() { if line.starts_with('│') && !line.contains(" Name ") {
@@ -167,21 +167,21 @@ pub async fn hermes_list_skills() -> Result<Vec<serde_json::Value>, String> {
 #[tauri::command]
 pub async fn hermes_install_skill(name: String) -> Result<String, String> {
     let hermes_bin = which_hermes();
-    let output = tokio::process::Command::new(&hermes_bin).arg("skills").arg("install").arg(&name).arg("--yes").output().await.map_err(|e| e.to_string())?;
+    let output = crate::utils::tokio_command(&hermes_bin).arg("skills").arg("install").arg(&name).arg("--yes").output().await.map_err(|e| e.to_string())?;
     if output.status.success() { Ok(String::from_utf8_lossy(&output.stdout).to_string()) } else { Err(String::from_utf8_lossy(&output.stderr).to_string()) }
 }
 
 #[tauri::command]
 pub async fn hermes_uninstall_skill(name: String) -> Result<String, String> {
     let hermes_bin = which_hermes();
-    let output = tokio::process::Command::new(&hermes_bin).arg("skills").arg("uninstall").arg(&name).output().await.map_err(|e| e.to_string())?;
+    let output = crate::utils::tokio_command(&hermes_bin).arg("skills").arg("uninstall").arg(&name).output().await.map_err(|e| e.to_string())?;
     if output.status.success() { Ok(String::from_utf8_lossy(&output.stdout).to_string()) } else { Err(String::from_utf8_lossy(&output.stderr).to_string()) }
 }
 
 #[tauri::command]
 pub async fn hermes_list_tools() -> Result<Vec<serde_json::Value>, String> {
     let hermes_bin = which_hermes();
-    let output = std::process::Command::new(&hermes_bin).arg("tools").arg("--summary").arg("list").output().map_err(|e| e.to_string())?;
+    let output = crate::utils::std_command(&hermes_bin).arg("tools").arg("--summary").arg("list").output().map_err(|e| e.to_string())?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut tools = vec![];
     for line in stdout.lines() {
@@ -196,7 +196,7 @@ pub async fn hermes_list_tools() -> Result<Vec<serde_json::Value>, String> {
 #[tauri::command]
 pub async fn hermes_get_session_messages(session_id: String) -> Result<Vec<serde_json::Value>, String> {
     let hermes_bin = which_hermes();
-    let output = std::process::Command::new(&hermes_bin).arg("sessions").arg("export").arg("-").arg("--session-id").arg(&session_id).output().map_err(|e| e.to_string())?;
+    let output = crate::utils::std_command(&hermes_bin).arg("sessions").arg("export").arg("-").arg("--session-id").arg(&session_id).output().map_err(|e| e.to_string())?;
     if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).to_string()); }
     let stdout = String::from_utf8_lossy(&output.stdout);
     if let Some(line) = stdout.lines().next() { if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) { if let Some(messages) = val.get("messages").and_then(|m| m.as_array()) { return Ok(messages.clone()); } } }
@@ -207,7 +207,7 @@ pub async fn hermes_get_session_messages(session_id: String) -> Result<Vec<serde
 pub async fn hermes_toggle_skill_status(name: String, enable: bool) -> Result<(), String> {
     let hermes_bin = which_hermes();
     let action = if enable { "enable" } else { "disable" };
-    let output = tokio::process::Command::new(&hermes_bin).arg("skills").arg(action).arg(&name).output().await.map_err(|e| e.to_string())?;
+    let output = crate::utils::tokio_command(&hermes_bin).arg("skills").arg(action).arg(&name).output().await.map_err(|e| e.to_string())?;
     if output.status.success() { Ok(()) } else { let stderr = String::from_utf8_lossy(&output.stderr).to_string(); let stdout = String::from_utf8_lossy(&output.stdout).to_string(); Err(if !stderr.is_empty() { stderr } else { stdout }) }
 }
 
@@ -215,7 +215,7 @@ pub async fn hermes_toggle_skill_status(name: String, enable: bool) -> Result<()
 pub async fn hermes_toggle_tool_status(name: String, enable: bool) -> Result<(), String> {
     let hermes_bin = which_hermes();
     let action = if enable { "enable" } else { "disable" };
-    let output = tokio::process::Command::new(&hermes_bin).arg("tools").arg(action).arg(&name).output().await.map_err(|e| e.to_string())?;
+    let output = crate::utils::tokio_command(&hermes_bin).arg("tools").arg(action).arg(&name).output().await.map_err(|e| e.to_string())?;
     if output.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&output.stderr).to_string()) }
 }
 
@@ -246,6 +246,18 @@ pub async fn hermes_stop_run(gateway_url: String, api_key: String, run_id: Strin
     Ok(())
 }
 
+/// 判断一个 SSE 事件名 / finish_reason 是否代表“需要人工授权”。
+/// Hermes 仅在调用受限工具时才会要求授权，普通对话不会触发。
+fn is_approval_signal(s: &str) -> bool {
+    let s = s.to_ascii_lowercase();
+    s.contains("approval")
+        || s.contains("requires_action")
+        || s.contains("require_approval")
+        || s.contains("needs_approval")
+        || s.contains("await_approval")
+        || s.contains("awaiting_approval")
+}
+
 #[tauri::command]
 pub async fn hermes_approve_run(gateway_url: String, api_key: String, run_id: String, approved: bool) -> Result<(), String> {
     let url = format!("{}/v1/runs/{}/approval", gateway_url.trim_end_matches('/'), run_id);
@@ -270,6 +282,7 @@ pub async fn hermes_send_message(app: tauri::AppHandle, gateway_url: String, api
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut current_event = String::new();
+    let mut last_run_id = String::new();
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| { let msg = e.to_string(); let _ = app.emit("hermes-error", serde_json::json!({"message": msg.clone()})); msg })?;
         let text = String::from_utf8_lossy(&chunk); buffer.push_str(&text);
@@ -282,15 +295,38 @@ pub async fn hermes_send_message(app: tauri::AppHandle, gateway_url: String, api
                 let data = &line[6..]; if data == "[DONE]" { let _ = app.emit("hermes-done", serde_json::json!({})); return Ok(()); }
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
                     if let Some(err) = val.get("error") { let msg = err["message"].as_str().or_else(|| err.as_str()).unwrap_or("未知流错误"); let _ = app.emit("hermes-error", serde_json::json!({"message": msg})); return Ok(()); }
-                    if !current_event.is_empty() { if current_event == "hermes.tool.progress" { let _ = app.emit("hermes-tool-progress", val.clone()); } else { let _ = app.emit("hermes-event", serde_json::json!({ "event": current_event, "data": val })); } }
-                    if let Some(run_id) = val.get("id").and_then(|v| v.as_str()) { let _ = app.emit("hermes-run-id", serde_json::json!({"run_id": run_id})); }
+                    // 记录最近的 run_id（仅用于后续 stop/approve，不代表需要授权）
+                    if let Some(run_id) = val.get("id").and_then(|v| v.as_str()) { last_run_id = run_id.to_string(); let _ = app.emit("hermes-run-id", serde_json::json!({"run_id": run_id})); }
+                    if !current_event.is_empty() {
+                        if current_event == "hermes.tool.progress" {
+                            let _ = app.emit("hermes-tool-progress", val.clone());
+                        } else if is_approval_signal(&current_event) {
+                            // 真正需要人工授权时，才通知前端弹出授权面板
+                            let rid = val.get("run_id").and_then(|v| v.as_str())
+                                .or_else(|| val.get("id").and_then(|v| v.as_str()))
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| last_run_id.clone());
+                            let _ = app.emit("hermes-approval-required", serde_json::json!({"run_id": rid, "data": val}));
+                        } else {
+                            let _ = app.emit("hermes-event", serde_json::json!({ "event": current_event, "data": val }));
+                        }
+                    }
                     if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) { if let Some(choice) = choices.get(0) {
                         if let Some(delta) = choice.get("delta") {
                             if let Some(content) = delta.get("content").and_then(|v| v.as_str()) { if !content.is_empty() { let _ = app.emit("hermes-chunk", serde_json::json!({"content": content})); } }
                             if let Some(reasoning) = delta.get("reasoning_content").and_then(|v| v.as_str()) { if !reasoning.is_empty() { let _ = app.emit("hermes-thinking", serde_json::json!({"content": reasoning})); } }
                             if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) { if !tool_calls.is_empty() { let _ = app.emit("hermes-tool-calls", serde_json::json!({"tool_calls": tool_calls})); } }
                         }
-                        let finish = choice.get("finish_reason").and_then(|v| v.as_str()).unwrap_or(""); if !finish.is_empty() && finish != "null" { let _ = app.emit("hermes-done", serde_json::json!({"finish_reason": finish})); return Ok(()); }
+                        let finish = choice.get("finish_reason").and_then(|v| v.as_str()).unwrap_or("");
+                        if !finish.is_empty() && finish != "null" {
+                            if is_approval_signal(finish) {
+                                // 以 finish_reason 形式传递的授权请求：弹授权面板，不结束本轮
+                                let _ = app.emit("hermes-approval-required", serde_json::json!({"run_id": last_run_id, "data": val}));
+                            } else {
+                                let _ = app.emit("hermes-done", serde_json::json!({"finish_reason": finish}));
+                                return Ok(());
+                            }
+                        }
                     } }
                 }
             }

@@ -105,13 +105,23 @@ def main():
     import shutil
     node_bin = shutil.which("node")
     if not node_bin:
-        # macOS GUI 应用的 PATH 默认不含 Homebrew，手动搜常见位置
-        for candidate in [
-            "/opt/homebrew/bin/node",
-            "/usr/local/bin/node",
-            os.path.expanduser("~/.nvm/versions/node/*/bin/node"),
-        ]:
-            import glob
+        # GUI 应用的 PATH 默认可能不含 Node 安装目录（macOS 不含 Homebrew、
+        # Windows 不含用户级安装路径），手动搜常见位置。
+        import glob
+        if sys.platform == "win32":
+            candidates = [
+                os.path.expandvars(r"%ProgramFiles%\nodejs\node.exe"),
+                os.path.expandvars(r"%ProgramFiles(x86)%\nodejs\node.exe"),
+                os.path.expandvars(r"%LOCALAPPDATA%\Programs\nodejs\node.exe"),
+                os.path.expandvars(r"%APPDATA%\npm\node.exe"),
+            ]
+        else:
+            candidates = [
+                "/opt/homebrew/bin/node",
+                "/usr/local/bin/node",
+                os.path.expanduser("~/.nvm/versions/node/*/bin/node"),
+            ]
+        for candidate in candidates:
             matches = glob.glob(candidate)
             if matches and os.path.exists(matches[0]):
                 node_bin = matches[0]

@@ -191,8 +191,8 @@ onMounted(() => {
               </div>
             </div>
 
-            <button 
-              @click="deleteFile(file)"
+            <button
+              @click.stop="deleteFile(file)"
               class="p-2 text-gray-600 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
             >
               <Trash2 class="w-4 h-4" />
@@ -265,9 +265,6 @@ onMounted(() => {
 
         <!-- 弹窗底部 -->
         <footer class="p-4 border-t border-gray-800 bg-gray-900/50 flex justify-end gap-3">
-          <button @click="deleteFile(selectedFileName)" class="px-5 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 rounded-xl transition-all flex items-center gap-2">
-             <Trash2 class="w-4 h-4" /> 删除此文档
-          </button>
           <button @click="isDetailModalOpen = false" class="px-8 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-xl text-sm font-medium transition-all">
             关闭
           </button>

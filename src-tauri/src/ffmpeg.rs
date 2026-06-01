@@ -78,10 +78,12 @@ pub async fn run_ffmpeg_with_progress(
 ) -> Result<(), String> {
     let ffmpeg = get_ffmpeg_path();
     let mut cmd = Command::new(&ffmpeg);
-    
+
     cmd.args(args)
        .stdout(Stdio::piped())
        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(crate::utils::CREATE_NO_WINDOW);
 
     let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn ffmpeg: {}", e))?;
     let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;

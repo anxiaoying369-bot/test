@@ -160,6 +160,30 @@ pub fn enhanced_path() -> String {
     parts.join(sep)
 }
 
+/// Windows: 隐藏子进程控制台窗口，避免 GUI 应用调用 python/ffmpeg 时黑框闪烁。
+#[cfg(windows)]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 构建一个 tokio Command，并在 Windows 上隐藏控制台窗口。
+/// 用于 ffmpeg/ffprobe 等非 python 的子进程调用。
+pub fn tokio_command<S: AsRef<std::ffi::OsStr>>(program: S) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// 同步版本：构建一个 std Command，并在 Windows 上隐藏控制台窗口。
+pub fn std_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 pub fn python_cmd() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(python_executable());
     cmd.env(
@@ -169,6 +193,8 @@ pub fn python_cmd() -> tokio::process::Command {
     cmd.env("PYTHONUNBUFFERED", "1");
     cmd.env("PATH", enhanced_path());
     cmd.arg("-u");
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
 }
 

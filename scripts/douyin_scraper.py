@@ -249,14 +249,14 @@ async def run_scrape(cookie_str: str, sec_uid: str, scrape_type: str,
             progress.update(progress=current_progress, stats=all_stats)
 
         # 2. 评论采集
-        # video_limit=limit: 选取最近 limit 个视频；limit=0: 每个视频下评论全量采集（不截断）
+        # video_limit=limit: 选取最近 limit 个视频；limit=100: 每个视频最多采集 100 条评论（超过则不再采集）
         if scrape_type in ('comment', 'all'):
             _log(f"[SCRAPER] ===== 开始采集评论 =====")
             start_p = 25 if scrape_type == 'all' else 10
             progress.update(current_type="评论", current_user=sec_uid[:12], progress=start_p)
 
             service = CommentService(sec_uid, cookie_str)
-            stats = await service.run(delay=delay, video_limit=limit, limit=0, skip_existing=skip_existing)
+            stats = await service.run(delay=delay, video_limit=limit, limit=100, skip_existing=skip_existing)
             all_stats['comment'] = stats
             _log(f"[SCRAPER] 评论采集完成: {stats}")
 
