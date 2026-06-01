@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
-import { MessageSquare, Users, Search, FileText, Radio, Settings, Database, Sparkles, Terminal, Film } from 'lucide-vue-next';
+import { MessageSquare, Users, Search, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, Factory } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import ResultsView from './components/ResultsView.vue';
 import LiveMonitorView from './components/LiveMonitorView.vue';
@@ -11,9 +11,10 @@ import ContentStudioView from './components/ContentStudioView.vue';
 import VideoStudioView from './components/VideoStudioView.vue';
 import HermesGatewayView from './components/HermesGatewayView.vue';
 import AccountsView from './components/AccountsView.vue';
+import FactorySystemView from './components/FactorySystemView.vue';
 import { useLiveEvents } from './composables/useLiveEvents';
 
-type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
+type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes' | 'factory';
 const currentPage = ref<PageKey>('accounts');
 const settingsInitialTab = ref<string>('llm');
 
@@ -49,6 +50,10 @@ onMounted(initLiveEventListener);
         <a href="#" @click="currentPage = 'video_studio'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'video_studio' ? 'bg-gray-900' : 'text-gray-400']">
           <Film class="w-5 h-5 text-orange-400" />
           <span>视频创作中心</span>
+        </a>
+        <a href="#" @click="currentPage = 'factory'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'factory' ? 'bg-gray-900' : 'text-gray-400']">
+          <Factory class="w-5 h-5 text-amber-500" />
+          <span>工厂系统</span>
         </a>
         <a href="#" @click="currentPage = 'accounts'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'accounts' ? 'bg-gray-900' : 'text-gray-400']">
           <Users class="w-5 h-5" />
@@ -101,6 +106,11 @@ onMounted(initLiveEventListener);
     <!-- 主内容：视频创作中心 -->
     <main v-if="currentPage === 'video_studio'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <VideoStudioView />
+    </main>
+
+    <!-- 主内容：工厂系统 -->
+    <main v-if="currentPage === 'factory'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
+      <FactorySystemView />
     </main>
 
     <!-- 主内容：Hermes 网关 -->

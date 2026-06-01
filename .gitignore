@@ -37,6 +37,8 @@ scripts/.npm-cache/
 
 # Video Studio Runtime & Data
 src-tauri/ffmpeg-runtime/
+src-tauri/python-runtime/
+src-tauri/node-runtime/
 **/video_studio.db
 **/video_studio/
 
