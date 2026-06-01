@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 #
 # 下载 python-build-standalone（来自 astral-sh），解压到 src-tauri/python-runtime/，
-# 用它的 pip 安装 requirements.txt。最终结构：
+# 最终结构：
 #   src-tauri/python-runtime/
-#     ├── python/                 ← Tauri 会打包整个目录
-#     │   ├── bin/python3         (macOS/Linux)
-#     │   ├── python.exe          (Windows)
+#     ├── macos/
+#     │   ├── bin/python3         (macOS)
+#     │   ├── include/            (macOS)
 #     │   └── lib/python3.11/site-packages/  ← pip 装的包都在这
-#     └── .version                ← 标记当前安装的 Python 版本
+#     └── windows/
+#         ├── python.exe        (Windows)
+#         ├── python311.dll
+#         └── lib/python3.11/site-packages/   ← pip 装的包都在这
 #
 # 用法：
 #   ./prepare-python-runtime.sh                  # 自动检测当前平台
@@ -72,10 +75,22 @@ download_python() {
     mv "$tarball.tmp" "$tarball"
   fi
 
-  echo "▸ 解压到 $RUNTIME_DIR/python/"
-  rm -rf "$RUNTIME_DIR/python"
+  echo "▸ 解压到 $RUNTIME_DIR/macos/"
+  rm -rf "$RUNTIME_DIR/macos"
   tar -xzf "$tarball" -C "$RUNTIME_DIR"
-  # python-build-standalone 解压后顶层就是 python/
+  # python-build-standalone 解压后顶层目录名类似 "python-install"
+  # 需要重命名以符合平台结构
+  local extracted_dir
+  extracted_dir=$(ls -d "$RUNTIME_DIR"/python-install 2>/dev/null || ls -d "$RUNTIME_DIR"/python 2>/dev/null || echo "")
+  if [[ -n "$extracted_dir" ]]; then
+    mv "$extracted_dir" "$RUNTIME_DIR/macos"
+  else
+    # fallback: 移动顶层内容
+    mkdir -p "$RUNTIME_DIR/macos"
+    shopt -s dotglob
+    mv "$RUNTIME_DIR"/*/ "$RUNTIME_DIR/macos/" 2>/dev/null || true
+    shopt -u dotglob
+  fi
   echo "$PYTHON_VERSION-$PLATFORM_TAG" > "$marker"
 }
 
@@ -83,14 +98,14 @@ download_python() {
 install_deps() {
   local python_bin
   if [[ "$PLATFORM_TAG" == *windows* ]]; then
-    python_bin="$RUNTIME_DIR/python/python.exe"
+    python_bin="$RUNTIME_DIR/windows/python.exe"
   else
-    python_bin="$RUNTIME_DIR/python/bin/python3"
+    python_bin="$RUNTIME_DIR/macos/bin/python3"
   fi
 
   if [[ ! -x "$python_bin" ]]; then
     echo "❌ 找不到 python: $python_bin"
-    ls -la "$RUNTIME_DIR/python/" 2>&1 | head -20
+    ls -la "$RUNTIME_DIR/macos/" 2>&1 | head -20
     exit 1
   fi
 
@@ -117,10 +132,10 @@ install_deps() {
 # ── 汇报体积 ─────────────────────────────────────────
 report_size() {
   local size
-  size=$(du -sh "$RUNTIME_DIR/python" 2>/dev/null | awk '{print $1}')
+  size=$(du -sh "$RUNTIME_DIR/macos" 2>/dev/null | awk '{print $1}')
   echo ""
   echo "✅ Python 运行时准备完成"
-  echo "   位置: $RUNTIME_DIR/python"
+  echo "   位置: $RUNTIME_DIR/macos"
   echo "   体积: ${size:-未知}"
   echo ""
   echo "下一步: 运行 npm run tauri build"

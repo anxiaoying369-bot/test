@@ -21,7 +21,7 @@ pub fn get_ffprobe_path() -> String {
 
 fn resolve_binary_path(name: &str) -> String {
     let exe_name = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
-    
+
     // 1. 环境变量
     let env_var = format!("AUTOCAST_{}", name.to_uppercase());
     if let Ok(path) = std::env::var(&env_var) {
@@ -32,21 +32,24 @@ fn resolve_binary_path(name: &str) -> String {
 
     // 2. 打包内的 ffmpeg-runtime
     let mut candidates: Vec<PathBuf> = Vec::new();
-    
+
+    // Platform-specific runtime subdirectory
+    let platform_runtime = if cfg!(windows) { "windows" } else { "macos" };
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             if let Some(pp) = parent.parent() {
-                candidates.push(pp.join("Resources").join("ffmpeg-runtime").join(&exe_name));
-                candidates.push(pp.join("Resources").join("_up_").join("src-tauri").join("ffmpeg-runtime").join(&exe_name));
+                candidates.push(pp.join("Resources").join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
+                candidates.push(pp.join("Resources").join("_up_").join("src-tauri").join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
             }
-            candidates.push(parent.join("ffmpeg-runtime").join(&exe_name));
+            candidates.push(parent.join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
         }
     }
 
     // dev 模式路径
-    candidates.push(PathBuf::from("ffmpeg-runtime").join(&exe_name));
-    candidates.push(PathBuf::from("src-tauri").join("ffmpeg-runtime").join(&exe_name));
-    candidates.push(PathBuf::from("..").join("src-tauri").join("ffmpeg-runtime").join(&exe_name));
+    candidates.push(PathBuf::from("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
+    candidates.push(PathBuf::from("src-tauri").join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
+    candidates.push(PathBuf::from("..").join("src-tauri").join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
 
     for c in &candidates {
         if c.exists() {

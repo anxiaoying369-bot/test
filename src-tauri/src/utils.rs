@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::state::{RESOURCE_DIR, SCRIPTS_DIR, BUNDLED_PYTHON};
+use crate::state::{BUNDLED_PYTHON, RESOURCE_DIR, SCRIPTS_DIR};
 
 pub fn get_scripts_dir() -> PathBuf {
     if let Some(p) = SCRIPTS_DIR.get() {
@@ -83,7 +83,9 @@ fn resolve_scripts_dir() -> PathBuf {
 }
 
 fn find_file_upwards(root: &Path, target: &str, max_depth: usize) -> Option<PathBuf> {
-    if max_depth == 0 { return None; }
+    if max_depth == 0 {
+        return None;
+    }
     if let Ok(entries) = fs::read_dir(root) {
         for e in entries.flatten() {
             let p = e.path();
@@ -134,10 +136,7 @@ pub fn enhanced_path() -> String {
             "/usr/local/sbin",
         ]
     } else if cfg!(target_os = "linux") {
-        vec![
-            "/usr/local/bin",
-            "/snap/bin",
-        ]
+        vec!["/usr/local/bin", "/snap/bin"]
     } else {
         vec![]
     };
@@ -163,7 +162,10 @@ pub fn enhanced_path() -> String {
 
 pub fn python_cmd() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(python_executable());
-    cmd.env("AUTOCAST_DATA_DIR", get_data_dir().to_string_lossy().to_string());
+    cmd.env(
+        "AUTOCAST_DATA_DIR",
+        get_data_dir().to_string_lossy().to_string(),
+    );
     cmd.env("PYTHONUNBUFFERED", "1");
     cmd.env("PATH", enhanced_path());
     cmd.arg("-u");
@@ -177,8 +179,8 @@ pub fn extract_provider_error(res: &serde_json::Value, fallback_label: &str) -> 
     }
 
     let code = res["error_code"].as_str().unwrap_or("UNKNOWN");
-    // provider_errors.py 输出的字段是 "error"（友好消息）+ "details"（原始返回）
-    let msg = res["error"].as_str()
+    let msg = res["error"]
+        .as_str()
         .filter(|s| !s.is_empty())
         .or_else(|| res["error_message"].as_str().filter(|s| !s.is_empty()))
         .unwrap_or("");
@@ -189,13 +191,29 @@ pub fn extract_provider_error(res: &serde_json::Value, fallback_label: &str) -> 
         "RATE_LIMIT" => "请求过于频繁，已被限流，请稍后再试。",
         "QUOTA" => "余额不足或超出配额，请检查服务商账户状态。",
         "NETWORK" => "网络请求超时或连接失败，请检查网络。",
-        "INVALID" | "INVALID_PARAMS" => if !msg.is_empty() { msg } else { "输入参数无效（如提示词违禁、尺寸不支持、或接口参数不兼容）。" },
-        _ => if !msg.is_empty() { msg } else { fallback_label },
+        "INVALID" | "INVALID_PARAMS" => {
+            if !msg.is_empty() {
+                msg
+            } else {
+                "输入参数无效（如提示词违禁、尺寸不支持、或接口参数不兼容）。"
+            }
+        }
+        _ => {
+            if !msg.is_empty() {
+                msg
+            } else {
+                fallback_label
+            }
+        }
     };
 
-    // 附带原始 details，方便定位（如 minimax 的 output_format 报错）
     if !details.is_empty() {
-        format!("{} ({}) — {}", friendly, code, details.chars().take(200).collect::<String>())
+        format!(
+            "{} ({}) — {}",
+            friendly,
+            code,
+            details.chars().take(200).collect::<String>()
+        )
     } else {
         format!("{} ({})", friendly, code)
     }
@@ -217,36 +235,85 @@ fn resolve_python_executable() -> String {
         }
     }
 
-    let (rel_bin, _fallback_cmd): (PathBuf, &str) = if cfg!(windows) {
-        (PathBuf::from("python").join("python.exe"), "python")
+    // Platform-specific runtime subdirectory + executable path inside it
+    // Structure: python-runtime/<platform>/python/bin/python3 (macos)
+    //            python-runtime/<platform>/python.exe             (windows)
+    let (platform_runtime, rel_bin_inside): (&str, PathBuf) = if cfg!(windows) {
+        ("windows", PathBuf::from("python.exe"))
     } else {
-        (PathBuf::from("python").join("bin").join("python3"), "python3")
+        (
+            "macos",
+            PathBuf::from("python").join("bin").join("python3"),
+        )
     };
 
     let mut candidates: Vec<PathBuf> = Vec::new();
+
     if let Some(res) = RESOURCE_DIR.get() {
-        candidates.push(res.join("_up_").join("src-tauri").join("python-runtime").join(&rel_bin));
-        candidates.push(res.join("python-runtime").join(&rel_bin));
-        candidates.push(res.join("_up_").join("python-runtime").join(&rel_bin));
+        candidates.push(
+            res.join("_up_")
+                .join("src-tauri")
+                .join("python-runtime")
+                .join(platform_runtime)
+                .join(&rel_bin_inside),
+        );
+        candidates.push(
+            res.join("python-runtime")
+                .join(platform_runtime)
+                .join(&rel_bin_inside),
+        );
+        candidates.push(
+            res.join("_up_")
+                .join("python-runtime")
+                .join(platform_runtime)
+                .join(&rel_bin_inside),
+        );
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             if let Some(pp) = parent.parent() {
-                candidates.push(pp.join("Resources").join("_up_").join("src-tauri").join("python-runtime").join(&rel_bin));
-                candidates.push(pp.join("Resources").join("python-runtime").join(&rel_bin));
+                candidates.push(
+                    pp.join("Resources")
+                        .join("_up_")
+                        .join("src-tauri")
+                        .join("python-runtime")
+                        .join(platform_runtime)
+                        .join(&rel_bin_inside),
+                );
+                candidates.push(
+                    pp.join("Resources")
+                        .join("python-runtime")
+                        .join(platform_runtime)
+                        .join(&rel_bin_inside),
+                );
             }
-            candidates.push(parent.join("python-runtime").join(&rel_bin));
+            candidates.push(
+                parent
+                    .join("python-runtime")
+                    .join(platform_runtime)
+                    .join(&rel_bin_inside),
+            );
         }
     }
-    candidates.push(PathBuf::from("python-runtime").join(&rel_bin));
-    
+    candidates.push(
+        PathBuf::from("python-runtime")
+            .join(platform_runtime)
+            .join(&rel_bin_inside),
+    );
+
     let venv_rel = if cfg!(windows) {
         PathBuf::from(".venv").join("Scripts").join("python.exe")
     } else {
         PathBuf::from(".venv").join("bin").join("python3")
     };
     candidates.push(PathBuf::from("..").join(&venv_rel));
-    candidates.push(PathBuf::from("..").join("src-tauri").join("python-runtime").join(&rel_bin));
+    candidates.push(
+        PathBuf::from("..")
+            .join("src-tauri")
+            .join("python-runtime")
+            .join(platform_runtime)
+            .join(&rel_bin_inside),
+    );
 
     for c in &candidates {
         if c.exists() {
@@ -254,5 +321,9 @@ fn resolve_python_executable() -> String {
         }
     }
 
-    if cfg!(windows) { "python".to_string() } else { "python3".to_string() }
+    if cfg!(windows) {
+        "python".to_string()
+    } else {
+        "python3".to_string()
+    }
 }
