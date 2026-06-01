@@ -42,3 +42,12 @@ src-tauri/ffmpeg-runtime/
 
 # Local docs (work-in-progress notes)
 docs/
+
+# 抖音采集器（DouyinComment/DouyinBarrage）运行时产物
+scripts/DouyinComment/data/
+scripts/DouyinComment/logs/
+scripts/DouyinComment/cookie.txt
+scripts/DouyinBarrage/data/
+scripts/DouyinBarrage/logs/
+scripts/DouyinBarrage/cookie.txt
+scripts/DouyinBarrage/rooms.txt
