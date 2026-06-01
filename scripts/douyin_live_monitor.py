@@ -61,13 +61,18 @@ class BridgeRecorder(DataRecorder):
         safe_print({"type": "init", "room_id": room_id, "live_id": self.live_id, "anchor_name": self.anchor_name})
 
     def record(self, dtype, data):
+        # 记录时间戳，确保回放时顺序正确
+        data_with_ts = dict(data)
+        if 'time' not in data_with_ts:
+            data_with_ts['time'] = time.strftime('%H:%M:%S')
+
         # 持久化到本地文件
         event = {
             "type": "data",
             "live_id": self.live_id,
             "anchor_name": self.anchor_name,
             "data_type": dtype,
-            "payload": data,
+            "payload": data_with_ts,
             "timestamp": time.time()
         }
         
@@ -75,8 +80,9 @@ class BridgeRecorder(DataRecorder):
         try:
             with open(self.history_path, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
-        except:
-            pass
+                f.flush() # 强制刷盘
+        except Exception as e:
+            sys.stderr.write(f"Persistence Error: {e}\n")
 
         # 输出到 stdout
         safe_print(event)
@@ -103,10 +109,12 @@ def main():
 
     # 预检查：DouyinBarrage 需要 Node.js 执行 sign.js 算 X-Bogus 签名
     import shutil
-    node_bin = shutil.which("node")
+    node_bin = os.environ.get("AUTOCAST_NODE")
+    if not node_bin or not os.path.exists(node_bin):
+        node_bin = shutil.which("node")
+    
     if not node_bin:
-        # GUI 应用的 PATH 默认可能不含 Node 安装目录（macOS 不含 Homebrew、
-        # Windows 不含用户级安装路径），手动搜常见位置。
+        # GUI 应用的 PATH 默认可能不含 Node 安装目录
         import glob
         if sys.platform == "win32":
             candidates = [
@@ -151,7 +159,7 @@ def main():
         from service.network import enter_room_api, fetch_ttwid
         
         # 初始化实例
-        instance = DouyinBarrage(args.room_id, log_level='ERROR')
+        instance = DouyinBarrage(args.room_id, log_level='BARRAGE')
         
         # 指向临时的 cookie 文件
         instance._cookie_file = tmp_cookie_path

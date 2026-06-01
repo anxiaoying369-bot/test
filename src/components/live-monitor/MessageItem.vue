@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Heart, Gift, Users, Check, Wand2, Cpu } from 'lucide-vue-next';
 import type { LiveMessage } from '../../types/live-monitor';
+import { renderDouyinText } from '../../lib/utils';
 
 defineProps<{
   msg: { type: string; payload: LiveMessage };
@@ -33,8 +34,10 @@ const emit = defineEmits<{
           </span>
           <span class="text-[10px] text-gray-600">{{ msg.payload.time }}</span>
         </div>
-        <div class="text-sm text-gray-300 leading-relaxed bg-gray-900/50 p-2 rounded-lg border border-gray-800 inline-block relative group/msg max-w-[85%] break-words">
-          {{ msg.payload.content }}
+        <div 
+          class="text-sm text-gray-300 leading-relaxed bg-gray-900/50 p-2 rounded-lg border border-gray-800 inline-block relative group/msg max-w-[85%] break-words"
+        >
+          <div v-html="renderDouyinText(msg.payload.content || '')"></div>
 
           <!-- AI 回复按钮 -->
           <button

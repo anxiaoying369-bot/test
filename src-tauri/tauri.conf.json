@@ -65,9 +65,7 @@
       "../scripts/DouyinBarrage/*.txt",
       "../scripts/DouyinBarrage/base/**/*",
       "../scripts/DouyinBarrage/service/**/*",
-      "../scripts/DouyinBarrage/scripts/**/*",
-      "python-runtime/macos/**/*",
-      "ffmpeg-runtime/macos/**/*"
+      "../scripts/DouyinBarrage/scripts/**/*"
     ],
     "windows": {
       "wix": {

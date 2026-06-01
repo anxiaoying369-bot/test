@@ -34,15 +34,30 @@ pub async fn start_live_monitor(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
-    let key = format!("live_{}", room_id);
     
+    // 清理已退出的进程句柄，并统计真正运行中的直播监控数量
+    let mut keys_to_remove = Vec::new();
+    let mut active_count = 0;
+    for (k, child) in handles.iter_mut() {
+        if k.starts_with("live_") {
+            if let Ok(Some(_status)) = child.try_wait() {
+                keys_to_remove.push(k.clone());
+            } else {
+                active_count += 1;
+            }
+        }
+    }
+    for k in keys_to_remove {
+        handles.remove(&k);
+    }
+
+    let key = format!("live_{}", room_id);
     if handles.contains_key(&key) {
         return Err("该直播间已在监控中".to_string());
     }
 
-    let live_count = handles.keys().filter(|k| k.starts_with("live_")).count();
-    if live_count >= 10 {
-        return Err("最多只能同时监控 10 个直播间".to_string());
+    if active_count >= 10 {
+        return Err("最多只能同时开启 10 路实时监控，请先停止其他直播间".to_string());
     }
 
     let script_path = get_scripts_dir().join("douyin_live_monitor.py");
@@ -128,7 +143,7 @@ pub async fn get_live_history(room_id: String) -> Result<Vec<serde_json::Value>,
     let mut history = vec![];
     
     let lines: Vec<&str> = content.lines().collect();
-    for line in lines.iter().rev().take(100).rev() {
+    for line in lines.iter().rev().take(200).rev() {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
             history.push(val);
         }

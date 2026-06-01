@@ -128,7 +128,7 @@ pub fn chrono_now() -> String {
 
 pub fn enhanced_path() -> String {
     let current = std::env::var("PATH").unwrap_or_default();
-    let extra_dirs = if cfg!(target_os = "macos") {
+    let mut extra_dirs = if cfg!(target_os = "macos") {
         vec![
             "/opt/homebrew/bin",
             "/opt/homebrew/sbin",
@@ -140,6 +140,13 @@ pub fn enhanced_path() -> String {
     } else {
         vec![]
     };
+
+    // 注入内置 Node.js 路径
+    if let Some(node_bin) = resolve_node_executable() {
+        if let Some(parent) = std::path::Path::new(&node_bin).parent() {
+            extra_dirs.push(parent.to_string_lossy().to_string());
+        }
+    }
 
     let sep = if cfg!(windows) { ";" } else { ":" };
     let mut parts: Vec<String> = current.split(sep).map(|s| s.to_string()).collect();
@@ -153,11 +160,42 @@ pub fn enhanced_path() -> String {
     }
 
     for d in extra_dirs {
-        if !parts.iter().any(|p| p == d) {
-            parts.push(d.to_string());
+        if !parts.iter().any(|p| p == &d) {
+            parts.push(d);
         }
     }
     parts.join(sep)
+}
+
+pub fn resolve_node_executable() -> Option<String> {
+    let (platform_runtime, rel_bin_inside): (&str, PathBuf) = if cfg!(windows) {
+        ("windows", PathBuf::from("node.exe"))
+    } else {
+        ("macos", PathBuf::from("bin").join("node"))
+    };
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(res) = RESOURCE_DIR.get() {
+        candidates.push(res.join("node-runtime").join(platform_runtime).join(&rel_bin_inside));
+        candidates.push(res.join("_up_").join("node-runtime").join(platform_runtime).join(&rel_bin_inside));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("node-runtime").join(platform_runtime).join(&rel_bin_inside));
+            if let Some(pp) = parent.parent() {
+                candidates.push(pp.join("Resources").join("node-runtime").join(platform_runtime).join(&rel_bin_inside));
+            }
+        }
+    }
+    candidates.push(PathBuf::from("node-runtime").join(platform_runtime).join(&rel_bin_inside));
+    candidates.push(PathBuf::from("..").join("src-tauri").join("node-runtime").join(platform_runtime).join(&rel_bin_inside));
+
+    for c in candidates {
+        if c.exists() {
+            return Some(c.to_string_lossy().to_string());
+        }
+    }
+    None
 }
 
 /// Windows: 隐藏子进程控制台窗口，避免 GUI 应用调用 python/ffmpeg 时黑框闪烁。
@@ -190,6 +228,9 @@ pub fn python_cmd() -> tokio::process::Command {
         "AUTOCAST_DATA_DIR",
         get_data_dir().to_string_lossy().to_string(),
     );
+    if let Some(node) = resolve_node_executable() {
+        cmd.env("AUTOCAST_NODE", node);
+    }
     cmd.env("PYTHONUNBUFFERED", "1");
     cmd.env("PATH", enhanced_path());
     cmd.arg("-u");

@@ -36,17 +36,24 @@ fn resolve_binary_path(name: &str) -> String {
     // Platform-specific runtime subdirectory
     let platform_runtime = if cfg!(windows) { "windows" } else { "macos" };
 
+    if let Some(res) = crate::state::RESOURCE_DIR.get() {
+        // Tauri 2 资源路径
+        candidates.push(res.join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
+        candidates.push(res.join("_up_").join("src-tauri").join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
+    }
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
+            // macOS Bundle 结构
             if let Some(pp) = parent.parent() {
                 candidates.push(pp.join("Resources").join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
-                candidates.push(pp.join("Resources").join("_up_").join("src-tauri").join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
             }
+            // 调试/普通结构
             candidates.push(parent.join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
         }
     }
 
-    // dev 模式路径
+    // dev 模式相对路径
     candidates.push(PathBuf::from("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
     candidates.push(PathBuf::from("src-tauri").join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));
     candidates.push(PathBuf::from("..").join("src-tauri").join("ffmpeg-runtime").join(platform_runtime).join(&exe_name));

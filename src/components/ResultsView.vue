@@ -8,6 +8,7 @@ import {
 } from 'lucide-vue-next';
 import { useScrapedResults } from '../composables/useScrapedResults';
 import AnalysisModal from './results/AnalysisModal.vue';
+import { renderDouyinText } from '../lib/utils';
 
 const {
   users, selectedUser, videos, selectedVideo, comments, selectedAccount,
@@ -206,9 +207,7 @@ const {
               {{ comment.digg_count }}
             </div>
           </div>
-          <div class="text-sm text-gray-300 leading-relaxed pl-11">
-            {{ comment.text }}
-          </div>
+          <div class="text-sm text-gray-300 leading-relaxed pl-11" v-html="renderDouyinText(comment.text)"></div>
         </div>
       </div>
     </main>

@@ -6,8 +6,35 @@ import sys
 import websockets
 import socket
 
-# Path to the hermes CLI
-HERMES_PATH = "/Users/make/.local/bin/hermes"
+import shutil
+from pathlib import Path
+
+def get_hermes_path():
+    # 1. 尝试从 PATH 查找
+    path = shutil.which("hermes")
+    if path:
+        return path
+    
+    # 2. 尝试常见安装位置
+    candidates = []
+    if sys.platform == "win32":
+        candidates = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "bin" / "hermes.exe",
+            Path("C:\\Program Files\\hermes\\hermes.exe"),
+        ]
+    else:
+        candidates = [
+            Path.home() / ".local" / "bin" / "hermes",
+            Path("/usr/local/bin/hermes"),
+        ]
+        
+    for c in candidates:
+        if c.exists():
+            return str(c)
+            
+    return "hermes" # 最后兜底
+
+HERMES_PATH = get_hermes_path()
 
 async def handle_client(websocket):
     print(f"[Bridge] 客户端已连接: {websocket.remote_address}", flush=True)

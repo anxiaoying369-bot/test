@@ -64,7 +64,7 @@ const renderMarkdown = (content: string) => marked(content);
           </div>
 
           <div class="space-y-2 flex-1 min-w-0">
-            <div :class="['p-4 md:p-6 rounded-3xl shadow-xl leading-relaxed break-words', m.role === 'user' ? 'bg-blue-600/10 border border-blue-500/20 text-blue-50 rounded-tr-none' : 'bg-gray-900 border border-gray-800 text-gray-200 rounded-tl-none']">
+            <div :class="['p-4 md:p-6 rounded-3xl shadow-xl leading-relaxed break-words overflow-x-auto', m.role === 'user' ? 'bg-blue-600/10 border border-blue-500/20 text-blue-50 rounded-tr-none' : 'bg-gray-900 border border-gray-800 text-gray-200 rounded-tl-none']">
               <div v-if="m.role === 'thought'" class="flex items-center gap-2 mb-3 text-purple-400 font-bold text-xs uppercase tracking-widest border-b border-purple-500/20 pb-2">
                 <Zap class="w-3.5 h-3.5" /> Thinking Process
               </div>
@@ -72,7 +72,7 @@ const renderMarkdown = (content: string) => marked(content);
                 <Wrench class="w-3.5 h-3.5" /> Tool Action: {{ m.toolName }}
               </div>
               
-              <div class="prose prose-invert prose-sm md:prose-base max-w-none prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/5" v-html="renderMarkdown(m.content)" />
+              <div class="markdown-content prose prose-invert prose-sm md:prose-base max-w-none break-words [word-break:break-word]" v-html="renderMarkdown(m.content)" />
             </div>
             <div :class="['text-[10px] text-gray-600 font-mono px-2', m.role === 'user' ? 'text-right' : '']">
               {{ new Date(m.timestamp).toLocaleTimeString() }}
@@ -84,8 +84,8 @@ const renderMarkdown = (content: string) => marked(content);
            <div class="w-9 h-9 md:w-11 md:h-11 rounded-2xl bg-gray-900 border border-purple-500/30 text-purple-400 flex items-center justify-center flex-shrink-0 shadow-lg">
              <Zap class="w-5 h-5 animate-pulse" />
            </div>
-           <div class="flex-1 space-y-2">
-             <div class="bg-gray-900/60 border border-purple-500/20 p-5 rounded-3xl rounded-tl-none italic text-purple-300/80 text-sm leading-relaxed shadow-xl">
+           <div class="flex-1 space-y-2 min-w-0">
+             <div class="bg-gray-900/60 border border-purple-500/20 p-5 rounded-3xl rounded-tl-none italic text-purple-300/80 text-sm leading-relaxed shadow-xl break-words overflow-x-auto">
                <div class="flex items-center gap-2 mb-3 text-purple-400 font-bold text-[10px] uppercase tracking-widest border-b border-purple-500/10 pb-2">Thinking...</div>
                {{ streamingThinking }}
              </div>
@@ -96,9 +96,9 @@ const renderMarkdown = (content: string) => marked(content);
           <div class="w-9 h-9 md:w-11 md:h-11 rounded-2xl bg-gray-900 border border-blue-500/30 text-blue-400 flex items-center justify-center flex-shrink-0 shadow-lg">
             <Loader2 class="w-5 h-5 animate-spin" />
           </div>
-          <div class="flex-1 space-y-2">
-            <div class="bg-gray-900 border border-blue-500/20 p-5 rounded-3xl rounded-tl-none text-gray-200 leading-relaxed shadow-xl">
-              <div class="prose prose-invert prose-sm md:prose-base max-w-none" v-html="renderMarkdown(streamingContent)" />
+          <div class="flex-1 space-y-2 min-w-0">
+            <div class="bg-gray-900 border border-blue-500/20 p-5 rounded-3xl rounded-tl-none text-gray-200 leading-relaxed shadow-xl break-words overflow-x-auto">
+              <div class="markdown-content prose prose-invert prose-sm md:prose-base max-w-none break-words [word-break:break-word]" v-html="renderMarkdown(streamingContent)" />
             </div>
           </div>
         </div>
@@ -147,3 +147,70 @@ const renderMarkdown = (content: string) => marked(content);
     </template>
   </div>
 </template>
+
+<style scoped>
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #1f2937;
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #374151;
+}
+
+/* Markdown 样式优化 */
+.markdown-content :deep(p) { margin-bottom: 1rem; line-height: 1.75; }
+.markdown-content :deep(p:last-child) { margin-bottom: 0; }
+.markdown-content :deep(h1), .markdown-content :deep(h2), .markdown-content :deep(h3) { 
+  color: #fff; margin-top: 1.5rem; margin-bottom: 0.75rem; font-weight: 700;
+}
+.markdown-content :deep(h1) { font-size: 1.25rem; border-bottom: 1px solid #374151; padding-bottom: 0.5rem; }
+.markdown-content :deep(h2) { font-size: 1.1rem; }
+.markdown-content :deep(h3) { font-size: 1rem; }
+
+.markdown-content :deep(ul), .markdown-content :deep(ol) { margin-bottom: 1rem; padding-left: 1.5rem; }
+.markdown-content :deep(li) { margin-bottom: 0.25rem; }
+
+.markdown-content :deep(code) {
+  background: #1f2937; padding: 0.2rem 0.4rem; border-radius: 0.375rem; 
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em; color: #60a5fa;
+}
+.markdown-content :deep(pre) { 
+  background: #0a0a0a !important; border: 1px solid #1f2937 !important;
+  border-radius: 0.75rem !important; margin: 1.25rem 0 !important;
+  padding: 1rem !important;
+}
+.markdown-content :deep(pre code) { background: transparent; padding: 0; color: inherit; font-size: 0.85rem; }
+
+/* 表格优化 */
+.markdown-content :deep(table) {
+  width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.85rem;
+  background: #111827; border-radius: 0.75rem; overflow: hidden;
+  border: 1px solid #374151;
+}
+.markdown-content :deep(th) {
+  background: #1f2937; color: #9ca3af; font-weight: 600; text-align: left;
+  padding: 0.75rem; border: 1px solid #374151;
+}
+.markdown-content :deep(td) {
+  padding: 0.75rem; border: 1px solid #374151; color: #d1d5db;
+}
+.markdown-content :deep(tr:nth-child(even)) { background: rgba(31, 41, 55, 0.3); }
+
+.markdown-content :deep(blockquote) {
+  border-left: 4px solid #3b82f6; padding: 0.75rem 1rem; color: #9ca3af;
+  font-style: italic; margin: 1rem 0; background: rgba(59, 130, 246, 0.05);
+  border-top-right-radius: 0.5rem; border-bottom-right-radius: 0.5rem;
+}
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes zoom-in { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.animate-in { animation: fade-in 0.2s ease-out; }
+.zoom-in { animation: zoom-in 0.2s ease-out; }
+</style>

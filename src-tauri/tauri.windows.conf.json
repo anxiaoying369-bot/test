@@ -1,0 +1,29 @@
+{
+  "bundle": {
+    "resources": [
+      "../scripts/*.py",
+      "../scripts/*.json",
+      "../scripts/static/*",
+      "../scripts/video_providers/*.py",
+      "../scripts/image_providers/*.py",
+      "../scripts/tts_providers/*.py",
+      "../scripts/DouyinComment/*.py",
+      "../scripts/DouyinComment/*.yaml",
+      "../scripts/DouyinComment/*.txt",
+      "../scripts/DouyinComment/core/**/*",
+      "../scripts/DouyinComment/services/**/*",
+      "../scripts/DouyinComment/utils/**/*",
+      "../scripts/DouyinComment/scripts/**/*",
+      "../scripts/DouyinBarrage/*.py",
+      "../scripts/DouyinBarrage/*.yaml",
+      "../scripts/DouyinBarrage/*.js",
+      "../scripts/DouyinBarrage/*.txt",
+      "../scripts/DouyinBarrage/base/**/*",
+      "../scripts/DouyinBarrage/service/**/*",
+      "../scripts/DouyinBarrage/scripts/**/*",
+      "python-runtime/windows/**/*",
+      "ffmpeg-runtime/windows/**/*",
+      "node-runtime/windows/**/*"
+    ]
+  }
+}

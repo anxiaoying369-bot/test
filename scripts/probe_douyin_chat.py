@@ -4,9 +4,21 @@ import json, os, socket, sys, time
 from pathlib import Path
 
 CDP_PORT=9222
-CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-COOKIE_PATH=Path("/Users/make/Library/Application Support/AutoCastAI/cookies/douyin/抖音账号/cookie.json")
-OUT=Path("/tmp/douyin_chat_probe.json")
+from pathlib import Path
+import os
+import sys
+
+# Add current dir to path for compat
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from compat import get_chrome_path, get_data_dir
+
+CHROME_PATH = get_chrome_path()
+# 动态计算 cookie 路径
+COOKIE_PATH = get_data_dir() / "cookies" / "douyin" / "抖音账号" / "cookie.json"
+OUT = Path("/tmp/douyin_chat_probe.json")
+if sys.platform == "win32":
+    OUT = Path(os.environ.get("TEMP", "C:\\temp")) / "douyin_chat_probe.json"
+
 
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
