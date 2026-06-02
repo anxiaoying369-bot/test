@@ -40,6 +40,11 @@ function defaultConfig(): AppConfig {
       tts_voices: [],
       script_system_prompt: '',
     },
+    stt: {
+      api_key: '',
+      base_url: 'https://api.openai.com/v1',
+      model: 'whisper-1',
+    },
   };
 }
 

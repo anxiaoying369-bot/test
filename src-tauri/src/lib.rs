@@ -24,6 +24,7 @@ pub fn run() {
         })
         .manage(AppState {
             login_flows: Mutex::new(std::collections::HashMap::new()),
+            tasks: Mutex::new(std::collections::HashMap::new()),
             process_handles: Mutex::new(std::collections::HashMap::new()),
             current_task_id: Mutex::new(None),
             video_db: Mutex::new(db::init_db(get_data_dir()).expect("Failed to init video database")),
@@ -111,6 +112,10 @@ pub fn run() {
 
             // Geo
             crate::commands::geo::geo_monitor_query,
+
+            // Dashboard
+            crate::commands::dashboard::list_active_tasks,
+            crate::commands::dashboard::kill_task,
 
             // Common
             crate::commands::common::open_file_in_finder,

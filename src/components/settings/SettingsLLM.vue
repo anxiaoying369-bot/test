@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MessageSquare, Wand2 } from 'lucide-vue-next';
+import { MessageSquare, Wand2, Mic } from 'lucide-vue-next';
 import { useAppConfig } from '../../composables/useAppConfig';
 
 const { config } = useAppConfig();
@@ -92,6 +92,52 @@ const { config } = useAppConfig();
         </div>
       </div>
     </div>
+    <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-6 shadow-xl">
+      <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2 mb-2">
+        <Mic class="w-4 h-4 text-green-500" />
+        语音转文字 (Speech-to-Text)
+      </h3>
+
+      <div class="grid grid-cols-1 gap-6">
+        <div class="p-4 bg-green-500/5 border border-green-500/10 rounded-xl mb-2">
+          <p class="text-xs text-green-400 leading-relaxed">
+            配置 OpenAI 兼容协议的 STT 服务（如 Whisper API），用于视频链接解析中的文案提取。
+          </p>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-300 mb-2">STT API Key</label>
+          <input
+            v-model="config.stt.api_key"
+            type="password"
+            placeholder="sk-..."
+            class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-green-500 transition-all"
+          />
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">Base URL</label>
+            <input
+              v-model="config.stt.base_url"
+              type="text"
+              placeholder="https://api.openai.com/v1"
+              class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-green-500 transition-all"
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">Model ID</label>
+            <input
+              v-model="config.stt.model"
+              type="text"
+              placeholder="whisper-1"
+              class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-green-500 transition-all"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-6 shadow-xl">
       <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2 mb-2">
         <MessageSquare class="w-4 h-4 text-red-500" />

@@ -90,9 +90,13 @@ pub async fn start_scrape(
         .kill_on_drop(true)
         .spawn().map_err(|e| e.to_string())?;
 
+    let pid = child.id();
+    let task_key = format!("scrape_{}", task_id);
+    crate::utils::register_task(&state, task_key.clone(), format!("采集: {}", sec_uid), "scraper".to_string(), pid);
+
     {
         let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
-        handles.insert(format!("scrape_{}", task_id), child);
+        handles.insert(task_key, child);
     }
     {
         let mut current = state.current_task_id.lock().unwrap();

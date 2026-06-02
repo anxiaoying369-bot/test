@@ -41,6 +41,12 @@ export interface TtsVoice {
   name: string;       // 前端显示的友好名称
 }
 
+export interface SttConfig {
+  api_key: string;
+  base_url: string;
+  model: string;
+}
+
 export interface VideoConfig {
   fal_key: string;
   volc_key: string;

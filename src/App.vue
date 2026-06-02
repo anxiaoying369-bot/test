@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
-import { MessageSquare, Users, Search, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, Factory } from 'lucide-vue-next';
+import { MessageSquare, Users, Search, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, LayoutDashboard } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import ResultsView from './components/ResultsView.vue';
 import LiveMonitorView from './components/LiveMonitorView.vue';
@@ -11,11 +11,11 @@ import ContentStudioView from './components/ContentStudioView.vue';
 import VideoStudioView from './components/VideoStudioView.vue';
 import HermesGatewayView from './components/HermesGatewayView.vue';
 import AccountsView from './components/AccountsView.vue';
-import FactorySystemView from './components/FactorySystemView.vue';
+import DashboardView from './components/DashboardView.vue';
 import { useLiveEvents } from './composables/useLiveEvents';
 
-type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes' | 'factory';
-const currentPage = ref<PageKey>('accounts');
+type PageKey = 'dashboard' | 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
+const currentPage = ref<PageKey>('dashboard');
 const settingsInitialTab = ref<string>('llm');
 
 function navigateTo(page: PageKey, settingsTab?: string) {
@@ -39,6 +39,10 @@ onMounted(initLiveEventListener);
     <aside class="flex flex-col w-56 flex-shrink-0 h-full bg-gray-950 border-r border-gray-800">
       <div class="p-6 font-bold tracking-tight">AutoCast AI</div>
       <nav class="flex-1 px-3 space-y-1">
+        <a href="#" @click="currentPage = 'dashboard'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'dashboard' ? 'bg-gray-900' : 'text-gray-400']">
+          <LayoutDashboard class="w-5 h-5 text-blue-400" />
+          <span>任务调度中心</span>
+        </a>
         <a href="#" @click="currentPage = 'chat'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'chat' ? 'bg-gray-900' : 'text-gray-400']">
           <MessageSquare class="w-5 h-5 text-blue-500" />
           <span>AI 助理对话</span>
@@ -89,6 +93,11 @@ onMounted(initLiveEventListener);
       </nav>
     </aside>
 
+    <!-- 主内容：任务调度中心 -->
+    <main v-if="currentPage === 'dashboard'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
+      <DashboardView />
+    </main>
+
     <!-- 主内容：AI 助理 -->
     <main v-if="currentPage === 'chat'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <ChatView />
@@ -102,11 +111,6 @@ onMounted(initLiveEventListener);
     <!-- 主内容：视频创作中心 -->
     <main v-if="currentPage === 'video_studio'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <VideoStudioView />
-    </main>
-
-    <!-- 主内容：工厂系统 -->
-    <main v-if="currentPage === 'factory'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
-      <FactorySystemView />
     </main>
 
     <!-- 主内容：Hermes 网关 -->

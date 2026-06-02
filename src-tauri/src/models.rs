@@ -164,12 +164,21 @@ pub struct TtsVoice {
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
+pub struct SttConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub llm: LLMConfig,
     #[serde(default)]
     pub hermes: HermesConfig,
     #[serde(default)]
     pub video: VideoConfig,
+    #[serde(default)]
+    pub stt: SttConfig,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -351,6 +360,19 @@ pub struct VideoMaterial {
 }
 
 fn default_source() -> String { "uploaded".to_string() }
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Task {
+    pub id: String,
+    pub name: String,
+    pub task_type: String,
+    pub status: String,
+    pub pid: Option<u32>,
+    pub cpu: f32,
+    pub memory: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RenderConfig {

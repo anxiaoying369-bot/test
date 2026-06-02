@@ -287,6 +287,33 @@ pub fn extract_provider_error(res: &serde_json::Value, fallback_label: &str) -> 
     }
 }
 
+pub fn register_task(
+    state: &tauri::State<'_, AppState>,
+    id: String,
+    name: String,
+    task_type: String,
+    pid: Option<u32>,
+) {
+    if let Ok(mut tasks) = state.tasks.lock() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        tasks.insert(
+            id.clone(),
+            crate::models::Task {
+                id,
+                name,
+                task_type,
+                status: "running".to_string(),
+                pid,
+                created_at: now,
+                updated_at: now,
+            },
+        );
+    }
+}
+
 pub fn python_executable() -> String {
     if let Some(p) = BUNDLED_PYTHON.get() {
         return p.clone();
