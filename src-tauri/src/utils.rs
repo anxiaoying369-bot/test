@@ -232,6 +232,7 @@ pub fn python_cmd() -> tokio::process::Command {
         cmd.env("AUTOCAST_NODE", node);
     }
     cmd.env("PYTHONUNBUFFERED", "1");
+    cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.env("PATH", enhanced_path());
     cmd.arg("-u");
     #[cfg(windows)]

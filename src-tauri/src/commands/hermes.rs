@@ -58,12 +58,32 @@ pub async fn start_hermes_gateway(_app: tauri::AppHandle, state: State<'_, AppSt
     let key = "hermes_gateway".to_string();
     let old_child = { let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?; handles.remove(&key) };
     if let Some(mut child) = old_child { let _ = child.start_kill(); let _ = child.wait().await; tokio::time::sleep(std::time::Duration::from_millis(500)).await; }
+
+    // 自动配置：确保 API Server 已启用
+    let _ = hermes_enable_api_server().await;
+
     let hermes_bin = which_hermes();
-    let spawned = crate::utils::tokio_command(&hermes_bin).args(["gateway", "restart"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    
+    // 尝试重启（如果已经作为服务在运行）
+    let spawned = crate::utils::tokio_command(&hermes_bin)
+        .args(["gateway", "restart"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
     match spawned {
         Ok(_) => Ok(()),
         Err(_) => {
-            let child = crate::utils::tokio_command(&hermes_bin).args(["gateway", "run", "--replace"]).env("API_SERVER_ENABLED", "true").stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().map_err(|e| format!("启动 Hermes 失败 ({}): {}", hermes_bin, e))?;
+            // 如果重启失败（可能未安装为服务），则直接运行并接管进程
+            let child = crate::utils::tokio_command(&hermes_bin)
+                .args(["gateway", "run", "--replace"])
+                .env("API_SERVER_ENABLED", "true")
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|e| format!("启动 Hermes 失败 ({}): {}", hermes_bin, e))?;
+            
             let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?;
             handles.insert(key, child);
             Ok(())
