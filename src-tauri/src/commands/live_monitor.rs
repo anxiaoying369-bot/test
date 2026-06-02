@@ -96,8 +96,6 @@ pub async fn start_live_monitor(
         }));
     });
 
-    let pid = child.id();
-    crate::utils::register_task(&state, key.clone(), format!("监控: {}", room_id), "live_monitor".to_string(), pid);
     handles.insert(key, child);
     Ok(())
 }

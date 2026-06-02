@@ -362,19 +362,6 @@ pub struct VideoMaterial {
 fn default_source() -> String { "uploaded".to_string() }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct Task {
-    pub id: String,
-    pub name: String,
-    pub task_type: String,
-    pub status: String,
-    pub pid: Option<u32>,
-    pub cpu: f32,
-    pub memory: u64,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
 pub struct RenderConfig {
     pub width: i32,
     pub height: i32,

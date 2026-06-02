@@ -8,5 +8,4 @@ pub mod diagnostics;
 pub mod common;
 pub mod live_monitor;
 pub mod geo;
-pub mod dashboard;
 pub mod video_studio;

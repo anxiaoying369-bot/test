@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::state::{BUNDLED_PYTHON, RESOURCE_DIR, SCRIPTS_DIR, AppState};
+use crate::state::{BUNDLED_PYTHON, RESOURCE_DIR, SCRIPTS_DIR};
 
 pub fn get_scripts_dir() -> PathBuf {
     if let Some(p) = SCRIPTS_DIR.get() {
@@ -284,35 +284,6 @@ pub fn extract_provider_error(res: &serde_json::Value, fallback_label: &str) -> 
         )
     } else {
         format!("{} ({})", friendly, code)
-    }
-}
-
-pub fn register_task(
-    state: &tauri::State<'_, AppState>,
-    id: String,
-    name: String,
-    task_type: String,
-    pid: Option<u32>,
-) {
-    if let Ok(mut tasks) = state.tasks.lock() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        tasks.insert(
-            id.clone(),
-            crate::models::Task {
-                id,
-                name,
-                task_type,
-                status: "running".to_string(),
-                pid,
-                cpu: 0.0,
-                memory: 0,
-                created_at: now,
-                updated_at: now,
-            },
-        );
     }
 }
 
