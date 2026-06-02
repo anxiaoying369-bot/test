@@ -54,6 +54,17 @@ from douyin_cookie_utils import (  # noqa: E402
 
 CDP_PORT = 9222
 CHROME_PATH = get_chrome_path()
+
+# 如果 compat 没搜到，尝试用 DrissionPage 自带的探测
+if not CHROME_PATH or CHROME_PATH == "chrome":
+    try:
+        dp_path = ChromiumOptions().browser_path
+        if dp_path and os.path.exists(dp_path):
+            CHROME_PATH = dp_path
+            print(f"[DY] Using Chrome found by DrissionPage: {CHROME_PATH}", flush=True)
+    except Exception:
+        pass
+
 CHROME_USER_DATA_DIR = get_chrome_user_data_dir()
 
 
@@ -87,8 +98,14 @@ def launch_chrome() -> subprocess.Popen:
     """启动 Chrome 并开启远程调试端口，返回子进程对象"""
     print(f"[DY] Port {CDP_PORT} is free, launching Chrome...", flush=True)
 
-    if not os.path.exists(CHROME_PATH):
-        raise FileNotFoundError(f"Chrome not found at {CHROME_PATH}")
+    # 检查 Chrome 是否存在（支持绝对路径和 PATH 中的命令名）
+    import shutil
+    if os.path.isabs(CHROME_PATH):
+        if not os.path.exists(CHROME_PATH):
+            raise FileNotFoundError(f"Chrome not found at {CHROME_PATH}")
+    else:
+        if not shutil.which(CHROME_PATH):
+            raise FileNotFoundError(f"Chrome command '{CHROME_PATH}' not found in PATH")
 
     os.makedirs(CHROME_USER_DATA_DIR, exist_ok=True)
 

@@ -28,25 +28,70 @@ async function loadAccounts() {
 }
 
 // ============ 登录流程（手动确认模式）============
+let statusPoller: number | null = null;
+
 async function startLogin(platform: string) {
   currentPlatform.value = platform;
   isLoginModalOpen.value = true;
   loginStep.value = 'init';
-  loginStatus.value = '正在打开浏览器...';
+  loginStatus.value = '正在初始化登录环境...';
   accountNameInput.value = '抖音账号';
   debugMsg.value = `准备登录: ${platform}`;
 
   try {
     const session: any = await invoke('init_login_session', { platform });
     sessionId.value = session.session_id;
-    // 浏览器已开启,等用户自己登录,然后手动点"我已登录完成"
-    loginStep.value = 'waiting';
-    loginStatus.value = '浏览器已打开,请在浏览器中完成抖音登录';
+    
+    // 开始轮询状态
+    startStatusPolling(session.session_id);
   } catch (e) {
     console.error('初始化登录失败:', e);
     loginStep.value = 'error';
     loginStatus.value = '登录初始化失败: ' + e;
     debugMsg.value = '初始化失败: ' + e;
+  }
+}
+
+function startStatusPolling(sid: string) {
+  if (statusPoller) clearInterval(statusPoller);
+  
+  statusPoller = window.setInterval(async () => {
+    if (!isLoginModalOpen.value || sessionId.value !== sid) {
+      stopStatusPolling();
+      return;
+    }
+
+    try {
+      const status: any = await invoke('get_login_status', { sessionId: sid });
+      if (status.status === 'ready') {
+        loginStep.value = 'waiting';
+        loginStatus.value = '浏览器已打开,请在浏览器中完成抖音登录';
+        stopStatusPolling(); // 打开后就不必频繁轮询了，等用户点保存
+      } else if (status.status === 'failed') {
+        loginStep.value = 'error';
+        loginStatus.value = status.error || '浏览器启动失败，请确认已安装 Chrome';
+        debugMsg.value = '启动失败: ' + status.error;
+        stopStatusPolling();
+      } else if (status.status === 'saved') {
+        // 万一脚本端已经保存成功了
+        loginStep.value = 'success';
+        loginStatus.value = '✓ 登录成功';
+        stopStatusPolling();
+        setTimeout(async () => {
+          await closeModal();
+          await loadAccounts();
+        }, 1500);
+      }
+    } catch (e) {
+      console.error('轮询状态失败:', e);
+    }
+  }, 1000);
+}
+
+function stopStatusPolling() {
+  if (statusPoller) {
+    clearInterval(statusPoller);
+    statusPoller = null;
   }
 }
 
@@ -103,6 +148,7 @@ async function confirmDeleteAccount(account: any) {
 
 // ============ 关闭弹窗 ============
 async function closeModal() {
+  stopStatusPolling();
   if (sessionId.value) {
     try {
       await invoke('cleanup_login_session', { sessionId: sessionId.value });

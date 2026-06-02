@@ -64,18 +64,68 @@ def get_config() -> dict:
 def get_chrome_path() -> str:
     """
     返回 Google Chrome 可执行文件路径，按平台自动探测候选路径。
-    所有候选均不存在时返回 "chrome"，依赖系统 PATH。
+    所有候选均不存在时尝试从注册表和 PATH 中获取。
     """
+    import shutil
     if sys.platform == "win32":
+        # 1. 尝试从注册表读取 (App Paths)
+        try:
+            import winreg
+            for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+                    with winreg.OpenKey(root, key_path) as key:
+                        path, _ = winreg.QueryValueEx(key, "")
+                        if os.path.exists(path):
+                            return path
+                except OSError:
+                    continue
+        except ImportError:
+            pass
+
+        # 2. 常见安装路径候选
         candidates = [
             os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         ]
         for p in candidates:
             if os.path.exists(p):
                 return p
-        return "chrome"
+        
+        # 3. 尝试从 PATH 中寻找
+        path_found = shutil.which("chrome") or shutil.which("google-chrome")
+        if path_found:
+            return path_found
+        
+        # 4. 尝试 Edge 作为备选 (Edge 也是 Chromium 核，兼容 CDP)
+        try:
+            for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"
+                    with winreg.OpenKey(root, key_path) as key:
+                        path, _ = winreg.QueryValueEx(key, "")
+                        if os.path.exists(path):
+                            print(f"[Compat] Chrome not found, using Edge: {path}")
+                            return path
+                except OSError:
+                    continue
+        except Exception:
+            pass
+
+        candidates_edge = [
+            os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ]
+        for p in candidates_edge:
+            if os.path.exists(p):
+                return p
+
+        return "chrome"  # 最后兜底
     elif sys.platform == "darwin":
         p = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         return p if os.path.exists(p) else "google-chrome"
