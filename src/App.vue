@@ -51,10 +51,6 @@ onMounted(initLiveEventListener);
           <Film class="w-5 h-5 text-orange-400" />
           <span>视频创作中心</span>
         </a>
-        <a href="#" @click="currentPage = 'factory'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'factory' ? 'bg-gray-900' : 'text-gray-400']">
-          <Factory class="w-5 h-5 text-amber-500" />
-          <span>工厂系统</span>
-        </a>
         <a href="#" @click="currentPage = 'accounts'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'accounts' ? 'bg-gray-900' : 'text-gray-400']">
           <Users class="w-5 h-5" />
           <span>账号管理</span>
