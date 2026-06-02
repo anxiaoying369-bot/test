@@ -111,14 +111,14 @@ pub async fn stop_hermes_gateway(state: State<'_, AppState>) -> Result<(), Strin
 #[tauri::command]
 pub async fn check_hermes_status(state: State<'_, AppState>) -> Result<bool, String> {
     { let mut handles = state.process_handles.lock().map_err(|e| e.to_string())?; if let Some(child) = handles.get_mut("hermes_gateway") { if let Ok(Some(_)) = child.try_wait() { handles.remove("hermes_gateway"); } } }
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build().map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().map_err(|e| e.to_string())?;
     match client.get("http://127.0.0.1:8642/health").send().await { Ok(r) => Ok(r.status().is_success()), Err(_) => Ok(false) }
 }
 
 #[tauri::command]
 pub async fn check_hermes_gateway_health(gateway_url: String, api_key: String) -> Result<serde_json::Value, String> {
     let url = format!("{}/health", gateway_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
     let mut req = client.get(&url);
     if !api_key.is_empty() { req = req.bearer_auth(&api_key); }
     let response = req.send().await.map_err(|e| format!("连接失败: {}", e))?;
@@ -259,7 +259,7 @@ pub async fn hermes_search_kb(query: String) -> Result<serde_json::Value, String
 pub async fn hermes_list_runs(gateway_url: String, api_key: String, run_id: Option<String>) -> Result<Vec<serde_json::Value>, String> {
     let Some(rid) = run_id else { return Ok(vec![]); };
     let url = format!("{}/v1/runs/{}", gateway_url.trim_end_matches('/'), rid);
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
     let mut req = client.get(&url);
     if !api_key.is_empty() { req = req.bearer_auth(&api_key); }
     match req.send().await { Ok(resp) if resp.status().is_success() => { match resp.json::<serde_json::Value>().await { Ok(body) => Ok(vec![body]), Err(_) => Ok(vec![]) } } _ => Ok(vec![]) }
@@ -268,7 +268,7 @@ pub async fn hermes_list_runs(gateway_url: String, api_key: String, run_id: Opti
 #[tauri::command]
 pub async fn hermes_stop_run(gateway_url: String, api_key: String, run_id: String) -> Result<(), String> {
     let url = format!("{}/v1/runs/{}/stop", gateway_url.trim_end_matches('/'), run_id);
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder().no_proxy().build().map_err(|e| e.to_string())?;
     let mut req = client.post(&url).json(&serde_json::json!({}));
     if !api_key.is_empty() { req = req.bearer_auth(&api_key); }
     req.send().await.map_err(|e| e.to_string())?;
@@ -290,7 +290,7 @@ fn is_approval_signal(s: &str) -> bool {
 #[tauri::command]
 pub async fn hermes_approve_run(gateway_url: String, api_key: String, run_id: String, approved: bool) -> Result<(), String> {
     let url = format!("{}/v1/runs/{}/approval", gateway_url.trim_end_matches('/'), run_id);
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder().no_proxy().build().map_err(|e| e.to_string())?;
     let mut req = client.post(&url).json(&serde_json::json!({"approved": approved}));
     if !api_key.is_empty() { req = req.bearer_auth(&api_key); }
     req.send().await.map_err(|e| e.to_string())?;
@@ -302,7 +302,7 @@ pub async fn hermes_send_message(app: tauri::AppHandle, gateway_url: String, api
     use futures_util::StreamExt;
     use tauri::Emitter;
     let url = format!("{}/v1/chat/completions", gateway_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build().map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(300)).build().map_err(|e| e.to_string())?;
     let mut req = client.post(&url).header("Content-Type", "application/json").header("Accept", "text/event-stream");
     if !api_key.is_empty() { req = req.bearer_auth(&api_key); if let Some(ref sid) = session_id { if !sid.is_empty() { req = req.header("X-Hermes-Session-Id", sid.as_str()); } } }
     let body = serde_json::json!({ "messages": messages, "stream": true, "model": "hermes-agent" });

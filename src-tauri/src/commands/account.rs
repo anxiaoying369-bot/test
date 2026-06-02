@@ -3,7 +3,7 @@ use tauri::State;
 use uuid::Uuid;
 use crate::models::{Account, AccountView, AccountsStoreFile, LoginFlow, LoginSession, PyLoginStatus, UserInfo, VerifyResult, account_to_view};
 use crate::state::AppState;
-use crate::utils::{get_account_dir, get_accounts_db_path, get_cookies_dir, get_data_dir, get_scripts_dir, python_cmd, chrono_now};
+use crate::utils::{get_account_dir, get_accounts_db_path, get_cookies_dir, get_data_dir, get_scripts_dir, python_cmd, chrono_now, local_http_client};
 
 pub fn load_accounts() -> AccountsStoreFile {
     let path = get_accounts_db_path();
@@ -160,7 +160,7 @@ pub async fn get_login_status(session_id: String, state: State<'_, AppState>) ->
         (flow.port, flow.platform.clone())
     };
 
-    let client = reqwest::Client::new();
+    let client = local_http_client();
     let py_status: PyLoginStatus = client.get(format!("http://127.0.0.1:{}/status", port))
         .send().await.map_err(|e| e.to_string())?
         .json().await.map_err(|e| e.to_string())?;
@@ -203,7 +203,7 @@ pub async fn finish_login(
     fs::create_dir_all(&save_dir).map_err(|e| e.to_string())?;
     let save_dir_str = save_dir.to_string_lossy().to_string();
 
-    let client = reqwest::Client::new();
+    let client = local_http_client();
     let resp = client
         .post(format!("http://127.0.0.1:{}/finish", port))
         .query(&[("save_dir", &save_dir_str)])

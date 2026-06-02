@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-opener';
+import { openUrl as openExternalUrl } from '@tauri-apps/plugin-opener';
 
 import type { ChatMessage } from '../types/hermes';
 import { useHermesConfig, useHermesSessions } from '../composables/useHermes';
@@ -17,7 +17,7 @@ const { sessions, currentSessionId, loadSessions, saveSessions, createSession } 
 
 const openUrl = async (url: string) => {
   try {
-    await open(url);
+    await openExternalUrl(url);
   } catch (e) {
     console.error('Failed to open url:', e);
   }

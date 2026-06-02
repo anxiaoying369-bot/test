@@ -222,6 +222,17 @@ pub fn std_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Comma
     cmd
 }
 
+/// 访问本机 127.0.0.1 服务（登录用的 Python HTTP server、Hermes 本地网关等）专用的 reqwest 客户端：
+/// **禁用系统代理**。否则 Windows 上配置了系统/公司代理时，本地请求会被代理转发并返回
+/// `502 Bad Gateway`（用户在登录"我已登录完成"时遇到的报错根因）。
+pub fn local_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 pub fn python_cmd() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(python_executable());
     cmd.env(
