@@ -92,5 +92,47 @@ const { config } = useAppConfig();
         </div>
       </div>
     </div>
+    <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-6 shadow-xl">
+      <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2 mb-2">
+        <MessageSquare class="w-4 h-4 text-red-500" />
+        直播弹幕回复 (Live Reply)
+      </h3>
+
+      <div class="grid grid-cols-1 gap-6">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">直播主题</label>
+            <input
+              v-model="config.llm.live_theme"
+              type="text"
+              placeholder="例如：数码产品测评"
+              class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-red-500 transition-all"
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">直播内容关键词</label>
+            <input
+              v-model="config.llm.live_content"
+              type="text"
+              placeholder="例如：华为、小米、手机、降噪耳机"
+              class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-red-500 transition-all"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-300 mb-2">AI 自动回复提示词 (Prompt)</label>
+          <textarea
+            v-model="config.llm.live_reply_prompt"
+            rows="4"
+            placeholder="提示 AI 如何回复弹幕，例如：你是一个幽默的数码测评博主..."
+            class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-red-500 transition-all resize-none"
+          ></textarea>
+          <p class="mt-2 text-[10px] text-gray-500 italic">
+            注：该提示词将结合直播主题和知识库内容，为直播间的每一条弹幕生成回复建议。
+          </p>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
