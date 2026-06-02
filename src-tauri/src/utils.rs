@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::state::{BUNDLED_PYTHON, RESOURCE_DIR, SCRIPTS_DIR};
+use crate::state::{BUNDLED_PYTHON, RESOURCE_DIR, SCRIPTS_DIR, AppState};
 
 pub fn get_scripts_dir() -> PathBuf {
     if let Some(p) = SCRIPTS_DIR.get() {
@@ -307,6 +307,8 @@ pub fn register_task(
                 task_type,
                 status: "running".to_string(),
                 pid,
+                cpu: 0.0,
+                memory: 0,
                 created_at: now,
                 updated_at: now,
             },

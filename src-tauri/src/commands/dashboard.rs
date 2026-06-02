@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use tauri::State;
 use crate::state::AppState;
 use crate::models::Task;
-use sysinfo::{System, ProcessRefreshKind, RefreshKind, Pid};
+use sysinfo::{System, ProcessRefreshKind, RefreshKind, Pid, ProcessesToUpdate};
 
 #[tauri::command]
 pub async fn list_active_tasks(state: State<'_, AppState>) -> Result<Vec<Task>, String> {
@@ -12,7 +11,7 @@ pub async fn list_active_tasks(state: State<'_, AppState>) -> Result<Vec<Task>, 
     let mut sys = System::new_with_specifics(
         RefreshKind::new().with_processes(ProcessRefreshKind::new().with_cpu().with_memory()),
     );
-    sys.refresh_processes_specifics(ProcessRefreshKind::new().with_cpu().with_memory());
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, ProcessRefreshKind::new().with_cpu().with_memory());
 
     // 清理已结束的任务
     let mut to_remove = Vec::new();
