@@ -1,22 +1,28 @@
 <script setup lang="ts">
 import { ref, onMounted, inject, watch } from 'vue';
-import { Save, RefreshCw, CheckCircle, XCircle, ShieldCheck, Globe, Cpu, Video, RotateCcw } from 'lucide-vue-next';
+import { Save, RefreshCw, CheckCircle, XCircle, ShieldCheck, Globe, Cpu, MessageSquare, RotateCcw } from 'lucide-vue-next';
 import { useAppConfig } from '../composables/useAppConfig';
-import SettingsLLM from './settings/SettingsLLM.vue';
-import SettingsVideo from './settings/SettingsVideo.vue';
+import SettingsModels from './settings/SettingsModels.vue';
+import SettingsGeoPlatforms from './settings/SettingsGeoPlatforms.vue';
+import SettingsPrompts from './settings/SettingsPrompts.vue';
 import SettingsHermes from './settings/SettingsHermes.vue';
-import SettingsGeo from './settings/SettingsGeo.vue';
 
 const { loadConfig, saveConfig, resetConfig } = useAppConfig();
 
 const TABS = [
-  { id: 'llm', name: '语言模型', icon: Cpu },
-  { id: 'video', name: '视频生成', icon: Video },
-  { id: 'hermes', name: 'Hermes 助手', icon: ShieldCheck },
-  { id: 'geo', name: 'GEO 监控', icon: Globe },
+  { id: 'models', name: '模型设置', icon: Cpu },
+  { id: 'geo_platforms', name: 'GEO 平台设置', icon: Globe },
+  { id: 'prompts', name: '提示词设置', icon: MessageSquare },
+  { id: 'hermes', name: '系统组件', icon: ShieldCheck },
 ];
 const VALID_TABS = TABS.map(t => t.id);
-const normalizeTab = (t?: string) => (t && VALID_TABS.includes(t) ? t : 'llm');
+const normalizeTab = (t?: string) => {
+  if (!t) return 'models';
+  // 兼容旧版 Tab 导航跳转
+  if (t === 'llm' || t === 'video') return 'models';
+  if (t === 'geo') return 'geo_platforms';
+  return VALID_TABS.includes(t) ? t : 'models';
+};
 
 const settingsInitialTab = inject<ReturnType<typeof ref<string>>>('settingsInitialTab');
 // 始终落到一个有效标签，避免传入未知值时页面空白、无任何标签选中
@@ -68,7 +74,7 @@ const resetToDefault = async () => {
       <div class="flex items-center justify-between mb-6">
         <div>
           <h2 class="text-2xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">系统设置</h2>
-          <p class="text-gray-500 text-sm mt-1">配置您的 AI 模型、知识库与辅助功能</p>
+          <p class="text-gray-500 text-sm mt-1">配置您的模型枢纽、平台规则与 AI 提示词</p>
         </div>
         <button
           @click="resetToDefault"
@@ -100,10 +106,10 @@ const resetToDefault = async () => {
     <!-- 内容区域 -->
     <div class="flex-1 overflow-y-auto p-8 custom-scrollbar">
       <div class="max-w-3xl mx-auto space-y-8 pb-12">
-        <SettingsLLM v-if="activeTab === 'llm'" />
-        <SettingsVideo v-else-if="activeTab === 'video'" />
+        <SettingsModels v-if="activeTab === 'models'" />
+        <SettingsGeoPlatforms v-else-if="activeTab === 'geo_platforms'" />
+        <SettingsPrompts v-else-if="activeTab === 'prompts'" />
         <SettingsHermes v-else-if="activeTab === 'hermes'" />
-        <SettingsGeo v-else-if="activeTab === 'geo'" />
 
         <!-- 保存操作 -->
         <div class="flex items-center justify-between">
