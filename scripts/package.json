@@ -1,4 +1,7 @@
 {
+  "name": "autocast-scripts",
+  "version": "0.1.0",
+  "private": true,
   "dependencies": {
     "jsrsasign": "^11.1.3"
   }
