@@ -71,8 +71,12 @@ if (-not (Test-Path $Requirements)) {
 Write-Host "Upgrading pip..."
 & $PythonBin -m pip install --upgrade pip --quiet
 
+# Ensure numpy 2.x is NOT present (it breaks compatibility on older CPUs)
+Write-Host "Checking for incompatible numpy versions..."
+& $PythonBin -m pip uninstall numpy -y --quiet
+
 Write-Host "Installing dependencies (from ${Requirements})..."
-& $PythonBin -m pip install -r $Requirements
+& $PythonBin -m pip install -r $Requirements --no-cache-dir --force-reinstall
 
 Write-Host "Cleaning __pycache__ and .pyc..."
 Get-ChildItem -Path $PlatformDir -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

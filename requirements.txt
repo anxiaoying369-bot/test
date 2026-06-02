@@ -12,10 +12,11 @@ urllib3>=2.0
 websockets>=12.0               # IM bridge
 
 # ── 知识库 (KB) ────────────────────────────────────────────────────
-numpy==1.26.4                  # 强制固定版本以兼容旧 CPU 指令集 (X86_V2)
-lancedb>=0.10.0                # 向量数据库
-pandas>=2.0.0                  # 数据处理
-pypdf>=4.0.0                   # PDF 解析
+numpy==1.26.4                  # Required for X86_V1 compatibility
+pyarrow==16.1.0                # Compatible with numpy 1.x
+lancedb==0.11.0                # Stable version for numpy 1.x
+pandas>=2.0.0                  # Data processing
+pypdf>=4.0.0                   # PDF Parsing
 
 # ── 抖音子模块 ─────────────────────────────────────────────────────
 # scripts/DouyinComment/requirements.txt
