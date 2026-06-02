@@ -40,7 +40,6 @@ src-tauri/ffmpeg-runtime/
 src-tauri/python-runtime/
 src-tauri/node-runtime/
 **/video_studio.db
-**/video_studio/
 
 # Local docs (work-in-progress notes)
 docs/

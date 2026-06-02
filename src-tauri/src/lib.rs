@@ -119,6 +119,36 @@ pub fn run() {
 
             // Common
             crate::commands::common::open_file_in_finder,
+
+            // Video Studio Project
+            crate::commands::video_studio::project::video_list_projects,
+            crate::commands::video_studio::project::video_upsert_project,
+            crate::commands::video_studio::project::video_delete_project,
+            crate::commands::video_studio::project::video_clone_project,
+
+            // Video Studio Material
+            crate::commands::video_studio::material::video_list_materials,
+            crate::commands::video_studio::material::video_upload_material,
+            crate::commands::video_studio::material::video_delete_material,
+
+            // Video Studio Generation
+            crate::commands::video_studio::generation::video_generate_script,
+            crate::commands::video_studio::generation::video_start_generation,
+            crate::commands::video_studio::generation::video_poll_task_status,
+            crate::commands::video_studio::generation::tts_list_voices,
+            crate::commands::video_studio::generation::tts_synthesize,
+            crate::commands::video_studio::generation::video_generate_image,
+
+            // Video Studio Rendering
+            crate::commands::video_studio::rendering::video_test_ffmpeg,
+            crate::commands::video_studio::rendering::video_get_metadata,
+            crate::commands::video_studio::rendering::video_run_ffmpeg,
+            crate::commands::video_studio::rendering::video_concat_materials,
+            crate::commands::video_studio::rendering::video_render_advanced,
+            crate::commands::video_studio::rendering::video_export_render,
+
+            // Video Studio Tasks
+            crate::commands::video_studio::tasks::video_list_tasks,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

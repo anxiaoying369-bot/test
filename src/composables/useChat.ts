@@ -60,7 +60,7 @@ export function useChat() {
   async function selectSession(id: string) {
     currentSessionId.value = id;
     try {
-      const msgs = await invoke('get_chat_messages', { session_id: id }) as ChatMessage[];
+      const msgs = await invoke('get_chat_messages', { sessionId: id }) as ChatMessage[];
       messages.value = msgs;
       await scrollToBottom();
     } catch (e) {
@@ -72,7 +72,7 @@ export function useChat() {
     event.stopPropagation();
     if (!confirm('确定要删除此会话吗？')) return;
     try {
-      await invoke('delete_chat_session', { session_id: id });
+      await invoke('delete_chat_session', { sessionId: id });
       if (currentSessionId.value === id) {
         currentSessionId.value = null;
         messages.value = [];
@@ -116,7 +116,7 @@ export function useChat() {
 
     try {
       const reply = await invoke('send_chat_message', {
-        session_id: currentSessionId.value,
+        sessionId: currentSessionId.value,
         content: content,
       }) as ChatMessage;
       messages.value.push(reply);
