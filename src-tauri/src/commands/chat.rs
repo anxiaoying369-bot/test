@@ -61,8 +61,8 @@ pub async fn create_chat_session(title: String) -> Result<ChatSession, String> {
 }
 
 #[tauri::command]
-pub async fn delete_chat_session(id: String) -> Result<(), String> {
-    let path = get_chats_dir().join(format!("{}.json", id));
+pub async fn delete_chat_session(session_id: String) -> Result<(), String> {
+    let path = get_chats_dir().join(format!("{}.json", session_id));
     if path.exists() {
         fs::remove_file(path).map_err(|e| e.to_string())?;
     }

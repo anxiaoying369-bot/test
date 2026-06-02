@@ -4,12 +4,15 @@ import {
   Bot, User, Sparkles, Copy, ChevronDown, BarChart3
 } from 'lucide-vue-next';
 import { marked } from 'marked';
+import { inject } from 'vue';
 import { useChat } from '../composables/useChat';
 
 const {
   sessions, currentSessionId, messages, userInput, isSending, scrollContainer, expandedAudits,
   createNewSession, selectSession, deleteSession, sendMessage, toggleAudit, copyToClipboard,
 } = useChat();
+
+const navigateTo = inject('navigateTo') as (page: string, tab?: string) => void;
 </script>
 
 <template>
@@ -84,10 +87,22 @@ const {
               <!-- 消息气泡 -->
               <div
                 :class="['p-4 rounded-2xl text-sm leading-relaxed border shadow-sm overflow-x-auto break-words w-full',
-                          msg.role === 'user' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-200']"
+                          msg.role === 'user' ? 'bg-blue-600 border-blue-500 text-white' : 
+                          msg.role === 'system' ? 'bg-amber-950/20 border-amber-900/50 text-amber-200/80' :
+                          'bg-gray-900 border-gray-800 text-gray-200']"
               >
                 <div class="markdown-content break-words [word-break:break-word]" v-html="marked(msg.content)"></div>
                 
+                <!-- 引导配置按钮 -->
+                <div v-if="msg.role === 'system' && msg.content.includes('未配置 LLM API Key')" class="mt-3">
+                  <button 
+                    @click="navigateTo('settings', 'llm')"
+                    class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold rounded-lg transition-colors shadow-lg shadow-amber-900/20"
+                  >
+                    立即前往设置
+                  </button>
+                </div>
+
                 <!-- 工具调用标记 -->
                 <div v-if="msg.tool_used" class="mt-4 pt-3 border-t border-gray-800 flex flex-col gap-2">
                   <div class="flex items-center justify-between">

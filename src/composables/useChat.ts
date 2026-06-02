@@ -60,7 +60,7 @@ export function useChat() {
   async function selectSession(id: string) {
     currentSessionId.value = id;
     try {
-      const msgs = await invoke('get_chat_messages', { sessionId: id }) as ChatMessage[];
+      const msgs = await invoke('get_chat_messages', { session_id: id }) as ChatMessage[];
       messages.value = msgs;
       await scrollToBottom();
     } catch (e) {
@@ -72,7 +72,7 @@ export function useChat() {
     event.stopPropagation();
     if (!confirm('确定要删除此会话吗？')) return;
     try {
-      await invoke('delete_chat_session', { sessionId: id });
+      await invoke('delete_chat_session', { session_id: id });
       if (currentSessionId.value === id) {
         currentSessionId.value = null;
         messages.value = [];
@@ -85,6 +85,22 @@ export function useChat() {
 
   async function sendMessage() {
     if (!userInput.value.trim() || isSending.value || !currentSessionId.value) return;
+
+    // 检查 API Key
+    try {
+      const config: any = await invoke('get_config');
+      if (!config.llm?.api_key || config.llm.api_key.trim() === '') {
+        messages.value.push({
+          role: 'system',
+          content: '⚠️ **未配置 LLM API Key**\n\n当前尚未设置 AI 模型密钥，无法开始对话。请前往“系统设置” -> “AI 模型设置”完成配置。',
+          timestamp: Date.now() / 1000,
+        });
+        userInput.value = '';
+        return;
+      }
+    } catch (e) {
+      console.error('检查配置失败:', e);
+    }
 
     const content = userInput.value;
     userInput.value = '';
@@ -100,8 +116,8 @@ export function useChat() {
 
     try {
       const reply = await invoke('send_chat_message', {
-        sessionId: currentSessionId.value,
-        message: content,
+        session_id: currentSessionId.value,
+        content: content,
       }) as ChatMessage;
       messages.value.push(reply);
       await scrollToBottom();
