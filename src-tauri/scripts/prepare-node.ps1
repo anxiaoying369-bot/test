@@ -1,4 +1,4 @@
-# 下载 Node.js 便携版并放入 src-tauri/node-runtime/windows/
+# Download Node.js portable and put into src-tauri/node-runtime/windows/
 #
 $ErrorActionPreference = "Stop"
 
@@ -14,7 +14,7 @@ if (-not (Test-Path $PlatformDir)) {
     New-Item -ItemType Directory -Force -Path $PlatformDir | Out-Null
 }
 
-Write-Host "▸ 目标平台: Windows/$Arch"
+Write-Host "Target Platform: Windows/$Arch"
 
 $Url = "https://nodejs.org/dist/$NodeVersion/node-$NodeVersion-win-$Arch.zip"
 $CacheDir = Join-Path $RuntimeDir ".cache"
@@ -22,11 +22,11 @@ New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
 $ZipFile = Join-Path $CacheDir "node-win.zip"
 
 if (-not (Test-Path $ZipFile)) {
-    Write-Host "▸ 下载 Node.js 便携版..."
+    Write-Host "Downloading Node.js portable..."
     Invoke-WebRequest -Uri $Url -OutFile $ZipFile
 }
 
-Write-Host "▸ 解压到 $PlatformDir\"
+Write-Host "Extracting to $PlatformDir\"
 $tmpDir = Join-Path $RuntimeDir "tmp_node"
 if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
 Expand-Archive -Path $ZipFile -DestinationPath $tmpDir -Force
@@ -37,4 +37,4 @@ if ($extracted) {
 }
 
 Remove-Item -Recurse -Force $tmpDir
-Write-Host "✅ Node.js 运行时准备完成"
+Write-Host "Node.js runtime prepared successfully."

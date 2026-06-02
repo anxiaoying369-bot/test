@@ -1,5 +1,5 @@
 #
-# 下载 FFmpeg 静态二进制文件并解压到 src-tauri/ffmpeg-runtime/windows/
+# Download FFmpeg static binaries and extract to src-tauri/ffmpeg-runtime/windows/
 #
 
 $FFMPEG_VERSION = "7.0.1"
@@ -15,17 +15,17 @@ if (-not (Test-Path $PLATFORM_DIR)) {
     New-Item -ItemType Directory -Force -Path $PLATFORM_DIR | Out-Null
 }
 
-Write-Host "▸ 目标平台: windows/x64"
+Write-Host "Target Platform: windows/x64"
 
 $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 $zipfile = Join-Path $CACHE_DIR "ffmpeg-win.zip"
 
 if (-not (Test-Path $zipfile)) {
-    Write-Host "▸ 下载 FFmpeg (Windows)..."
+    Write-Host "Downloading FFmpeg (Windows)..."
     Invoke-WebRequest -Uri $url -OutFile $zipfile
 }
 
-Write-Host "▸ 解压到 $PLATFORM_DIR\"
+Write-Host "Extracting to $PLATFORM_DIR\"
 $tmpDir = Join-Path $RUNTIME_DIR "tmp_ffmpeg"
 if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
@@ -40,5 +40,5 @@ foreach ($file in $binFiles) {
 Remove-Item -Recurse -Force $tmpDir
 
 Write-Host ""
-Write-Host "✅ FFmpeg 运行时准备完成"
+Write-Host "FFmpeg runtime prepared successfully."
 Get-ChildItem -Path $PLATFORM_DIR -Filter "*.exe"

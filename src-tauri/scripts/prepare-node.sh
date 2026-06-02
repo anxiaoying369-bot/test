@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 下载 Node.js 便携版并放入 src-tauri/node-runtime/macos/
+# Download Node.js portable and put into src-tauri/node-runtime/macos/
 set -euo pipefail
 
 NODE_VERSION="v20.15.1"
@@ -17,11 +17,11 @@ URL="https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-$PLATFORM.tar.gz"
 TARBALL="$RUNTIME_DIR/.cache/node-macos.tar.gz"
 
 if [ ! -f "$TARBALL" ]; then
-    echo "▸ 下载 Node.js ($PLATFORM)..."
+    echo "Downloading Node.js ($PLATFORM)..."
     curl -L -o "$TARBALL" "$URL"
 fi
 
-echo "▸ 解压到 $PLATFORM_DIR"
+echo "Extracting to $PLATFORM_DIR"
 tar -xzf "$TARBALL" -C "$PLATFORM_DIR" --strip-components=1
 
-echo "✅ Node.js 运行时准备完成"
+echo "Node.js runtime prepared successfully."
