@@ -69,4 +69,5 @@ export interface AppConfig {
   llm: LLMConfig;
   hermes: HermesConfig;
   video: VideoConfig;
+  stt: SttConfig;
 }
