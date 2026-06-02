@@ -770,8 +770,8 @@ class DouyinBarrage:
         logger.debug(f"[看门狗] 线程启动，检查间隔={check_interval}s，超时阈值={self._silence_timeout}s")
         watchdog_start = time.time()
         first_check_done = False
-        first_check_timeout = 3.0
-        normal_check_timeout = 30.0
+        first_check_timeout = 15.0
+        normal_check_timeout = 120.0
         try:
             while not conn_stop.is_set() and not self._stop_event.is_set():
                 conn_stop.wait(timeout=check_interval)
@@ -792,9 +792,10 @@ class DouyinBarrage:
                     continue
                 with self._last_msg_time_lock:
                     silence = time.time() - self._last_msg_time
-                logger.debug(f"[看门狗] 静默时间: {silence:.0f}s")
+                
+                # 完全无数据超时（含心跳/系统消息）
                 if silence > self._silence_timeout:
-                    logger.warning(f"[看门狗] {silence:.0f}s 无数据 (阈值={self._silence_timeout}s)，触发重连")
+                    logger.warning(f"[看门狗] {silence:.0f}s 无任何数据 (阈值={self._silence_timeout}s)，触发重连")
                     try:
                         self.ws.keep_running = False
                         if self.ws.sock:
@@ -804,6 +805,7 @@ class DouyinBarrage:
                         pass
                     break
 
+                # 业务数据超时（仅交互类消息）
                 if self._last_business_msg_time > 0:
                     with self._last_business_msg_time_lock:
                         business_silence = time.time() - self._last_business_msg_time
@@ -812,7 +814,7 @@ class DouyinBarrage:
 
                 if not first_check_done:
                     if business_silence > first_check_timeout:
-                        logger.info(f"[看门狗] 首次检测 {business_silence:.0f}s 无业务消息，快速重连")
+                        logger.info(f"[看门狗] 首次检测 {business_silence:.0f}s 无业务消息（仅系统消息），快速重连")
                         first_check_done = True
                         try:
                             self.ws.keep_running = False
@@ -826,8 +828,9 @@ class DouyinBarrage:
                         first_check_done = True
                         logger.debug("[看门狗] 首次检测通过，已收到业务消息")
                 else:
+                    # 对于低频直播间，业务沉默是很正常的，这里放宽到 2 分钟
                     if business_silence > normal_check_timeout:
-                        logger.info(f"[看门狗] {business_silence:.0f}s 无业务消息 (仅有低价值消息)，触发重连")
+                        logger.info(f"[看门狗] {business_silence:.0f}s 业务沉默 (阈值={normal_check_timeout}s)，触发重连")
                         try:
                             self.ws.keep_running = False
                             if self.ws.sock:
