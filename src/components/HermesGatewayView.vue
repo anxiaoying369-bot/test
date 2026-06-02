@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-opener';
 
 import type { ChatMessage } from '../types/hermes';
 import { useHermesConfig, useHermesSessions } from '../composables/useHermes';
@@ -13,6 +14,14 @@ import GatewayControl from './hermes/GatewayControl.vue';
 // ============ State ============
 const { gatewayUrl, apiKey, loadConfig } = useHermesConfig();
 const { sessions, currentSessionId, loadSessions, saveSessions, createSession } = useHermesSessions();
+
+const openUrl = async (url: string) => {
+  try {
+    await open(url);
+  } catch (e) {
+    console.error('Failed to open url:', e);
+  }
+};
 
 const isConnected = ref(false);
 const isInstalled = ref(true);
@@ -252,9 +261,14 @@ const deleteSession = (id: string) => {
           <span class="w-5 h-5 rounded bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-xs">1</span>
           安装 Hermes
         </h3>
-        <p class="text-xs text-gray-500 mb-3">使用 Python 的包管理器（建议在隔离的虚拟环境中）执行以下命令：</p>
-        <div class="bg-gray-950 p-3 rounded-lg font-mono text-xs text-blue-400 border border-gray-800 select-all mb-6">
-          pip install git+https://github.com/xhynice/hermes-agent.git
+        <p class="text-xs text-gray-500 mb-4">
+          请前往 Hermes 官方网站获取最新的安装指引和环境配置要求：
+        </p>
+        <div class="bg-gray-950 p-4 rounded-lg border border-gray-800 flex items-center justify-center mb-6">
+          <a href="#" @click.prevent="openUrl('https://hermesagent.org.cn')" class="text-sm font-bold text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-2">
+            https://hermesagent.org.cn
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+          </a>
         </div>
         
         <h3 class="text-sm font-bold text-gray-300 mb-4 flex items-center gap-2">
