@@ -87,6 +87,7 @@ pub fn run() {
             crate::commands::chat::get_chat_messages,
 
             // Hermes
+            crate::commands::hermes::check_hermes_installed,
             crate::commands::hermes::start_hermes_gateway,
             crate::commands::hermes::stop_hermes_gateway,
             crate::commands::hermes::check_hermes_status,

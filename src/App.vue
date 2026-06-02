@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
-import { MessageSquare, Users, Search, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, LayoutDashboard } from 'lucide-vue-next';
+import { MessageSquare, Users, Search, FileText, Radio, Settings, Database, Sparkles, Terminal, Film } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import ResultsView from './components/ResultsView.vue';
 import LiveMonitorView from './components/LiveMonitorView.vue';

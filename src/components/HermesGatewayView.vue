@@ -15,6 +15,7 @@ const { gatewayUrl, apiKey, loadConfig } = useHermesConfig();
 const { sessions, currentSessionId, loadSessions, saveSessions, createSession } = useHermesSessions();
 
 const isConnected = ref(false);
+const isInstalled = ref(true);
 const isChecking = ref(false);
 const isStarting = ref(false);
 const isStopping = ref(false);
@@ -52,9 +53,17 @@ const filteredSessions = computed(() => {
 // ============ Logic ============
 
 onMounted(async () => {
-  loadSessions();
-  await loadConfig();
-  await checkHealth();
+  try {
+    isInstalled.value = await invoke('check_hermes_installed');
+  } catch (e) {
+    isInstalled.value = false;
+  }
+
+  if (isInstalled.value) {
+    loadSessions();
+    await loadConfig();
+    await checkHealth();
+  }
 
   unlistenChunk = await listen<any>('hermes-chunk', (e) => {
     streamingContent.value += e.payload.content;
@@ -229,45 +238,77 @@ const deleteSession = (id: string) => {
 
 <template>
   <div class="h-full flex flex-col bg-gray-950 text-gray-100 overflow-hidden">
-    <!-- Gateway Control Bar -->
-    <GatewayControl
-      v-model:gatewayUrl="gatewayUrl"
-      v-model:apiKey="apiKey"
-      :isConnected="isConnected"
-      :isChecking="isChecking"
-      :isStarting="isStarting"
-      :isStopping="isStopping"
-      :isEnablingApi="isEnablingApi"
-      @checkHealth="checkHealth"
-      @start="startGateway"
-      @stop="stopGateway"
-      @enableApi="enableApi"
-    />
-
-    <div class="flex-1 flex overflow-hidden">
-      <!-- Session Sidebar -->
-      <SessionSidebar
-        v-model:searchQuery="searchQuery"
-        :sessions="filteredSessions"
-        :currentSessionId="currentSessionId"
-        @create="createSession"
-        @select="id => currentSessionId = id"
-        @delete="deleteSession"
-      />
-
-      <!-- Chat Window -->
-      <ChatWindow
-        :session="currentSession"
-        :isSending="isSending"
-        :streamingContent="streamingContent"
-        :streamingThinking="streamingThinking"
-        :activeRunId="activeRunId"
-        :toolCallProgress="null"
-        @send="sendMessage"
-        @approveRun="approveRun"
-        @stopRun="stopRun"
-      />
+    <!-- 未安装 Hermes 的指引页面 -->
+    <div v-if="!isInstalled" class="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-6">
+      <div class="w-20 h-20 bg-indigo-500/10 rounded-full flex items-center justify-center mb-4">
+        <svg class="w-10 h-10 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+      </div>
+      <h2 class="text-2xl font-bold text-gray-100">未检测到 Hermes Agent</h2>
+      <p class="text-gray-400 max-w-md leading-relaxed text-sm">
+        Hermes 是一个独立的本地 AI 智能体应用，负责安全地管理系统工具调用、跨应用操作以及多模型统一调度。
+      </p>
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 text-left max-w-lg w-full shadow-xl">
+        <h3 class="text-sm font-bold text-gray-300 mb-4 flex items-center gap-2">
+          <span class="w-5 h-5 rounded bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-xs">1</span>
+          安装 Hermes
+        </h3>
+        <p class="text-xs text-gray-500 mb-3">使用 Python 的包管理器（建议在隔离的虚拟环境中）执行以下命令：</p>
+        <div class="bg-gray-950 p-3 rounded-lg font-mono text-xs text-blue-400 border border-gray-800 select-all mb-6">
+          pip install git+https://github.com/xhynice/hermes-agent.git
+        </div>
+        
+        <h3 class="text-sm font-bold text-gray-300 mb-4 flex items-center gap-2">
+          <span class="w-5 h-5 rounded bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-xs">2</span>
+          重启系统
+        </h3>
+        <p class="text-xs text-gray-500">
+          安装完成后，请彻底关闭并重新启动 AutoCast AI。系统将在启动时自动探测并完成 Hermes 网关的初始化配置。
+        </p>
+      </div>
     </div>
+
+    <!-- 正常工作页面 -->
+    <template v-else>
+      <!-- Gateway Control Bar -->
+      <GatewayControl
+        v-model:gatewayUrl="gatewayUrl"
+        v-model:apiKey="apiKey"
+        :isConnected="isConnected"
+        :isChecking="isChecking"
+        :isStarting="isStarting"
+        :isStopping="isStopping"
+        :isEnablingApi="isEnablingApi"
+        @checkHealth="checkHealth"
+        @start="startGateway"
+        @stop="stopGateway"
+        @enableApi="enableApi"
+      />
+
+      <div class="flex-1 flex overflow-hidden">
+        <!-- Session Sidebar -->
+        <SessionSidebar
+          v-model:searchQuery="searchQuery"
+          :sessions="filteredSessions"
+          :currentSessionId="currentSessionId"
+          @create="createSession"
+          @select="id => currentSessionId = id"
+          @delete="deleteSession"
+        />
+
+        <!-- Chat Window -->
+        <ChatWindow
+          :session="currentSession"
+          :isSending="isSending"
+          :streamingContent="streamingContent"
+          :streamingThinking="streamingThinking"
+          :activeRunId="activeRunId"
+          :toolCallProgress="null"
+          @send="sendMessage"
+          @approveRun="approveRun"
+          @stopRun="stopRun"
+        />
+      </div>
+    </template>
   </div>
 </template>
 

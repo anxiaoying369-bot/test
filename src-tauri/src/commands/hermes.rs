@@ -30,6 +30,15 @@ pub fn which_hermes() -> String {
 }
 
 #[tauri::command]
+pub async fn check_hermes_installed() -> Result<bool, String> {
+    let hermes_bin = which_hermes();
+    match crate::utils::tokio_command(&hermes_bin).arg("--version").output().await {
+        Ok(output) => Ok(output.status.success()),
+        Err(_) => Ok(false),
+    }
+}
+
+#[tauri::command]
 pub async fn hermes_enable_api_server() -> Result<String, String> {
     let env_path = dirs::home_dir().ok_or("无法获取 home 目录")?.join(".hermes").join(".env");
     let content = if env_path.exists() { fs::read_to_string(&env_path).map_err(|e| e.to_string())? } else { String::new() };
