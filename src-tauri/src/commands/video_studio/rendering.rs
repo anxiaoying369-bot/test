@@ -303,8 +303,8 @@ pub async fn video_export_render(
             let srt_path = output_dir.join(format!("{}.srt", task_id));
             build_srt_file(text, audio_duration, &srt_path)?;
             let srt_escaped = escape_subtitle_path(&srt_path.to_string_lossy());
-            // 字幕样式：白字黑边、底部居中
-            let style = "FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=80";
+            // 字幕样式：白字黑边、底部居中。增加 WrapStyle=2 以确保手动换行生效
+            let style = "FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=80,WrapStyle=2";
             fc.push_str(&format!(
                 ";[{map_label}]subtitles='{srt_escaped}':force_style='{style}'[vsub]"
             ));
@@ -345,38 +345,126 @@ pub async fn video_export_render(
     Ok(output_path_str)
 }
 
+struct SubtitleSegment {
+    text: String,
+    weight: f64,
+}
+
 /// 把口播文案按句切分、按字符数比例分配到 total 秒，生成 SRT 字幕文件。
 fn build_srt_file(text: &str, total: f64, path: &std::path::Path) -> Result<(), String> {
-    let seps = ['。', '！', '？', '；', '.', '!', '?', ';', '\n', '，', ','];
-    let mut sentences: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for ch in text.chars() {
-        if seps.contains(&ch) {
-            let t = cur.trim().to_string();
-            if !t.is_empty() { sentences.push(t); }
-            cur.clear();
-        } else {
-            cur.push(ch);
-        }
-    }
-    if !cur.trim().is_empty() { sentences.push(cur.trim().to_string()); }
-    if sentences.is_empty() { return Err("字幕文本为空".to_string()); }
+    // 1. 智能分段：根据标点和长度进行加权分段
+    let segments = segment_text_weighted(text, 24);
+    
+    if segments.is_empty() { return Err("字幕文本为空".to_string()); }
 
-    let total_chars: usize = sentences.iter().map(|s| s.chars().count()).sum::<usize>().max(1);
+    let total_weight: f64 = segments.iter().map(|s| s.weight).sum::<f64>().max(1.0);
     let mut srt = String::new();
     let mut t = 0.0_f64;
-    for (i, s) in sentences.iter().enumerate() {
-        let dur = total * (s.chars().count() as f64 / total_chars as f64);
+    for (i, s) in segments.iter().enumerate() {
+        let dur = total * (s.weight / total_weight);
         let start = t;
         let end = (t + dur).min(total);
+
+        // 如果单段超过 12 个字，则进行智能换行，实现“多行展示”
+        let display_text = wrap_text_smart(&s.text, 12);
+
         srt.push_str(&format!(
             "{}\n{} --> {}\n{}\n\n",
-            i + 1, fmt_srt_ts(start), fmt_srt_ts(end), s
+            i + 1, fmt_srt_ts(start), fmt_srt_ts(end), display_text
         ));
         t = end;
     }
     std::fs::write(path, srt).map_err(|e| format!("写入字幕文件失败: {}", e))?;
     Ok(())
+}
+
+fn segment_text_weighted(text: &str, max_chars: usize) -> Vec<SubtitleSegment> {
+    let mut result = Vec::new();
+    // 标点权重（对应停顿时长，单位为虚拟字符数）
+    let comma_weight = 2.0;    // 逗号停顿约 2 个字符的时间
+    let period_weight = 4.0;   // 句号/感叹号停顿约 4 个字符的时间
+
+    let seps = [
+        ('，', comma_weight), (',', comma_weight),
+        ('。', period_weight), ('！', period_weight), ('!', period_weight),
+        ('？', period_weight), ('?', period_weight), ('；', period_weight), (';', period_weight),
+        ('\n', period_weight)
+    ];
+
+    // 手动遍历以保留标点并计算权重
+    let mut current_text = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    
+    for (i, &ch) in chars.iter().enumerate() {
+        let mut found_sep = None;
+        for (sep_ch, weight) in seps.iter() {
+            if ch == *sep_ch {
+                found_sep = Some(*weight);
+                break;
+            }
+        }
+
+        if let Some(p_weight) = found_sep {
+            let trimmed = current_text.trim();
+            if !trimmed.is_empty() {
+                // 将长句先按 max_chars 切分
+                let sub_chars: Vec<char> = trimmed.chars().collect();
+                let chunks: Vec<_> = sub_chars.chunks(max_chars).collect();
+                let n_chunks = chunks.len();
+                
+                for (idx, chunk) in chunks.iter().enumerate() {
+                    let s: String = chunk.iter().collect();
+                    let is_last = idx == n_chunks - 1;
+                    let char_count = s.chars().count();
+                    // 仅最后一块带有标点的停顿权重
+                    let w = char_count as f64 + (if is_last { p_weight } else { 0.0 });
+                    result.push(SubtitleSegment { text: s, weight: w });
+                }
+            }
+            current_text.clear();
+        } else {
+            // 英文句号 '.' 在此处被视为普通字符，不触发分段（除非它是唯一的结尾，但这里逻辑已涵盖）
+            current_text.push(ch);
+        }
+
+        // 结尾处理：如果文本结束但没有标点
+        if i == chars.len() - 1 {
+            let trimmed = current_text.trim();
+            if !trimmed.is_empty() {
+                let sub_chars: Vec<char> = trimmed.chars().collect();
+                for chunk in sub_chars.chunks(max_chars) {
+                    let s: String = chunk.iter().collect();
+                    let char_count = s.chars().count();
+                    result.push(SubtitleSegment { text: s, weight: char_count as f64 });
+                }
+            }
+        }
+    }
+
+    // 过滤掉无意义的分段
+    result.into_iter().filter(|s| {
+        let t = s.text.trim();
+        !t.is_empty() && t.chars().any(|c| c.is_alphanumeric() || c > '\x7f')
+    }).collect()
+}
+
+fn wrap_text_smart(text: &str, threshold: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    if n <= threshold {
+        return text.to_string();
+    }
+
+    // 尝试在中间位置附近寻找断句点，使两行长度尽量均匀
+    let mid = n / 2;
+    let mut result = String::new();
+    for (i, ch) in chars.iter().enumerate() {
+        if i == mid {
+            result.push('\n');
+        }
+        result.push(*ch);
+    }
+    result
 }
 
 fn fmt_srt_ts(s: f64) -> String {
