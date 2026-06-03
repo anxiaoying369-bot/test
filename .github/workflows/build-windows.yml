@@ -51,10 +51,61 @@ jobs:
       - name: 准备内置运行时
         run: npm run prepare:all
 
+      # ============================================================
+      # Patch tauri.conf.json for current platform
+      # ------------------------------------------------------------
+      # 根因：tauri.conf.json 里 bundle.resources 写死的是 macos 路径
+      #   "python-runtime/macos/python/**/*"
+      #   "ffmpeg-runtime/macos/**/*"
+      # 在 macOS runner 上能跑（macos 目录存在），但在 Windows runner 上
+      # prepare 出来的是 windows/ 目录，macos 目录不存在，于是 tauri-bundler
+      # 在做 NSIS/MSI bundle 的 copy_resources 阶段直接报错：
+      #   glob pattern python-runtime/macos/python/**/* path not found
+      #
+      # build.rs 阶段的 TAURI_CONFIG env patch 只对 tauri-build 内部校验
+      # 起作用，tauri-bundler 阶段（cargo build 之后）依然读 tauri.conf.json
+      # 源文件，所以必须在 CI 里临时改 conf。改完备份，build 完恢复。
+      # ============================================================
+      - name: Patch tauri.conf.json for current platform
+        run: |
+          Copy-Item -Force src-tauri/tauri.conf.json src-tauri/tauri.conf.json.bak
+          $conf = Get-Content src-tauri/tauri.conf.json -Raw
+          $conf = $conf -replace 'python-runtime/macos/python', 'python-runtime/windows/python'
+          $conf = $conf -replace 'ffmpeg-runtime/macos',        'ffmpeg-runtime/windows'
+          Set-Content -Path src-tauri/tauri.conf.json -Value $conf -NoNewline
+          Write-Host "Patched tauri.conf.json: macos -> windows in resources[]"
+
       # 触发 tauri build：beforeBuildCommand=npm run build（vue-tsc 类型检查 + vite 构建），
       # 随后 cargo 编译 + 生成 NSIS(.exe) / MSI(.msi) 安装包
       - name: 打包 Tauri（Windows）
         run: npm run tauri build
+        id: tauri-build
+
+      # 失败时上传完整日志到 artifact（默认 artifacts 在工作流被删后 90 天保留），
+      # 便于本地/未登录用户也能拿到原始错误信息（GitHub 页面上的 logs 需登录才能看）
+      - name: 上传失败日志（debug 用）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-windows-failure-logs
+          path: |
+            src-tauri/target/release/build/autocast-*/output
+            src-tauri/target/release/bundle/macos/bundle_dmg.sh.log
+            src-tauri/target/release/bundle/nsis/*.log
+            ${{ runner.temp }}/**/npm-*.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # 始终跑（无论成功失败）：恢复 tauri.conf.json 的 resources 字段，
+      # 以防上一 step 失败中途把 runner 重启导致 conf 没被还原。
+      # 见 "Patch tauri.conf.json for current platform" step 注释
+      - name: 恢复 tauri.conf.json
+        if: always()
+        run: |
+          if (Test-Path src-tauri/tauri.conf.json.bak) {
+            Move-Item -Force src-tauri/tauri.conf.json.bak src-tauri/tauri.conf.json
+            Write-Host "Restored tauri.conf.json from backup"
+          }
 
       # 把安装包作为工作流产物上传（在该次 run 页面的 Artifacts 下载）
       - name: 上传安装包（Artifacts）
