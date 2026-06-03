@@ -38,9 +38,9 @@ fn main() {
                 let mut any_changed = false;
                 for r in resources.iter() {
                     let s = r.as_str().unwrap_or("");
-                    let new_s = if runtime_platform != "macos" && s.contains("python-runtime/macos") {
+                    let new_s = if runtime_platform != "macos" && s.contains("python-runtime/macos/python") {
                         any_changed = true;
-                        s.replace("python-runtime/macos", &format!("python-runtime/{}", runtime_platform))
+                        s.replace("python-runtime/macos/python", &format!("python-runtime/{}", runtime_platform))
                     } else if runtime_platform != "macos" && s.contains("ffmpeg-runtime/macos") {
                         any_changed = true;
                         s.replace("ffmpeg-runtime/macos", &format!("ffmpeg-runtime/{}", runtime_platform))
