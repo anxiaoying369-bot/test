@@ -112,14 +112,34 @@ pub async fn video_generate_script(
         config.video.script_system_prompt.trim().to_string()
     };
 
-    // 表演脚本字段描述：有 prosody tags 时注入语气标注要求，否则与口播文案保持一致
-    let perf_script_desc = if config.video.tts_prosody_tags.trim().is_empty() {
-        "与「口播文案」内容完全一致的纯净文本，直接用于 AI 配音合成".to_string()
-    } else {
+    // 语气与声调标注（Prosody Tags）处理：
+    // - 非空：作为独立、强制的指令段落注入系统提示词，要求 LLM 在「表演脚本」中严格遵守
+    // - 为空：完全不注入任何语气/声调要求，「表演脚本」与「口播文案」保持一致（纯文本）
+    let prosody_tags = config.video.tts_prosody_tags.trim();
+    let has_prosody = !prosody_tags.is_empty();
+
+    let prosody_section = if has_prosody {
         format!(
-            "在口播文案基础上嵌入语气与声调标注的表演版本，请【仅】从以下标注中选择使用：{}。该脚本用于 AI 配音合成以增强表现力",
-            config.video.tts_prosody_tags.trim()
+            "====================\n\
+            【语气与声调标注规则（必须严格遵守）】\n\
+            以下是本次配音可用的「语气与声调标注」，你在生成「表演脚本」字段时必须遵守：\n\
+            {tags}\n\
+            硬性要求：\n\
+            1. 「表演脚本」必须在合适的语句位置嵌入上述标注，以增强 AI 配音的表现力；\n\
+            2. 【只能】使用上述列出的标注，严禁自行发明或使用任何未列出的标注；\n\
+            3. 标注须服务于内容情绪与节奏，自然合理，不得滥用堆砌；\n\
+            4. 「口播文案」字段必须保持纯净，绝不能包含任何标注。\n\n",
+            tags = prosody_tags
         )
+    } else {
+        String::new()
+    };
+
+    // 「表演脚本」字段在 JSON 中的值描述，随是否启用 prosody 而变
+    let perf_script_desc = if has_prosody {
+        "在「口播文案」基础上，严格按上文【语气与声调标注规则】嵌入标注后的表演版本，用于 AI 配音合成以增强表现力"
+    } else {
+        "与「口播文案」内容完全一致的纯净文本，不含任何语气/声调标注，直接用于 AI 配音合成"
     };
 
     let system_prompt = format!(
@@ -128,6 +148,7 @@ pub async fn video_generate_script(
         【相关素材检索】\n{kb2}\n\n\
         【平台风格指引】\n{platform}\n\n\
         【视频规格】比例：{ratio}\n\n\
+        {prosody_section}\
         ====================\n\
         【严格输出要求】\n\
         你必须只返回一个合法的 JSON 对象，不要包含任何解释文字、不要用 ```json 代码块包裹。\n\
@@ -148,6 +169,7 @@ pub async fn video_generate_script(
         kb2 = kb_mix_ctx,
         platform = platform_prompt,
         ratio = video_ratio,
+        prosody_section = prosody_section,
         perf_script_desc = perf_script_desc,
     );
 
