@@ -23,7 +23,7 @@ const {
             <Database class="w-7 h-7 text-blue-500" />
             企业知识库
           </h2>
-          <p class="text-gray-400 text-sm mt-1">上传 PDF/TXT/JSON 文件，让 AI 助理具备专业背景知识。</p>
+          <p class="text-gray-400 text-sm mt-1">上传 PDF / Word / Excel / TXT / JSON 文件，让 AI 助理具备专业背景知识。</p>
         </div>
         
         <button
@@ -121,7 +121,7 @@ const {
             支持的格式
           </h4>
           <p class="text-xs text-gray-400 leading-relaxed">
-            目前支持 TXT (纯文本)、PDF (扫描件除外) 以及 JSON 格式。我们建议单个文件不超过 10MB 以获得最佳的解析速度和检索质量。
+            目前支持 TXT (纯文本)、PDF (扫描件除外)、Word (.docx)、Excel (.xlsx/.xls) 以及 JSON 格式。Word 提取段落与表格文本，Excel 按「表头 | 行」逐表识别。建议单个文件不超过 10MB 以获得最佳的解析速度和检索质量。
           </p>
         </div>
       </div>

@@ -53,7 +53,31 @@ def parse_file(file_path: str) -> str:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
             return json.dumps(data, ensure_ascii=False)
-    # Add more parsers if needed (docx, etc)
+    elif ext == ".docx":
+        # Word 文档：提取段落 + 表格文本
+        from docx import Document
+        doc = Document(str(path))
+        parts = []
+        for p in doc.paragraphs:
+            if p.text and p.text.strip():
+                parts.append(p.text)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells]
+                if any(cells):
+                    parts.append(" | ".join(cells))
+        return "\n".join(parts)
+    elif ext in (".xlsx", ".xls"):
+        # Excel 文档：读取所有工作表，转为「表头 | 行」文本（pandas + openpyxl）
+        sheets = pd.read_excel(str(path), sheet_name=None, dtype=str)
+        parts = []
+        for name, df in sheets.items():
+            df = df.fillna("")
+            parts.append(f"# 工作表: {name}")
+            parts.append(" | ".join(str(c) for c in df.columns))
+            for _, row in df.iterrows():
+                parts.append(" | ".join(str(v) for v in row.tolist()))
+        return "\n".join(parts)
     return ""
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50):

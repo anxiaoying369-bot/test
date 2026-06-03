@@ -17,6 +17,9 @@ pyarrow==16.1.0                # Compatible with numpy 1.x
 lancedb==0.11.0                # Stable version for numpy 1.x
 pandas>=2.0.0                  # Data processing
 pypdf>=4.0.0                   # PDF Parsing
+python-docx>=1.1.0             # Word(.docx) 解析
+openpyxl>=3.1.0               # Excel(.xlsx) 解析（pandas read_excel 引擎）
+xlrd>=2.0.1                    # Excel 旧格式(.xls) 解析
 
 # ── 抖音子模块 ─────────────────────────────────────────────────────
 # scripts/DouyinComment/requirements.txt

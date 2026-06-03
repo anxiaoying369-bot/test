@@ -41,7 +41,7 @@ export function useKnowledgeBase() {
         multiple: false,
         filters: [{
           name: 'Documents',
-          extensions: ['txt', 'pdf', 'json']
+          extensions: ['txt', 'pdf', 'json', 'docx', 'xlsx', 'xls']
         }]
       });
 
