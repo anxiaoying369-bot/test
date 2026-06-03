@@ -172,7 +172,32 @@ pub async fn studio_analyze_video_comments(comments: Vec<serde_json::Value>) -> 
         "temperature": 0.7
     });
 
-    let response = client.post(&url).header("Authorization", format!("Bearer {}", config.llm.api_key)).json(&payload).send().await.map_err(|e| format!("请求失败: {}", e))?;
-    let resp_data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    Ok(resp_data["choices"][0]["message"]["content"].as_str().ok_or("LLM 返回格式错误")?.to_string())
+    let response = client.post(&url)
+        .header("Authorization", format!("Bearer {}", config.llm.api_key))
+        .json(&payload).send().await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let status = response.status();
+    let body_text = response.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("LLM API 错误 {}: {}", status, body_text.chars().take(300).collect::<String>()));
+    }
+
+    let resp_data: serde_json::Value = serde_json::from_str(&body_text)
+        .map_err(|e| format!("LLM 响应解析失败（{}）：{}", e, body_text.chars().take(300).collect::<String>()))?;
+
+    let content = resp_data["choices"][0]["message"]["content"].as_str()
+        .or_else(|| resp_data["choices"][0]["text"].as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.trim().is_empty());
+
+    match content {
+        Some(s) => Ok(s),
+        None => {
+            if let Some(err) = resp_data.get("error") {
+                return Err(format!("LLM 返回错误：{}", err));
+            }
+            Err(format!("LLM 返回空内容。原始响应：{}", body_text.chars().take(400).collect::<String>()))
+        }
+    }
 }
