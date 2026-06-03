@@ -21,23 +21,24 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost https://asset.localhost; media-src 'self' asset: http://asset.localhost https://asset.localhost",
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost https://asset.localhost https://*.douyinpic.com https://*.douyin.com https://*.amemv.com https://*.bytedance.com https://*.byted.org https://*.byteicdn.com https://*.bytecdn.cn https://*.bdstatic.com https://*.toutiao.com; media-src 'self' asset: http://asset.localhost https://asset.localhost https://*.douyinpic.com https://*.douyin.com https://*.amemv.com https://*.bytedance.com https://*.byted.org https://*.byteicdn.com https://*.bytecdn.cn https://*.bdstatic.com; connect-src 'self' ipc: http://ipc.localhost https://*.douyinpic.com https://*.douyin.com https://*.amemv.com https://*.bytedance.com https://*.byted.org; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$LOCALAPPDATA/AutoCastAI/scraper_data/**",
-          "$LOCALAPPDATA/AutoCastAI/video_studio/**",
-          "$APPDATA/AutoCastAI/scraper_data/**",
-          "$APPDATA/AutoCastAI/video_studio/**",
-          "$DATA/AutoCastAI/scraper_data/**",
-          "$DATA/AutoCastAI/video_studio/**"
+          "$LOCALDATA/AutoCastAI/**",
+          "$DATA/AutoCastAI/**",
+          "$APPLOCALDATA/AutoCastAI/**",
+          "$APPDATA/AutoCastAI/**",
+          "$APPCONFIG/AutoCastAI/**",
+          "$CONFIG/AutoCastAI/**",
+          "$HOME/Library/Application Support/AutoCastAI/**"
         ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": "all",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

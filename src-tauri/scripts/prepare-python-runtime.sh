@@ -93,12 +93,15 @@ download_python() {
 }
 
 # -- Install Dependencies ---------------------------------------
+# python-build-standalone 解压后顶层是 "python/" 目录（保留这一层，跟
+# src-tauri/src/utils.rs:320-321 和 ps1 端 prepare-python-runtime.ps1 对齐）。
+# 所以真实路径是 RUNTIME_DIR/<platform>/python/<bin>，不是 RUNTIME_DIR/<platform>/<bin>。
 install_deps() {
   local python_bin
   if [[ "$PLATFORM_TAG" == *windows* ]]; then
-    python_bin="$RUNTIME_DIR/windows/python.exe"
+    python_bin="$RUNTIME_DIR/windows/python/python.exe"
   else
-    python_bin="$RUNTIME_DIR/macos/bin/python3"
+    python_bin="$RUNTIME_DIR/macos/python/bin/python3"
   fi
 
   if [[ ! -x "$python_bin" ]]; then
