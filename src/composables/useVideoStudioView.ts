@@ -186,16 +186,17 @@ export function useVideoStudioView() {
   const synthesizeVoice = async () => {
     if (!currentProject.value) return;
 
-    // 只取脚本 JSON 里的「口播文案」字段
+    // 优先取「表演脚本」字段用于 TTS，该字段包含语气/声调标注
+    // 如果没有，则退而求其次取「口播文案」
     let voiceText = '';
     try {
       const data = JSON.parse(generatedScript.value);
-      voiceText = (data['口播文案'] || '').toString().trim();
+      voiceText = (data['表演脚本'] || data['口播文案'] || '').toString().trim();
     } catch {
       voiceText = '';
     }
     if (!voiceText) {
-      alert('脚本中没有「口播文案」字段，无法合成。请重新生成脚本。');
+      alert('脚本中没有可用的口播内容，无法合成。请重新生成脚本。');
       return;
     }
 

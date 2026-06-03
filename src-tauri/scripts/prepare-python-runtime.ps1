@@ -48,17 +48,31 @@ if ((Test-Path $Marker) -and ((Get-Content $Marker) -eq $ExpectedMarker)) {
     New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
     tar -xzf $Tarball -C $tmpDir
 
+    # python-build-standalone 解压后顶层目录名是 "python"。把它原样
+    # 移到 $PlatformDir 下，**保留** "python/" 这一层（不要平铺）。
+    # 这样 Windows 上最终路径是 src-tauri\python-runtime\windows\python\python.exe，
+    # 跟 macOS 端 prepare-python-runtime.sh 的 mv python macos 行为一致，
+    # 也跟 src-tauri\src\utils.rs:320-321 期望的
+    #   python-runtime/<platform>/python/python.exe (windows)
+    #   python-runtime/<platform>/python/bin/python3   (macos)
+    # 完全对齐。
     $extracted = Get-ChildItem -Path $tmpDir -Directory | Select-Object -First 1
     if ($extracted) {
-        Copy-Item -Path (Join-Path $extracted.FullName "*") -Destination $PlatformDir -Recurse -Force
-        Remove-Item -Recurse -Force $tmpDir
+        $dest = Join-Path $PlatformDir "python"
+        if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+        Move-Item -Path $extracted.FullName -Destination $dest
     }
+    Remove-Item -Recurse -Force $tmpDir
 
     Set-Content -Path $Marker -Value $ExpectedMarker
 }
 
 # -- Install Dependencies ---------------------------------------
-$PythonBin = Join-Path $PlatformDir "python.exe"
+# After the extract step, the python-build-standalone tree lives at
+#   $PlatformDir\python\python.exe
+# (we keep the "python/" subdirectory so it matches src-tauri/src/utils.rs
+# expectations and the macOS prepare-python-runtime.sh layout).
+$PythonBin = Join-Path $PlatformDir "python\python.exe"
 if (-not (Test-Path $PythonBin)) {
     Write-Error "Cannot find python.exe: $PythonBin"
     exit 1

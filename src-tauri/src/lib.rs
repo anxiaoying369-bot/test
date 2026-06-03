@@ -153,13 +153,24 @@ pub fn run() {
                 let app_state = app_handle.state::<AppState>();
                 let lock_result = app_state.process_handles.lock();
                 if let Ok(mut handles) = lock_result {
+                    // Give children a brief grace period to flush & exit cleanly,
+                    // then hard-kill anything that didn't honor it.
+                    //
+                    // On Unix we send SIGTERM first; on Windows we only call
+                    // start_kill (which maps to TerminateProcess) because tokio's
+                    // Child on Windows has no equivalent of kill(pid, SIGTERM) —
+                    // sending a console CTRL_BREAK_EVENT would require us to
+                    // attach to the child's console and is not worth the complexity
+                    // for a Tauri desktop app on shutdown.
                     #[cfg(unix)]
-                    for (_, child) in handles.iter() {
-                        if let Some(pid) = child.id() {
-                            unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+                    {
+                        for (_, child) in handles.iter() {
+                            if let Some(pid) = child.id() {
+                                unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+                            }
                         }
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(1500));
                     for (_, mut child) in handles.drain() {
                         let _ = child.start_kill();
                     }

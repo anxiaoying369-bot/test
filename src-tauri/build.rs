@@ -3,9 +3,19 @@ use std::path::PathBuf;
 
 fn main() {
     // Patch tauri.conf.json resources to match current platform at build time.
+    //
     // We do NOT modify the source tauri.conf.json (which would pollute the repo).
-    // Instead, we pass the patch via the TAURI_CONFIG env var, which tauri-build
-    // json-merges into the parsed config at line ~489 of tauri-build/src/lib.rs.
+    // Instead, we set the `TAURI_CONFIG` env var in this build-script's process;
+    // tauri-build's `try_build()` reads `std::env::var("TAURI_CONFIG")` and
+    // json-merges it into the parsed config BEFORE the resource glob validator
+    // runs (see tauri-build-2.6.2/src/lib.rs:487-490 and the subsequent
+    // `copy_resources` → `ResourcePaths::new(...).iter()` path).
+    //
+    // Earlier versions of this file used `println!("cargo:rustc-env=TAURI_CONFIG=...")`
+    // which is a NO-OP here: that directive only sets a compile-time env var for
+    // `rustc` invocations spawned by cargo, NOT for the current build.rs process
+    // itself — so tauri-build kept reading the un-patched `macos/...` paths and
+    // failed with "glob pattern ... path not found" on Windows runners.
     let platform = env::var("TARGET").unwrap_or_default();
     let runtime_platform = if platform.contains("windows") {
         "windows"
@@ -38,12 +48,20 @@ fn main() {
                 let mut any_changed = false;
                 for r in resources.iter() {
                     let s = r.as_str().unwrap_or("");
-                    let new_s = if runtime_platform != "macos" && s.contains("python-runtime/macos/python") {
+                    let new_s = if runtime_platform != "macos"
+                        && s.contains("python-runtime/macos/python")
+                    {
                         any_changed = true;
-                        s.replace("python-runtime/macos/python", &format!("python-runtime/{}", runtime_platform))
+                        s.replace(
+                            "python-runtime/macos/python",
+                            &format!("python-runtime/{}/python", runtime_platform),
+                        )
                     } else if runtime_platform != "macos" && s.contains("ffmpeg-runtime/macos") {
                         any_changed = true;
-                        s.replace("ffmpeg-runtime/macos", &format!("ffmpeg-runtime/{}", runtime_platform))
+                        s.replace(
+                            "ffmpeg-runtime/macos",
+                            &format!("ffmpeg-runtime/{}", runtime_platform),
+                        )
                     } else {
                         s.to_string()
                     };
@@ -51,23 +69,25 @@ fn main() {
                 }
 
                 if any_changed {
-                    // Build the JSON patch and pass via TAURI_CONFIG env var.
-                    // tauri-build will json-merge this into the parsed config.
+                    // Build the JSON patch and set it in the current process env.
+                    // tauri-build's try_build() will read this and json-merge it
+                    // into the parsed config before the resource glob validator runs.
                     let patch = serde_json::json!({
                         "bundle": {
                             "resources": patched
                         }
                     });
-                    println!(
-                        "cargo:rustc-env=TAURI_CONFIG={}",
-                        patch.to_string()
-                    );
-                    println!(
-                        "[build] Resources patched → {} (via TAURI_CONFIG env)",
+                    env::set_var("TAURI_CONFIG", &patch.to_string());
+                    eprintln!(
+                        "[build] Resources patched → {} (via TAURI_CONFIG env, set in process)",
                         runtime_platform
                     );
+                    eprintln!(
+                        "[build] Patched resources: {}",
+                        serde_json::to_string_pretty(&patched).unwrap_or_default()
+                    );
                 } else {
-                    println!(
+                    eprintln!(
                         "[build] Resources already match platform: {}",
                         runtime_platform
                     );
@@ -76,7 +96,10 @@ fn main() {
         }
     }
 
+    // Tell cargo to re-run this build script if the env or source conf changes.
     println!("cargo:rerun-if-env-changed=TARGET");
+    println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
+    println!("cargo:rerun-if-changed=tauri.conf.json");
 
     tauri_build::build()
 }
