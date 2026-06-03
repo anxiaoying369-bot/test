@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MessageSquare, Wand2, Mic, Cpu, Video, Globe, Plus, Trash2, XCircle } from 'lucide-vue-next';
+import { MessageSquare, Wand2, Mic, Cpu, Image as ImageIcon, Globe, Plus, Trash2, XCircle } from 'lucide-vue-next';
 import { useAppConfig } from '../../composables/useAppConfig';
 
 const { config } = useAppConfig();
@@ -72,11 +72,11 @@ function removeTtsVoice(index: number) {
       </div>
     </div>
 
-    <!-- 2. 图片 / 视频生成服务 -->
+    <!-- 2. 图片生成模型 -->
     <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-6 shadow-xl">
       <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
-        <Video class="w-4 h-4 text-cyan-500" />
-        图片 / 视频生成模型 (Generation)
+        <ImageIcon class="w-4 h-4 text-cyan-500" />
+        图片生成模型 (Image Generation)
       </h3>
 
       <div class="grid grid-cols-1 gap-6">
@@ -120,7 +120,7 @@ function removeTtsVoice(index: number) {
 
         <div class="grid grid-cols-1 gap-4">
           <div>
-            <label class="block text-sm font-medium text-gray-300 mb-2">默认生成服务商</label>
+            <label class="block text-sm font-medium text-gray-300 mb-2">默认图片生成服务商</label>
             <select v-model="config.video.default_provider" class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 transition-all">
               <option value="fal">fal.ai</option>
               <option value="volcengine">火山引擎</option>
