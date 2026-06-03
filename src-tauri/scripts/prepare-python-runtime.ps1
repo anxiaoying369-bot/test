@@ -22,14 +22,18 @@ $PlatformTag = "$Arch-pc-windows-msvc"
 Write-Host "Target Platform: Windows/$Arch  ->  $PlatformTag"
 
 # -- Download and Extract ---------------------------------------
+# $CacheDir 必须在 if/else 外定义：即使 Python 已存在、跳过下载，
+# 后面 bootstrap pip 下载 get-pip.py 时仍要用到它。否则走 "skipping download"
+# 分支时 $CacheDir 为 null，导致 Join-Path 报 "Cannot bind argument to parameter 'Path'"。
+$CacheDir = Join-Path $RuntimeDir ".cache"
+if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null }
+
 $Marker = Join-Path $PlatformDir ".version"
 $ExpectedMarker = "$PythonVersion-$PlatformTag"
 
 if ((Test-Path $Marker) -and ((Get-Content $Marker) -eq $ExpectedMarker)) {
     Write-Host "Python $PythonVersion ($PlatformTag) already exists, skipping download."
 } else {
-    $CacheDir = Join-Path $RuntimeDir ".cache"
-    if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null }
     if (-not (Test-Path $PlatformDir)) { New-Item -ItemType Directory -Force -Path $PlatformDir | Out-Null }
 
     $Tarball = Join-Path $CacheDir "python-$PythonVersion-$PlatformTag.tar.gz"
