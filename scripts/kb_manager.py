@@ -120,35 +120,47 @@ def add_file_to_kb(file_path: str, config: dict):
 def search_kb(query: str, config: dict, limit: int = 5):
     db = get_db()
     table_name = "global_kb"
-    
+
     if table_name not in db.table_names():
         return []
-    
-    query_vector = get_embedding(query, config)
-    table = db.open_table(table_name)
-    
-    results = table.search(query_vector).limit(limit).to_list()
-    
-    # Remove vectors from results for JSON output
-    for r in results:
-        if "vector" in r:
-            del r["vector"]
-            
-    return results
+
+    try:
+        query_vector = get_embedding(query, config)
+        table = db.open_table(table_name)
+        results = table.search(query_vector).limit(limit).to_list()
+
+        # Remove vectors from results for JSON output
+        for r in results:
+            if "vector" in r:
+                del r["vector"]
+
+        return results
+    except Exception as e:
+        print(f"Warning: 知识库搜索失败: {e}", file=sys.stderr)
+        return []
 
 def list_files():
     db = get_db()
     table_name = "global_kb"
     if table_name not in db.table_names():
         return []
-    
-    table = db.open_table(table_name)
-    df = table.to_pandas()
-    if df.empty:
+
+    try:
+        table = db.open_table(table_name)
+        df = table.to_pandas()
+        if df.empty:
+            return []
+        return df['source'].unique().tolist()
+    except Exception as e:
+        # Lance 内部线程可能 panic（表损坏或版本不兼容），
+        # 记录警告并尝试删除损坏的表，返回空列表。
+        print(f"Warning: 读取知识库表失败，可能已损坏: {e}", file=sys.stderr)
+        try:
+            db.drop_table(table_name)
+            print("Warning: 已自动删除损坏的知识库表，请重新上传文档。", file=sys.stderr)
+        except Exception:
+            pass
         return []
-    
-    files = df['source'].unique().tolist()
-    return files
 
 def delete_file(filename: str):
     db = get_db()
@@ -165,24 +177,26 @@ def get_file_details(filename: str):
     table_name = "global_kb"
     if table_name not in db.table_names():
         return []
-    
-    table = db.open_table(table_name)
-    # Search for all records where source equals the filename
-    results = table.to_pandas()
-    if results.empty:
+
+    try:
+        table = db.open_table(table_name)
+        results = table.to_pandas()
+        if results.empty:
+            return []
+
+        file_chunks = results[results['source'] == filename].sort_values('chunk_id')
+
+        details = []
+        for _, row in file_chunks.iterrows():
+            details.append({
+                "text": row['text'],
+                "chunk_id": int(row['chunk_id']),
+                "source": row['source']
+            })
+        return details
+    except Exception as e:
+        print(f"Warning: 读取文件详情失败: {e}", file=sys.stderr)
         return []
-    
-    file_chunks = results[results['source'] == filename].sort_values('chunk_id')
-    
-    # Convert to list of dicts and remove vector
-    details = []
-    for _, row in file_chunks.iterrows():
-        details.append({
-            "text": row['text'],
-            "chunk_id": int(row['chunk_id']),
-            "source": row['source']
-        })
-    return details
 
 def main():
     parser = argparse.ArgumentParser()

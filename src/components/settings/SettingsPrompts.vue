@@ -1,8 +1,16 @@
 <script setup lang="ts">
-import { MessageSquare, FileText, Sparkles, Radio } from 'lucide-vue-next';
+import { MessageSquare, FileText, Sparkles, Radio, RotateCcw } from 'lucide-vue-next';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppConfig } from '../../composables/useAppConfig';
 
 const { config } = useAppConfig();
+
+async function restoreDefault(field: 'live_reply_prompt' | 'analysis_prompt' | 'script_system_prompt') {
+  const defaults: any = await invoke('get_default_config');
+  if (field === 'live_reply_prompt')    config.value.llm.live_reply_prompt    = defaults.llm.live_reply_prompt;
+  if (field === 'analysis_prompt')      config.value.llm.analysis_prompt      = defaults.llm.analysis_prompt;
+  if (field === 'script_system_prompt') config.value.video.script_system_prompt = defaults.video.script_system_prompt;
+}
 </script>
 
 <template>
@@ -41,7 +49,17 @@ const { config } = useAppConfig();
         </div>
 
         <div>
-          <label class="block text-[11px] font-bold text-gray-500 uppercase mb-2 tracking-wider">AI 自动回复提示词 (Prompt)</label>
+          <div class="flex items-center justify-between mb-2">
+            <label class="block text-[11px] font-bold text-gray-500 uppercase tracking-wider">AI 自动回复提示词 (Prompt)</label>
+            <button
+              @click="restoreDefault('live_reply_prompt')"
+              class="flex items-center gap-1 text-[10px] text-gray-500 hover:text-red-400 transition-colors"
+              title="恢复默认提示词"
+            >
+              <RotateCcw class="w-3 h-3" />
+              恢复默认
+            </button>
+          </div>
           <textarea
             v-model="config.llm.live_reply_prompt"
             rows="5"
@@ -69,9 +87,19 @@ const { config } = useAppConfig();
 
       <div class="grid grid-cols-1 gap-6 relative z-10">
         <div>
-          <p class="text-xs text-gray-500 mb-4 leading-relaxed">
-            用于视频创作中心「生成脚本」时的核心创作准则。您可以定义脚本的受众风格、表达调性以及强制性的卖点植入规则。
-          </p>
+          <div class="flex items-center justify-between mb-2">
+            <p class="text-xs text-gray-500 leading-relaxed">
+              用于视频创作中心「生成脚本」时的核心创作准则。您可以定义脚本的受众风格、表达调性以及强制性的卖点植入规则。
+            </p>
+            <button
+              @click="restoreDefault('script_system_prompt')"
+              class="flex-shrink-0 ml-4 flex items-center gap-1 text-[10px] text-gray-500 hover:text-amber-400 transition-colors"
+              title="恢复默认提示词"
+            >
+              <RotateCcw class="w-3 h-3" />
+              恢复默认
+            </button>
+          </div>
           <textarea
             v-model="config.video.script_system_prompt"
             rows="8"
@@ -90,7 +118,7 @@ const { config } = useAppConfig();
           />
           <div class="mt-2 flex items-start gap-2 text-[10px] text-gray-500 italic">
             <Sparkles class="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
-            <p>填入您的 TTS 服务商支持的标签。AI 在生成「表演脚本」时会【仅】从中选择并嵌入文本中，用于提升配音表现力。</p>
+            <p>填入您的 TTS 服务商支持的标签。AI 在生成「表演脚本」时会【仅】从中选择并嵌入文本中，用于提升配音表现力。留空则不添加语气标注。</p>
           </div>
         </div>
 
@@ -98,18 +126,28 @@ const { config } = useAppConfig();
           <h4 class="text-[10px] font-bold text-amber-500 uppercase mb-2">提示</h4>
           <ul class="text-[11px] text-gray-500 space-y-1 list-disc list-inside">
             <li>脚本将以固定 JSON 格式返回，包含文案、时长、关键词等。</li>
-            <li>建议在这里专注于描述“品牌人设”和“语言风格”。</li>
+            <li>建议在这里专注于描述"品牌人设"和"语言风格"。</li>
             <li>系统会自动注入企业知识库中的相关事实。</li>
           </ul>
         </div>
       </div>
     </div>
 
-    <!-- 3. 采集数据分析 (可选补充) -->
+    <!-- 3. 采集数据分析 -->
     <div class="bg-gray-900/20 border border-gray-800/50 rounded-2xl p-6 space-y-4 shadow-sm grayscale opacity-70 hover:grayscale-0 hover:opacity-100 transition-all">
-       <h3 class="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
-        数据分析提示词 (Analysis)
-      </h3>
+      <div class="flex items-center justify-between">
+        <h3 class="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+          数据分析提示词 (Analysis)
+        </h3>
+        <button
+          @click="restoreDefault('analysis_prompt')"
+          class="flex items-center gap-1 text-[10px] text-gray-500 hover:text-blue-400 transition-colors"
+          title="恢复默认提示词"
+        >
+          <RotateCcw class="w-3 h-3" />
+          恢复默认
+        </button>
+      </div>
       <textarea
         v-model="config.llm.analysis_prompt"
         rows="3"

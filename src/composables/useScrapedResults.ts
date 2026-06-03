@@ -140,7 +140,7 @@ export function useScrapedResults() {
         throw new Error('该视频暂未采集到评论。请先在「评论采集」页对该博主采集评论（采集类型选「评论」或「全部」）后再分析。');
       }
 
-      const report = await invoke('analyze_comments', {
+      const report = await invoke('studio_analyze_video_comments', {
         comments: videoComments.map(c => ({ text: c.text })),
       }) as string;
 

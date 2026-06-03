@@ -8,19 +8,19 @@ export interface KBChunk {
   source: string;
 }
 
+// ---------- 模块级单例状态（切换页面后不会丢失）----------
+const files = ref<string[]>([]);
+const isLoading = ref(false);
+const isUploading = ref(false);
+const errorMsg = ref('');
+const successMsg = ref('');
+
+const isDetailModalOpen = ref(false);
+const isDetailLoading = ref(false);
+const selectedFileName = ref('');
+const fileChunks = ref<KBChunk[]>([]);
+
 export function useKnowledgeBase() {
-  const files = ref<string[]>([]);
-  const isLoading = ref(false);
-  const isUploading = ref(false);
-  const errorMsg = ref('');
-  const successMsg = ref('');
-
-  // 详情相关
-  const isDetailModalOpen = ref(false);
-  const isDetailLoading = ref(false);
-  const selectedFileName = ref('');
-  const fileChunks = ref<KBChunk[]>([]);
-
   async function loadFiles() {
     isLoading.value = true;
     errorMsg.value = '';
@@ -49,26 +49,33 @@ export function useKnowledgeBase() {
         isUploading.value = true;
         errorMsg.value = '';
         successMsg.value = '';
-        
-        const res = await invoke('add_to_kb', { filePath: selected }) as any;
-        if (res.status === 'success') {
-          successMsg.value = `上传成功: 增加了 ${res.chunks_added} 个知识切片`;
-          await loadFiles();
-        } else {
-          errorMsg.value = res.error || '上传失败';
+
+        // 注意：invoke 返回的 Promise 持有对模块级 ref 的引用，
+        // 即使用户切换了页面，当 Python 脚本完成后仍会正确更新这些 ref。
+        try {
+          const res = await invoke('add_to_kb', { filePath: selected }) as any;
+          if (res.status === 'success') {
+            successMsg.value = `上传成功: 增加了 ${res.chunks_added} 个知识切片`;
+            await loadFiles();
+          } else {
+            errorMsg.value = res.error || '上传失败';
+          }
+        } catch (e: any) {
+          console.error('上传失败:', e);
+          errorMsg.value = String(e);
+        } finally {
+          isUploading.value = false;
         }
       }
     } catch (e: any) {
-      console.error('上传失败:', e);
+      console.error('选择文件失败:', e);
       errorMsg.value = String(e);
-    } finally {
-      isUploading.value = false;
     }
   }
 
   async function deleteFile(filename: string) {
     if (!confirm(`确定要从知识库中删除文件 "${filename}" 吗？`)) return;
-    
+
     try {
       await invoke('delete_kb_file', { filename });
       successMsg.value = '文件已删除';
@@ -87,7 +94,7 @@ export function useKnowledgeBase() {
     isDetailModalOpen.value = true;
     isDetailLoading.value = true;
     fileChunks.value = [];
-    
+
     try {
       const res = await invoke('get_kb_file_details', { filename }) as KBChunk[];
       fileChunks.value = res;
@@ -99,6 +106,7 @@ export function useKnowledgeBase() {
     }
   }
 
+  // 每次页面挂载时刷新文件列表
   onMounted(loadFiles);
 
   return {

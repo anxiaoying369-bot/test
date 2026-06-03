@@ -1,4 +1,4 @@
-import { ref, onMounted, nextTick } from 'vue';
+import { ref, nextTick, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
 export interface ToolData {
@@ -24,23 +24,22 @@ export interface ChatSession {
   updated_at: number;
 }
 
+// ---------- 模块级单例状态（切换页面后不会丢失）----------
+const sessions = ref<ChatSession[]>([]);
+const currentSessionId = ref<string | null>(null);
+const messages = ref<ChatMessage[]>([]);
+const userInput = ref('');
+const isSending = ref(false);
+const scrollContainer = ref<HTMLElement | null>(null);
+const expandedAudits = ref<Set<number>>(new Set());
+
 export function useChat() {
-  const sessions = ref<ChatSession[]>([]);
-  const currentSessionId = ref<string | null>(null);
-  const messages = ref<ChatMessage[]>([]);
-  const userInput = ref('');
-  const isSending = ref(false);
-  const scrollContainer = ref<HTMLElement | null>(null);
-
-  // 展开状态：key = msg.timestamp，value = 是否展开审计
-  const expandedAudits = ref<Set<number>>(new Set());
-
   async function loadSessions() {
     try {
       const res = await invoke('list_chat_sessions') as ChatSession[];
       sessions.value = res;
       if (res.length > 0 && !currentSessionId.value) {
-        selectSession(res[0].id);
+        await selectSession(res[0].id);
       }
     } catch (e) {
       console.error('加载会话失败:', e);
@@ -49,9 +48,9 @@ export function useChat() {
 
   async function createNewSession() {
     try {
-      const newId = await invoke('create_chat_session', { title: '新对话' }) as string;
+      const session = await invoke('create_chat_session', { title: '新对话' }) as ChatSession;
       await loadSessions();
-      selectSession(newId);
+      await selectSession(session.id);
     } catch (e) {
       console.error('创建会话失败:', e);
     }
@@ -86,13 +85,12 @@ export function useChat() {
   async function sendMessage() {
     if (!userInput.value.trim() || isSending.value || !currentSessionId.value) return;
 
-    // 检查 API Key
     try {
       const config: any = await invoke('get_config');
       if (!config.llm?.api_key || config.llm.api_key.trim() === '') {
         messages.value.push({
           role: 'system',
-          content: '⚠️ **未配置 LLM API Key**\n\n当前尚未设置 AI 模型密钥，无法开始对话。请前往“系统设置” -> “AI 模型设置”完成配置。',
+          content: '⚠️ **未配置 LLM API Key**\n\n当前尚未设置 AI 模型密钥，无法开始对话。请前往"系统设置" -> "AI 模型设置"完成配置。',
           timestamp: Date.now() / 1000,
         });
         userInput.value = '';
@@ -114,6 +112,8 @@ export function useChat() {
     });
     await scrollToBottom();
 
+    // 注意：invoke 返回的 Promise 持有对模块级 ref 的引用，
+    // 即使用户切换了页面，当 Rust 后端完成后仍会正确更新这些 ref。
     try {
       const reply = await invoke('send_chat_message', {
         sessionId: currentSessionId.value,
@@ -121,7 +121,6 @@ export function useChat() {
       }) as ChatMessage;
       messages.value.push(reply);
       await scrollToBottom();
-      // 更新会话标题（如果后端有更新）
       await loadSessions();
     } catch (e) {
       console.error('发送消息失败:', e);
@@ -158,6 +157,7 @@ export function useChat() {
     }
   }
 
+  // 每次页面挂载时刷新会话列表（不重置当前会话和消息）
   onMounted(loadSessions);
 
   return {
