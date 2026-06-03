@@ -1,0 +1,22 @@
+# AutoCast AI Git Attributes
+# Git LFS — track large binary runtime files (ffmpeg.exe, python.exe, etc.)
+# These are platform-specific runtimes that would otherwise bloat the repo
+# if not ignored. We track them with LFS to keep git fast and CI cache-friendly.
+
+# FFmpeg / FFprobe binaries
+src-tauri/ffmpeg-runtime/**/*.exe filter=lfs diff=lfs merge=lfs -text
+src-tauri/ffmpeg-runtime/**/ffmpeg filter=lfs diff=lfs merge=lfs -text
+src-tauri/ffmpeg-runtime/**/ffprobe filter=lfs diff=lfs merge=lfs -text
+
+# Python runtime (python-build-standalone)
+src-tauri/python-runtime/**/*.exe filter=lfs diff=lfs merge=lfs -text
+src-tauri/python-runtime/**/*.dll filter=lfs diff=lfs merge=lfs -text
+src-tauri/python-runtime/**/*.pyd filter=lfs diff=lfs merge=lfs -text
+src-tauri/python-runtime/**/*.zip filter=lfs diff=lfs merge=lfs -text
+src-tauri/python-runtime/**/*.so  filter=lfs diff=lfs merge=lfs -text
+src-tauri/python-runtime/**/*.dylib filter=lfs diff=lfs merge=lfs -text
+src-tauri/python-runtime/**/*.whl filter=lfs diff=lfs merge=lfs -text
+src-tauri/python-runtime/**/python3 filter=lfs diff=lfs merge=lfs -text
+
+# Node runtime (if/when added)
+src-tauri/node-runtime/**/*.exe filter=lfs diff=lfs merge=lfs -text

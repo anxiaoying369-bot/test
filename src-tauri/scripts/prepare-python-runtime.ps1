@@ -68,12 +68,19 @@ if (-not (Test-Path $Requirements)) {
     exit 1
 }
 
-Write-Host "Upgrading pip..."
-& $PythonBin -m pip install --upgrade pip --quiet
+# python-build-standalone install_only tarball does NOT ship pip.
+# Bootstrap pip using get-pip.py.
+Write-Host "Bootstrapping pip (python-build-standalone install_only lacks pip)..."
+$GetPip = Join-Path $CacheDir "get-pip.py"
+if (-not (Test-Path $GetPip)) {
+    Write-Host "  Downloading get-pip.py..."
+    Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $GetPip -UseBasicParsing
+}
+& $PythonBin $GetPip --quiet
 
-# Ensure numpy 2.x is NOT present (it breaks compatibility on older CPUs)
-Write-Host "Checking for incompatible numpy versions..."
-& $PythonBin -m pip uninstall numpy -y --quiet
+# Ensure numpy 1.x is installed for X86_V1 CPU compatibility (pyarrow 16.x requires it)
+Write-Host "Installing numpy 1.x for X86_V1 CPU compatibility..."
+& $PythonBin -m pip install "numpy==1.26.4" --no-cache-dir --force-reinstall --quiet
 
 Write-Host "Installing dependencies (from ${Requirements})..."
 & $PythonBin -m pip install -r $Requirements --no-cache-dir --force-reinstall

@@ -315,10 +315,10 @@ fn resolve_python_executable() -> String {
     }
 
     // Platform-specific runtime subdirectory + executable path inside it
-    // Structure: python-runtime/<platform>/python/bin/python3 (macos)
-    //            python-runtime/<platform>/python.exe             (windows)
+    // Structure: python-runtime/<platform>/python/bin/python3 (macos, python-build-standalone)
+    //            python-runtime/<platform>/python/python.exe   (windows, python-build-standalone)
     let (platform_runtime, rel_bin_inside): (&str, PathBuf) = if cfg!(windows) {
-        ("windows", PathBuf::from("python.exe"))
+        ("windows", PathBuf::from("python").join("python.exe"))
     } else {
         (
             "macos",
