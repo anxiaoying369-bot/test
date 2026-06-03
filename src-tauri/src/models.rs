@@ -144,6 +144,9 @@ pub struct VideoConfig {
     /// 脚本生成的系统提示词（可在设置页编辑；脚本生成页不可见）
     #[serde(default = "default_script_system_prompt")]
     pub script_system_prompt: String,
+    /// 用户定义的语气词和声调列表，用于引导表演脚本生成
+    #[serde(default)]
+    pub tts_prosody_tags: String,
 }
 
 pub fn default_script_system_prompt() -> String {

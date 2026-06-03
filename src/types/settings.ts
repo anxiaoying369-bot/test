@@ -63,6 +63,7 @@ export interface VideoConfig {
   default_tts_speed?: number;
   tts_voices?: TtsVoice[];          // 自定义音色组
   script_system_prompt?: string;    // 脚本生成系统提示词
+  tts_prosody_tags?: string;        // TTS 语气/声调标注模板（后端 generation.rs 用）
 }
 
 export interface AppConfig {

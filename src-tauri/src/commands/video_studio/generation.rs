@@ -112,6 +112,12 @@ pub async fn video_generate_script(
         config.video.script_system_prompt.trim().to_string()
     };
 
+    let prosody_hint = if config.video.tts_prosody_tags.trim().is_empty() {
+        "请在文本中使用 [语气:高亢]、[停顿:0.5s]、[重音:关键词] 等标注。".to_string()
+    } else {
+        format!("请【仅】从以下语气词和声调标注中选择并使用：{}", config.video.tts_prosody_tags.trim())
+    };
+
     let system_prompt = format!(
         "{style}\n\n\
         【知识库背景（优先级最高，必须引用其中事实）】\n{kb1}\n\n\
@@ -128,7 +134,7 @@ pub async fn video_generate_script(
           \"语速\": \"建议语速倍数，数字，如 1.0 / 1.2\",\n\
           \"目标受众\": \"这条视频面向的人群\",\n\
           \"口播文案\": \"完整的口播文本，是显示在字幕上的纯净内容，不包含任何特殊语气标注\",\n\
-          \"表演脚本\": \"包含声调、语气、停顿提示的口播文本。请在文本中使用 [语气:高亢]、[停顿:0.5s]、[重音:关键词] 等标注。该脚本用于 AI 配音合成，以增强表现力\",\n\
+          \"表演脚本\": \"包含声调、语气、停顿提示的口播文本。{prosody}该脚本用于 AI 配音合成，以增强表现力\",\n\
           \"核心卖点关键词\": [\"关键词1\", \"关键词2\", \"关键词3\"],\n\
           \"建议素材关键词\": [\"用于搜索配图/空镜的英文或中文关键词1\", \"关键词2\"]\n\
         }}\n\
@@ -138,6 +144,7 @@ pub async fn video_generate_script(
         kb2 = kb_mix_ctx,
         platform = platform_prompt,
         ratio = video_ratio,
+        prosody = prosody_hint,
     );
 
     let mut user_message = format!("产品信息：{}\n", product);

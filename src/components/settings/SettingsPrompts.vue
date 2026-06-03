@@ -78,14 +78,29 @@ const { config } = useAppConfig();
             placeholder="留空使用默认准则（GEO 答案前置 / 事实密度 / 场景化）..."
             class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500 transition-all font-mono leading-relaxed resize-y"
           ></textarea>
-          <div class="mt-4 p-4 bg-amber-500/5 border border-amber-500/10 rounded-xl">
-            <h4 class="text-[10px] font-bold text-amber-500 uppercase mb-2">提示</h4>
-            <ul class="text-[11px] text-gray-500 space-y-1 list-disc list-inside">
-              <li>脚本将以固定 JSON 格式返回，包含文案、时长、关键词等。</li>
-              <li>建议在这里专注于描述“品牌人设”和“语言风格”。</li>
-              <li>系统会自动注入企业知识库中的相关事实。</li>
-            </ul>
+        </div>
+
+        <div>
+          <label class="block text-[11px] font-bold text-gray-500 uppercase mb-2 tracking-wider">TTS 语气与声调标注 (Prosody Tags)</label>
+          <input
+            v-model="config.video.tts_prosody_tags"
+            type="text"
+            placeholder="例如：[语气:高亢]、[停顿:0.5s]、[重音:关键词]、[声调:上升]"
+            class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-amber-500 transition-all"
+          />
+          <div class="mt-2 flex items-start gap-2 text-[10px] text-gray-500 italic">
+            <Sparkles class="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
+            <p>填入您的 TTS 服务商支持的标签。AI 在生成「表演脚本」时会【仅】从中选择并嵌入文本中，用于提升配音表现力。</p>
           </div>
+        </div>
+
+        <div class="mt-4 p-4 bg-amber-500/5 border border-amber-500/10 rounded-xl">
+          <h4 class="text-[10px] font-bold text-amber-500 uppercase mb-2">提示</h4>
+          <ul class="text-[11px] text-gray-500 space-y-1 list-disc list-inside">
+            <li>脚本将以固定 JSON 格式返回，包含文案、时长、关键词等。</li>
+            <li>建议在这里专注于描述“品牌人设”和“语言风格”。</li>
+            <li>系统会自动注入企业知识库中的相关事实。</li>
+          </ul>
         </div>
       </div>
     </div>

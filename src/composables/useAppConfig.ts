@@ -39,6 +39,7 @@ function defaultConfig(): AppConfig {
       default_tts_speed: 1.0,
       tts_voices: [],
       script_system_prompt: '',
+      tts_prosody_tags: '',
     },
     stt: {
       api_key: '',
