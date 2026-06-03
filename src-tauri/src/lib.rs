@@ -46,7 +46,7 @@ pub fn run() {
 
             // Studio
             crate::commands::studio::studio_generate_content,
-            crate::commands::studio::analyze_video_comments,
+            crate::commands::studio::studio_analyze_video_comments,
 
             // Accounts
             crate::commands::account::list_accounts,
