@@ -28,6 +28,8 @@ export interface LLMConfig {
   live_content: string;
   geo_models: GeoModelConfig[];
   geo_publish_platforms: GeoPublishPlatform[];
+  /** AI 助理：动作工具确认执行后是否额外调用 LLM 生成自然语言总结（默认 false，省配额） */
+  ai_summarize_actions?: boolean;
 }
 
 export interface HermesConfig {

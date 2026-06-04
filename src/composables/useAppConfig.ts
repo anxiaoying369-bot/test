@@ -18,6 +18,7 @@ function defaultConfig(): AppConfig {
       live_content: '',
       geo_models: [],
       geo_publish_platforms: [],
+      ai_summarize_actions: false,
     },
     hermes: {
       enabled: false,

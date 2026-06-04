@@ -9,6 +9,7 @@ import { useChat } from '../composables/useChat';
 
 const {
   sessions, currentSessionId, messages, userInput, isSending, scrollContainer, expandedAudits,
+  pendingConfirmation, confirmTool, cancelTool,
   createNewSession, selectSession, deleteSession, sendMessage, toggleAudit, copyToClipboard,
 } = useChat();
 
@@ -108,21 +109,30 @@ const navigateTo = inject('navigateTo') as (page: string, tab?: string) => void;
                   <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2 text-[10px] font-bold text-gray-500 uppercase tracking-widest">
                       <Sparkles class="w-3 h-3 text-purple-400" />
-                      Executed Tool: {{ msg.tool_used }}
+                      调用工具：{{ msg.tool_used }}
                     </div>
                     <button
-                      v-if="msg.tool_data?.audit"
+                      v-if="msg.tool_data?.calls?.length || msg.tool_data?.audit"
                       @click="toggleAudit(msg.timestamp)"
                       class="flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
                     >
                       <BarChart3 class="w-3 h-3" />
-                      {{ expandedAudits.has(msg.timestamp) ? '隐藏审计报告' : '查看审计报告' }}
+                      {{ expandedAudits.has(msg.timestamp) ? '隐藏调用详情' : '查看调用详情' }}
                       <ChevronDown :class="['w-3 h-3 transition-transform', expandedAudits.has(msg.timestamp) ? 'rotate-180' : '']" />
                     </button>
                   </div>
 
-                  <!-- 审计报告内容 -->
-                  <div v-if="expandedAudits.has(msg.timestamp) && msg.tool_data?.audit" 
+                  <!-- 调用详情：工具调用轨迹（calls） -->
+                  <div v-if="expandedAudits.has(msg.timestamp) && msg.tool_data?.calls?.length"
+                       class="mt-2 p-3 bg-gray-950 rounded-xl border border-gray-800 text-[11px] text-gray-400 font-mono leading-relaxed animate-in fade-in slide-in-from-top-1 space-y-1.5">
+                    <div v-for="(c, i) in msg.tool_data.calls" :key="i" class="break-words [word-break:break-word]">
+                      <span class="text-purple-400">🔧 {{ c.name }}</span>
+                      <span class="text-gray-600">({{ JSON.stringify(c.args) }})</span>
+                    </div>
+                  </div>
+
+                  <!-- 兼容旧的审计报告内容 -->
+                  <div v-else-if="expandedAudits.has(msg.timestamp) && msg.tool_data?.audit"
                        class="mt-2 p-3 bg-gray-950 rounded-xl border border-gray-800 text-[11px] text-gray-400 font-mono leading-relaxed animate-in fade-in slide-in-from-top-1">
                     <div class="markdown-content break-words [word-break:break-word]" v-html="marked(msg.tool_data.audit)"></div>
                   </div>
@@ -193,6 +203,52 @@ const navigateTo = inject('navigateTo') as (page: string, tab?: string) => void;
         </p>
       </div>
     </main>
+
+    <!-- ===== Phase 3：工具调用确认弹窗（支持多个动作） ===== -->
+    <Teleport to="body">
+      <div
+        v-if="pendingConfirmation"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+        @click.self="cancelTool"
+      >
+        <div class="bg-gray-900 border border-amber-500/40 rounded-2xl shadow-2xl w-[32rem] max-w-[92vw] p-6 animate-in max-h-[85vh] overflow-y-auto custom-scrollbar">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="text-2xl">⚠️</span>
+            <h3 class="text-lg font-semibold text-amber-400">
+              AI 想执行 {{ pendingConfirmation.calls.length }} 个动作
+            </h3>
+          </div>
+
+          <!-- 多动作：每条 tool_call 一段 -->
+          <div v-for="(c, idx) in pendingConfirmation.calls" :key="idx" class="mb-4 last:mb-0">
+            <p class="text-sm text-gray-400 mb-2">
+              <span class="text-gray-500">[{{ idx + 1 }}]</span>
+              工具：<code class="text-amber-300 bg-gray-800 px-2 py-0.5 rounded">{{ c.name }}</code>
+            </p>
+            <div class="bg-gray-950 border border-gray-800 rounded-xl p-3 text-xs font-mono text-gray-300 max-h-32 overflow-y-auto custom-scrollbar">
+              <pre class="whitespace-pre-wrap break-all">{{ JSON.stringify(c.args, null, 2) }}</pre>
+            </div>
+          </div>
+
+          <p class="text-xs text-gray-500 mb-5 mt-4">这些操作将真实修改你的数据。请确认是否允许 AI 执行。</p>
+
+          <div class="flex gap-3 justify-end">
+            <button
+              @click="cancelTool"
+              class="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium transition-colors"
+            >
+              拒绝全部
+            </button>
+            <button
+              @click="confirmTool"
+              class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-gray-900 text-sm font-semibold transition-colors shadow-lg shadow-amber-500/20"
+            >
+              允许执行（{{ pendingConfirmation.calls.length }}）
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 

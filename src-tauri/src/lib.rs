@@ -85,6 +85,8 @@ pub fn run() {
             crate::commands::chat::delete_chat_session,
             crate::commands::chat::send_chat_message,
             crate::commands::chat::get_chat_messages,
+            crate::commands::chat::confirm_tool_execution,
+            crate::commands::chat::cancel_tool_execution,
 
             // Hermes
             crate::commands::hermes::check_hermes_installed,

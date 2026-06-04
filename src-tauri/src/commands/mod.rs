@@ -3,6 +3,7 @@ pub mod scraper;
 pub mod knowledge_base;
 pub mod studio;
 pub mod chat;
+pub mod tools;
 pub mod hermes;
 pub mod diagnostics;
 pub mod common;

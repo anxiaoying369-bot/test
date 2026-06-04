@@ -275,7 +275,33 @@ function removeTtsVoice(index: number) {
       </div>
     </div>
 
-    <!-- 6. 语音转文字 (STT) -->
+    <!-- 6. AI 助理行为 -->
+    <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-6 shadow-xl opacity-80 hover:opacity-100 transition-opacity">
+      <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2 mb-2">
+        <Wand2 class="w-4 h-4 text-purple-500" />
+        AI 助理行为
+      </h3>
+      <label class="flex items-start justify-between gap-4 cursor-pointer select-none">
+        <div>
+          <div class="text-sm font-medium text-gray-300">动作执行后用 AI 总结结果</div>
+          <p class="text-xs text-gray-500 mt-1 leading-relaxed">
+            开启后，AI 助理确认执行采集 / 合成 / 删除等动作后，会额外调用一次大模型，把执行结果总结成自然语言反馈。
+            体验更好，但每次执行会多消耗一次 API 配额。关闭则只展示结构化要点（默认）。
+          </p>
+        </div>
+        <button
+          type="button"
+          @click="config.llm.ai_summarize_actions = !config.llm.ai_summarize_actions"
+          :class="['relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors mt-1',
+                   config.llm.ai_summarize_actions ? 'bg-purple-600' : 'bg-gray-700']"
+        >
+          <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                         config.llm.ai_summarize_actions ? 'translate-x-6' : 'translate-x-1']"></span>
+        </button>
+      </label>
+    </div>
+
+    <!-- 7. 语音转文字 (STT) -->
     <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-6 shadow-xl opacity-80 hover:opacity-100 transition-opacity">
       <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2 mb-2">
         <Mic class="w-4 h-4 text-green-500" />

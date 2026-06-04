@@ -83,6 +83,10 @@ pub struct LLMConfig {
     pub geo_models: Vec<GeoModelConfig>,
     #[serde(default)]
     pub geo_publish_platforms: Vec<GeoPublishPlatform>,
+    /// AI 助理：动作工具确认执行后，是否额外调用 LLM 生成自然语言总结。
+    /// 默认 false（省配额，仅展示结构化要点）；开启后体验更好但每次执行多一次 API 调用。
+    #[serde(default)]
+    pub ai_summarize_actions: bool,
 }
 
 fn default_embedding_model() -> String {
