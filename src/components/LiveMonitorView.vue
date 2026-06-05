@@ -3,6 +3,8 @@ import {
   Radio, StopCircle, Play, Users, MessageSquare,
   Heart, Gift, Trash2, AlertCircle, Monitor, Hash, ExternalLink
 } from 'lucide-vue-next';
+import { ref } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import type { LiveRoom } from '../types/live-monitor';
 import { useLiveMonitor } from '../composables/useLiveMonitor';
 import MessageItem from './live-monitor/MessageItem.vue';
@@ -16,10 +18,40 @@ const {
   douyinAccounts, activeRoomsCount, selectedRoom, filteredMessages,
   generateAiReply, copyToClipboard, addRoom, stopMonitor, removeRoom,
 } = useLiveMonitor(props.globalRooms);
+
+// 把弹幕里带 sec_uid 的观众一键收录到「用户信息查询」用户库
+const libraryToast = ref('');
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+function flashToast(text: string) {
+  libraryToast.value = text;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { libraryToast.value = ''; }, 2500);
+}
+async function addUserToLibrary(secUid: string) {
+  if (!selectedAccount.value) {
+    flashToast('请先在左上角选择一个抖音账号');
+    return;
+  }
+  try {
+    const card: any = await invoke('query_and_save_user', {
+      accountName: selectedAccount.value,
+      userId: secUid,
+    });
+    flashToast(`已收录：${card?.nickname || secUid.slice(0, 12)}`);
+  } catch (e: any) {
+    flashToast(`收录失败：${String(e)}`);
+  }
+}
 </script>
 
 <template>
   <div class="flex h-full bg-gray-950 text-gray-50 overflow-hidden">
+    <!-- 收录用户 toast -->
+    <div v-if="libraryToast"
+      class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-gray-800 border border-gray-700 text-sm text-gray-100 px-4 py-2 rounded-lg shadow-xl animate-in fade-in slide-in-from-bottom-2">
+      {{ libraryToast }}
+    </div>
+
     <!-- 左侧边栏：房间列表 -->
     <aside class="w-64 border-r border-gray-800 flex flex-col flex-shrink-0 bg-gray-900/50">
       <div class="p-4 border-b border-gray-800">
@@ -200,6 +232,7 @@ const {
             :aiReply="aiReplies[`${selectedRoomId}_${i}`]"
             @copy="copyToClipboard"
             @generateReply="generateAiReply(i, msg.payload.user_name, msg.payload.content || '')"
+            @addToLibrary="addUserToLibrary"
           />
         </div>
       </template>

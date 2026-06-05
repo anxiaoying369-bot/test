@@ -123,69 +123,6 @@ def _xhs_sign_path(url: str) -> str:
     return path
 
 
-class XBogus:
-    def __init__(self, user_agent: str = None) -> None:
-        self.Array = [
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None, None, None, None, None, 10, 11, 12, 13, 14, 15
-        ]
-        self.character = "Dkdpgh4ZKsQB80/Mfvw36XI1R25-WUAlEi7NLboqYTOPuzmFjJnryx9HVGcaStCe="
-        self.ua_key = b"\x00\x01\x0c"
-        self.user_agent = user_agent or DEFAULT_UA
-
-    def md5_str_to_array(self, md5_str):
-        if isinstance(md5_str, str) and len(md5_str) > 32:
-            return [ord(char) for char in md5_str]
-        else:
-            array = []
-            idx = 0
-            while idx < len(md5_str):
-                array.append((self.Array[ord(md5_str[idx])] << 4) | self.Array[ord(md5_str[idx + 1])])
-                idx += 2
-            return array
-
-    def md5_encrypt(self, url_path):
-        return self.md5_str_to_array(self.md5(self.md5_str_to_array(self.md5(url_path))))
-
-    def md5(self, input_data):
-        if isinstance(input_data, str):
-            array = self.md5_str_to_array(input_data)
-        elif isinstance(input_data, list):
-            array = input_data
-        else:
-            raise ValueError("Invalid input type")
-        md5_hash = hashlib.md5()
-        md5_hash.update(bytes(array))
-        return md5_hash.hexdigest()
-
-    def calculation(self, a1, a2, a3):
-        x3 = ((a1 & 255) << 16) | ((a2 & 255) << 8) | a3
-        return (self.character[(x3 & 16515072) >> 18] + self.character[(x3 & 258048) >> 12] +
-                self.character[(x3 & 4032) >> 6] + self.character[x3 & 63])
-
-    def getXBogus(self, url_path):
-        parsed = urlparse(url_path)
-        path = f"{parsed.path}?{parsed.query}" if parsed.query else (parsed.path or "/")
-        
-        array1 = self.md5_str_to_array(self.md5(hashlib.md5(self.user_agent.encode("ISO-8859-1")).hexdigest())) # 简化版
-        array2 = self.md5_str_to_array(self.md5(self.md5_str_to_array("d41d8cd98f00b204e9800998ecf8427e")))
-        url_path_array = self.md5_encrypt(path)
-        timer = int(time.time())
-        new_array = [64, 0, 1, 12, url_path_array[14], url_path_array[15], array2[14], array2[15], array1[14], array1[15],
-                     timer >> 24 & 255, timer >> 16 & 255, timer >> 8 & 255, timer & 255, 0, 0, 0, 0]
-        
-        xor_result = new_array[0]
-        for i in range(1, len(new_array)): xor_result ^= int(new_array[i])
-        new_array.append(xor_result)
-        
-        # 简化核心逻辑
-        return ("", "fake_xbogus_for_demo", self.user_agent) # 实际应补全计算
-
-
 async def _sign_xhs(url: str, data: Any, cookie_data: Any) -> Optional[Dict[str, str]]:
     signer_url = os.getenv("XHS_SIGNER_URL")
     if not signer_url: return None

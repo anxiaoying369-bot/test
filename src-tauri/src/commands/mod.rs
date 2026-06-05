@@ -1,5 +1,6 @@
 pub mod account;
 pub mod scraper;
+pub mod user_cards;
 pub mod knowledge_base;
 pub mod studio;
 pub mod chat;

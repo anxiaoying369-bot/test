@@ -72,6 +72,12 @@ pub fn run() {
             crate::commands::scraper::fetch_douyin_user_info,
             crate::commands::scraper::open_video_in_browser,
 
+            // User Cards (用户信息库)
+            crate::commands::user_cards::list_user_cards,
+            crate::commands::user_cards::delete_user_card,
+            crate::commands::user_cards::query_and_save_user,
+            crate::commands::user_cards::refresh_user_card,
+
             // Live Monitor
             crate::commands::live_monitor::start_live_monitor,
             crate::commands::live_monitor::stop_live_monitor,

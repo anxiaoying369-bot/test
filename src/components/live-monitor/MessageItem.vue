@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Heart, Gift, Users, Check, Wand2, Cpu } from 'lucide-vue-next';
+import { Heart, Gift, Users, Check, Wand2, Cpu, UserPlus } from 'lucide-vue-next';
 import type { LiveMessage } from '../../types/live-monitor';
 import { renderDouyinText } from '../../lib/utils';
 
@@ -12,6 +12,7 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'copy', userId: string): void;
   (e: 'generateReply'): void;
+  (e: 'addToLibrary', secUid: string): void;
 }>();
 </script>
 
@@ -29,7 +30,7 @@ const emit = defineEmits<{
             <span @click="emit('copy', msg.payload.user_id)"
               class="text-[10px] opacity-60 font-mono ml-0.5 cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1">
               ({{ msg.payload.user_id }})
-              <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
+              <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" /><button v-if="msg.payload.sec_uid" @click.stop="emit('addToLibrary', msg.payload.sec_uid!)" class="ml-1 text-cyan-500/80 hover:text-cyan-300 align-middle" title="加入用户库"><UserPlus class="w-3 h-3 inline" /></button>
             </span>
           </span>
           <span class="text-[10px] text-gray-600">{{ msg.payload.time }}</span>
@@ -79,7 +80,7 @@ const emit = defineEmits<{
             <span @click="emit('copy', msg.payload.user_id)"
               class="text-[10px] opacity-60 font-mono ml-0.5 cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1">
               ({{ msg.payload.user_id }})
-              <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
+              <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" /><button v-if="msg.payload.sec_uid" @click.stop="emit('addToLibrary', msg.payload.sec_uid!)" class="ml-1 text-cyan-500/80 hover:text-cyan-300 align-middle" title="加入用户库"><UserPlus class="w-3 h-3 inline" /></button>
             </span>
           </span>
           <span class="text-[10px] text-gray-600">{{ msg.payload.time }}</span>
@@ -103,7 +104,7 @@ const emit = defineEmits<{
             <span @click="emit('copy', msg.payload.user_id)"
               class="text-[10px] opacity-60 font-mono ml-0.5 cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1">
               ({{ msg.payload.user_id }})
-              <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
+              <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" /><button v-if="msg.payload.sec_uid" @click.stop="emit('addToLibrary', msg.payload.sec_uid!)" class="ml-1 text-cyan-500/80 hover:text-cyan-300 align-middle" title="加入用户库"><UserPlus class="w-3 h-3 inline" /></button>
             </span>
           </span>
           <span class="text-gray-500"> 连点 {{ msg.payload.count }} 个赞</span>
@@ -123,7 +124,7 @@ const emit = defineEmits<{
           <span @click="emit('copy', msg.payload.user_id)"
             class="text-[10px] opacity-60 font-mono cursor-pointer hover:opacity-100 hover:text-white transition-all bg-gray-800/50 px-1 rounded flex-inline items-center gap-1 not-italic">
             ({{ msg.payload.user_id }})
-            <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" />
+            <Check v-if="copiedId === msg.payload.user_id" class="w-2.5 h-2.5 inline text-green-400" /><button v-if="msg.payload.sec_uid" @click.stop="emit('addToLibrary', msg.payload.sec_uid!)" class="ml-1 text-cyan-500/80 hover:text-cyan-300 align-middle" title="加入用户库"><UserPlus class="w-3 h-3 inline" /></button>
           </span>
           来了
           <span class="text-[10px] text-gray-700 ml-2">{{ msg.payload.time }}</span>

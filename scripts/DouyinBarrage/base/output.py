@@ -416,14 +416,14 @@ class DataRecorder:
     """
 
     CSV_FIELDS = {
-        'chat':      ['time', 'user_id', 'user_name', 'content', 'grade', 'fans_club'],
-        'lucky_bag': ['time', 'user_id', 'user_name', 'content', 'grade', 'fans_club'],
-        'gift':     ['time', 'user_id', 'user_name', 'gift_name', 'gift_count', 'diamond_total', 'grade', 'fans_club'],
-        'like':     ['time', 'user_id', 'user_name', 'count', 'total', 'grade', 'fans_club'],
-        'member':   ['time', 'user_id', 'user_name', 'gender', 'grade', 'fans_club', 'member_count'],
-        'social':   ['time', 'user_id', 'user_name', 'action', 'follow_count', 'grade', 'fans_club'],
-        'fansclub': ['time', 'user_id', 'user_name', 'type', 'content', 'grade', 'fans_club'],
-        'emoji':    ['time', 'user_id', 'user_name', 'emoji_id', 'content', 'grade', 'fans_club'],
+        'chat':      ['time', 'user_id', 'sec_uid', 'user_name', 'content', 'grade', 'fans_club'],
+        'lucky_bag': ['time', 'user_id', 'sec_uid', 'user_name', 'content', 'grade', 'fans_club'],
+        'gift':     ['time', 'user_id', 'sec_uid', 'user_name', 'gift_name', 'gift_count', 'diamond_total', 'grade', 'fans_club'],
+        'like':     ['time', 'user_id', 'sec_uid', 'user_name', 'count', 'total', 'grade', 'fans_club'],
+        'member':   ['time', 'user_id', 'sec_uid', 'user_name', 'gender', 'grade', 'fans_club', 'member_count'],
+        'social':   ['time', 'user_id', 'sec_uid', 'user_name', 'action', 'follow_count', 'grade', 'fans_club'],
+        'fansclub': ['time', 'user_id', 'sec_uid', 'user_name', 'type', 'content', 'grade', 'fans_club'],
+        'emoji':    ['time', 'user_id', 'sec_uid', 'user_name', 'emoji_id', 'content', 'grade', 'fans_club'],
         'stats':    ['time', 'current', 'total_pv', 'total_user', 'online_anchor'],
         'roomstats':['time', 'detail', 'total'],
         'room':     ['time', 'is_top', 'room_id', 'content', 'biz_scene'],

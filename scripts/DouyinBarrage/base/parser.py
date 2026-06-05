@@ -28,6 +28,21 @@ from base.utils import (
 logger = logging.getLogger(__name__)
 
 
+def user_fields(user):
+    """统一的用户标识字段，供各类消息复用。
+
+    除数字 uid / 昵称外，额外带上 sec_uid（field 46）与 display_id（抖音号，
+    field 38）—— 这俩在弹幕协议里本就存在，用于后续「根据用户查资料」。
+    注意：并非每条消息都会填充 sec_uid（聊天常为空，进场/送礼/社交类通常有）。
+    """
+    return {
+        'user_id': get_user_id(user),
+        'user_name': user.nick_name,
+        'sec_uid': getattr(user, 'sec_uid', '') or '',
+        'display_id': getattr(user, 'display_id', '') or '',
+    }
+
+
 # ── 解析函数 ──────────────────────────────────────
 
 def parse_chat_msg(payload, enable_outputs=None):
@@ -47,7 +62,7 @@ def parse_chat_msg(payload, enable_outputs=None):
     uid = get_user_id(user)
     common = {
         'time': time.strftime('%H:%M:%S'),
-        'user_id': uid, 'user_name': user.nick_name,
+        **user_fields(user),
         'grade': fmt_grade(user), 'fans_club': fmt_fans_club(user),
     }
 
@@ -88,7 +103,7 @@ def parse_gift_msg(payload, enable_outputs=None):
         'msg': f"[礼物] {user.nick_name}[{uid}] 礼物:{gname} x{cnt}{diamond_info}",
         'data': {
             'time': time.strftime('%H:%M:%S'),
-            'user_id': uid, 'user_name': user.nick_name, 'gift_name': gname,
+            **user_fields(user), 'gift_name': gname,
             'gift_count': cnt, 'diamond_total': diamond_total,
             'grade': fmt_grade(user), 'fans_club': fmt_fans_club(user),
         },
@@ -110,7 +125,7 @@ def parse_like_msg(payload, enable_outputs=None):
         'msg': f"[点赞] {user.nick_name}[{uid}] 点赞:{msg.count}个, 累计{msg.total}赞",
         'data': {
             'time': time.strftime('%H:%M:%S'),
-            'user_id': uid, 'user_name': user.nick_name,
+            **user_fields(user),
             'count': msg.count, 'total': msg.total,
             'grade': fmt_grade(user), 'fans_club': fmt_fans_club(user),
         },
@@ -135,7 +150,7 @@ def parse_member_msg(payload, enable_outputs=None):
             'msg': f"[进场] {user.nick_name}[{uid}][{gender}] 进入了直播间{extras}",
             'data': {
                 'time': time.strftime('%H:%M:%S'),
-                'user_id': uid, 'user_name': user.nick_name, 'gender': gender,
+                **user_fields(user), 'gender': gender,
                 'grade': fmt_grade(user), 'fans_club': fmt_fans_club(user),
                 'member_count': msg.member_count,
             },
@@ -173,7 +188,7 @@ def parse_social_msg(payload, enable_outputs=None):
         'msg': f"[{action_text}] {user.nick_name}[{uid}] {action_text} {follow}",
         'data': {
             'time': time.strftime('%H:%M:%S'),
-            'user_id': uid, 'user_name': user.nick_name, 'action': action_text,
+            **user_fields(user), 'action': action_text,
             'follow_count': msg.follow_count or '',
             'grade': fmt_grade(user), 'fans_club': fmt_fans_club(user),
         },
@@ -234,7 +249,7 @@ def parse_fansclub_msg(payload, enable_outputs=None):
         'msg': f"[粉丝团] {user.nick_name}[{uid}] {t}: {msg.content}",
         'data': {
             'time': time.strftime('%H:%M:%S'),
-            'user_id': uid, 'user_name': user.nick_name,
+            **user_fields(user),
             'type': t, 'content': msg.content,
             'grade': fmt_grade(user), 'fans_club': fmt_fans_club(user),
         },
@@ -262,7 +277,7 @@ def parse_emoji_chat_msg(payload, enable_outputs=None):
         'msg': f"[表情] {user.nick_name}[{uid}]: {content}",
         'data': {
             'time': time.strftime('%H:%M:%S'),
-            'user_id': uid, 'user_name': user.nick_name,
+            **user_fields(user),
             'emoji_id': msg.emoji_id, 'content': content,
             'grade': fmt_grade(user), 'fans_club': fmt_fans_club(user),
         },

@@ -298,6 +298,39 @@ impl Default for AccountsStoreFile {
     }
 }
 
+/// 已查询并持久化的抖音用户卡片（sec_uid 为主键）。
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct UserCard {
+    pub sec_uid: String,
+    #[serde(default)]
+    pub uid: String,
+    #[serde(default)]
+    pub unique_id: String, // 抖音号
+    #[serde(default)]
+    pub nickname: String,
+    #[serde(default)]
+    pub avatar_url: String,
+    #[serde(default)]
+    pub signature: String,
+    #[serde(default)]
+    pub follower_count: i64,
+    #[serde(default)]
+    pub following_count: i64,
+    #[serde(default)]
+    pub total_favorited: i64,
+    #[serde(default)]
+    pub aweme_count: i64,
+    #[serde(default)]
+    pub ip_location: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct UserCardsStoreFile {
+    pub cards: Vec<UserCard>,
+}
+
 #[derive(Deserialize)]
 pub struct PyLoginStatus {
     pub status: String,

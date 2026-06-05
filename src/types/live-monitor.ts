@@ -12,6 +12,8 @@ export interface LiveMessage {
   time: string;
   user_name: string;
   user_id: string;
+  sec_uid?: string;     // 弹幕协议自带，可空（部分消息不填充）
+  display_id?: string;  // 抖音号
   content?: string;
   gift_name?: string;
   gift_count?: number;

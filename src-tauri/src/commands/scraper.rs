@@ -241,6 +241,25 @@ pub async fn get_scraped_comments(secUid: String, awemeId: Option<String>, limit
     Ok(result)
 }
 
+/// 尝试从输入中确定 sec_uid：仅当能高置信判定时返回 Some。
+/// - 主页链接 douyin.com/user/<sec_uid>
+/// - 直接以 MS4w 开头的 sec_uid
+/// 纯数字 uid / 抖音号 / 短链 一律返回 None（交给浏览器兜底脚本）。
+fn resolve_sec_uid(input: &str) -> Option<String> {
+    let input = input.trim();
+    if let Some(idx) = input.find("douyin.com/user/") {
+        let rest = &input[idx + "douyin.com/user/".len()..];
+        let id = rest.split('?').next().unwrap_or("").split('/').next().unwrap_or("");
+        if id.starts_with("MS4w") {
+            return Some(id.to_string());
+        }
+    }
+    if input.starts_with("MS4wLjABAAAA") {
+        return Some(input.to_string());
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn fetch_douyin_user_info(
     account_name: String,
@@ -255,24 +274,34 @@ pub async fn fetch_douyin_user_info(
         .find(|a| a.platform == "douyin" && a.name == account_name)
         .ok_or_else(|| format!("账号不存在: douyin/{}", account_name))?;
 
-    // 该脚本走浏览器(CDP)注入，优先用更完整的 cookie.json，回退 cookie.txt
     let account_dir = get_account_dir("douyin", &account_name);
-    let cookie_file = {
-        let json = account_dir.join("cookie.json");
-        if json.exists() { json } else { account_dir.join("cookie.txt") }
-    };
-    if !cookie_file.exists() {
-        return Err(format!("账号 {} 的 Cookie 文件不存在，请先在「账号管理」中授权", account_name));
+
+    let mut cmd = python_cmd();
+    if let Some(sec_uid) = resolve_sec_uid(user_id.trim()) {
+        // 快路径：签名 API，需 cookie.txt（header 字符串）
+        let cookie_txt = account_dir.join("cookie.txt");
+        if !cookie_txt.exists() {
+            return Err(format!("账号 {} 的 cookie.txt 不存在，请先在「账号管理」中授权", account_name));
+        }
+        cmd.arg(get_scripts_dir().join("douyin_user_profile.py"))
+            .arg("--cookie-path").arg(&cookie_txt)
+            .arg("--sec-uid").arg(&sec_uid);
+    } else {
+        // 兜底：浏览器(CDP)抓取，优先 cookie.json
+        let cookie_file = {
+            let json = account_dir.join("cookie.json");
+            if json.exists() { json } else { account_dir.join("cookie.txt") }
+        };
+        if !cookie_file.exists() {
+            return Err(format!("账号 {} 的 Cookie 文件不存在，请先在「账号管理」中授权", account_name));
+        }
+        cmd.arg(get_scripts_dir().join("douyin_get_user_info.py"))
+            .arg("--cookie-path").arg(&cookie_file)
+            .arg("--user-id").arg(user_id.trim())
+            .arg("--no-save");
     }
 
-    let script_path = get_scripts_dir().join("douyin_get_user_info.py");
-    let output = python_cmd()
-        .arg(&script_path)
-        .arg("--cookie-path").arg(&cookie_file)
-        .arg("--user-id").arg(user_id.trim())
-        .arg("--no-save")
-        .output().await.map_err(|e| e.to_string())?;
-
+    let output = cmd.output().await.map_err(|e| e.to_string())?;
     let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let result: serde_json::Value = serde_json::from_str(&result_str)
         .map_err(|_| {
