@@ -69,6 +69,7 @@ pub fn run() {
             crate::commands::scraper::get_scraped_comments,
             crate::commands::scraper::delete_scraped_user,
             crate::commands::scraper::resolve_user_sec_uid,
+            crate::commands::scraper::fetch_douyin_user_info,
             crate::commands::scraper::open_video_in_browser,
 
             // Live Monitor

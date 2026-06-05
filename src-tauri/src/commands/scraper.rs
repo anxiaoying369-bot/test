@@ -242,6 +242,47 @@ pub async fn get_scraped_comments(secUid: String, awemeId: Option<String>, limit
 }
 
 #[tauri::command]
+pub async fn fetch_douyin_user_info(
+    account_name: String,
+    user_id: String,
+) -> Result<serde_json::Value, String> {
+    if user_id.trim().is_empty() {
+        return Err("用户 ID 不能为空".to_string());
+    }
+
+    let store = load_accounts();
+    let _account = store.accounts.iter()
+        .find(|a| a.platform == "douyin" && a.name == account_name)
+        .ok_or_else(|| format!("账号不存在: douyin/{}", account_name))?;
+
+    // 该脚本走浏览器(CDP)注入，优先用更完整的 cookie.json，回退 cookie.txt
+    let account_dir = get_account_dir("douyin", &account_name);
+    let cookie_file = {
+        let json = account_dir.join("cookie.json");
+        if json.exists() { json } else { account_dir.join("cookie.txt") }
+    };
+    if !cookie_file.exists() {
+        return Err(format!("账号 {} 的 Cookie 文件不存在，请先在「账号管理」中授权", account_name));
+    }
+
+    let script_path = get_scripts_dir().join("douyin_get_user_info.py");
+    let output = python_cmd()
+        .arg(&script_path)
+        .arg("--cookie-path").arg(&cookie_file)
+        .arg("--user-id").arg(user_id.trim())
+        .arg("--no-save")
+        .output().await.map_err(|e| e.to_string())?;
+
+    let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let result: serde_json::Value = serde_json::from_str(&result_str)
+        .map_err(|_| {
+            let err = String::from_utf8_lossy(&output.stderr);
+            format!("结果解析失败: {} | stderr: {}", result_str, err)
+        })?;
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn open_video_in_browser(aweme_id: String, account_name: String) -> Result<(), String> {
     let platform = "douyin";
     let cookie_json = get_account_dir(platform, &account_name).join("cookie.json");

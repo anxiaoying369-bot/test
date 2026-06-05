@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
-import { MessageSquare, Users, Search, FileText, Radio, Settings, Database, Sparkles, Terminal, Film } from 'lucide-vue-next';
+import { MessageSquare, Users, Search, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, UserSearch } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
+import UserInfoView from './components/UserInfoView.vue';
 import ResultsView from './components/ResultsView.vue';
 import LiveMonitorView from './components/LiveMonitorView.vue';
 import SettingsView from './components/SettingsView.vue';
@@ -13,7 +14,7 @@ import HermesGatewayView from './components/HermesGatewayView.vue';
 import AccountsView from './components/AccountsView.vue';
 import { useLiveEvents } from './composables/useLiveEvents';
 
-type PageKey = 'chat' | 'accounts' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
+type PageKey = 'chat' | 'accounts' | 'user_info' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
 const currentPage = ref<PageKey>('chat');
 const settingsInitialTab = ref<string>('llm');
 
@@ -53,6 +54,10 @@ onMounted(initLiveEventListener);
         <a href="#" @click="currentPage = 'accounts'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'accounts' ? 'bg-gray-900' : 'text-gray-400']">
           <Users class="w-5 h-5" />
           <span>账号管理</span>
+        </a>
+        <a href="#" @click="currentPage = 'user_info'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'user_info' ? 'bg-gray-900' : 'text-gray-400']">
+          <UserSearch class="w-5 h-5 text-cyan-400" />
+          <span>用户信息查询</span>
         </a>
         <a href="#" @click="currentPage = 'scraper'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'scraper' ? 'bg-gray-900' : 'text-gray-400']">
           <Search class="w-5 h-5 text-purple-500" />
@@ -110,6 +115,11 @@ onMounted(initLiveEventListener);
 
     <!-- 主内容：账号管理 -->
     <AccountsView v-if="currentPage === 'accounts'" />
+
+    <!-- 主内容：用户信息查询 -->
+    <main v-if="currentPage === 'user_info'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
+      <UserInfoView />
+    </main>
 
     <!-- 主内容：评论采集 -->
     <main v-if="currentPage === 'scraper'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
