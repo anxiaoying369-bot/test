@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inject, onMounted, type Ref } from 'vue';
 import {
   Play, Square, RefreshCw,
   CheckCircle, XCircle, Loader2, AlertTriangle, ChevronDown
@@ -11,6 +12,17 @@ const {
   douyinAccounts, statusLabel, statusColor, progressPercent, elapsedStr,
   startScrape, cancelScrape, resetForm,
 } = useScraper();
+
+// 从「用户信息查询」点用户卡片跳转进来时，预填 sec_uid（+账号）
+const scraperPrefill = inject<Ref<{ secUid: string; account?: string } | null>>('scraperPrefill');
+onMounted(() => {
+  const p = scraperPrefill?.value;
+  if (p?.secUid) {
+    secUid.value = p.secUid;
+    if (p.account) selectedAccount.value = p.account;
+    scraperPrefill!.value = null; // 用后即清，避免下次进来仍带旧值
+  }
+});
 
 const typeOptions = [
   { value: 'all', label: '全量（作品+评论+回复）' },

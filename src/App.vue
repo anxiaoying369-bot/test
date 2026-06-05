@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
-import { MessageSquare, Users, Search, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, UserSearch } from 'lucide-vue-next';
+import { MessageSquare, Users, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, UserSearch } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import UserInfoView from './components/UserInfoView.vue';
 import ResultsView from './components/ResultsView.vue';
@@ -27,6 +27,10 @@ function navigateTo(page: PageKey, settingsTab?: string) {
 
 provide('navigateTo', navigateTo);
 provide('settingsInitialTab', settingsInitialTab);
+
+// 从「用户信息查询」点用户卡片进入评论采集时，携带 sec_uid（+账号）预填
+const scraperPrefill = ref<{ secUid: string; account?: string } | null>(null);
+provide('scraperPrefill', scraperPrefill);
 
 const { liveMonitorRooms, initLiveEventListener } = useLiveEvents();
 
@@ -58,10 +62,6 @@ onMounted(initLiveEventListener);
         <a href="#" @click="currentPage = 'user_info'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'user_info' ? 'bg-gray-900' : 'text-gray-400']">
           <UserSearch class="w-5 h-5 text-cyan-400" />
           <span>用户信息查询</span>
-        </a>
-        <a href="#" @click="currentPage = 'scraper'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'scraper' ? 'bg-gray-900' : 'text-gray-400']">
-          <Search class="w-5 h-5 text-purple-500" />
-          <span>评论采集</span>
         </a>
         <a href="#" @click="currentPage = 'results'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'results' ? 'bg-gray-900' : 'text-gray-400']">
           <FileText class="w-5 h-5 text-green-500" />

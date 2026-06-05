@@ -1,11 +1,22 @@
 <script setup lang="ts">
-import { Search, Loader2, RefreshCw, Copy, ChevronDown, UserX, Trash2, Users } from 'lucide-vue-next';
-import { useUserInfo } from '../composables/useUserInfo';
+import { inject, type Ref } from 'vue';
+import { Search, Loader2, RefreshCw, Copy, ChevronDown, UserX, Trash2, Users, MessageSquare } from 'lucide-vue-next';
+import { useUserInfo, type UserCard } from '../composables/useUserInfo';
 
 const {
   selectedAccount, input, loading, error, cards, refreshingSecUid,
   douyinAccounts, queryUser, refreshCard, deleteCard,
 } = useUserInfo();
+
+// 点用户卡片 → 跳转「评论采集」并预填该用户 sec_uid
+const navigateTo = inject<(page: string) => void>('navigateTo');
+const scraperPrefill = inject<Ref<{ secUid: string; account?: string } | null>>('scraperPrefill');
+function openScraper(card: UserCard) {
+  if (scraperPrefill) {
+    scraperPrefill.value = { secUid: card.sec_uid, account: selectedAccount.value || undefined };
+  }
+  navigateTo?.('scraper');
+}
 
 function formatCount(n?: number): string {
   const v = n ?? 0;
@@ -70,8 +81,9 @@ async function copyText(text?: string) {
 
     <!-- 卡片网格 -->
     <div v-if="cards.length" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-      <div v-for="card in cards" :key="card.sec_uid"
-        class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden flex flex-col">
+      <div v-for="card in cards" :key="card.sec_uid" @click="openScraper(card)"
+        class="group bg-gray-900 rounded-xl border border-gray-800 hover:border-blue-600/60 hover:bg-gray-900/80 overflow-hidden flex flex-col cursor-pointer transition-colors"
+        title="点击采集 TA 的评论">
         <!-- 头部 -->
         <div class="flex items-start gap-3 p-4">
           <img v-if="card.avatar_url" :src="card.avatar_url" alt="avatar"
@@ -85,12 +97,12 @@ async function copyText(text?: string) {
             <div v-if="card.ip_location" class="text-[11px] text-gray-500 mt-0.5">{{ card.ip_location }}</div>
           </div>
           <div class="flex flex-col gap-1.5 flex-shrink-0">
-            <button @click="refreshCard(card.sec_uid)" :disabled="refreshingSecUid === card.sec_uid"
+            <button @click.stop="refreshCard(card.sec_uid)" :disabled="refreshingSecUid === card.sec_uid"
               class="text-gray-500 hover:text-blue-400 disabled:opacity-50" title="刷新">
               <Loader2 v-if="refreshingSecUid === card.sec_uid" class="w-4 h-4 animate-spin" />
               <RefreshCw v-else class="w-4 h-4" />
             </button>
-            <button @click="deleteCard(card.sec_uid)" class="text-gray-500 hover:text-red-400" title="移除">
+            <button @click.stop="deleteCard(card.sec_uid)" class="text-gray-500 hover:text-red-400" title="移除">
               <Trash2 class="w-4 h-4" />
             </button>
           </div>
@@ -121,10 +133,16 @@ async function copyText(text?: string) {
           <div class="flex items-center gap-2 bg-gray-950 rounded-lg border border-gray-800 px-2.5 py-1.5">
             <span class="text-[10px] text-gray-500 flex-shrink-0">sec_uid</span>
             <span class="text-[11px] text-gray-300 font-mono truncate flex-1">{{ card.sec_uid }}</span>
-            <button @click="copyText(card.sec_uid)" class="text-gray-500 hover:text-blue-400 flex-shrink-0" title="复制">
+            <button @click.stop="copyText(card.sec_uid)" class="text-gray-500 hover:text-blue-400 flex-shrink-0" title="复制">
               <Copy class="w-3 h-3" />
             </button>
           </div>
+        </div>
+
+        <!-- 点击提示 -->
+        <div class="mt-auto px-4 py-2 border-t border-gray-800/80 flex items-center gap-1.5 text-[11px] text-gray-500 group-hover:text-blue-400 transition-colors">
+          <MessageSquare class="w-3 h-3" />
+          点击采集 TA 的评论 →
         </div>
       </div>
     </div>
