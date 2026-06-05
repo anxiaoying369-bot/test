@@ -93,7 +93,12 @@ async function copyText(text?: string) {
           </div>
           <div class="min-w-0 flex-1">
             <div class="font-bold truncate">{{ card.nickname || '（无昵称）' }}</div>
-            <div v-if="card.unique_id" class="text-xs text-gray-400 mt-0.5">抖音号：{{ card.unique_id }}</div>
+            <div v-if="card.unique_id" class="flex items-center gap-1 text-xs text-gray-400 mt-0.5">
+              <span class="truncate">抖音号：{{ card.unique_id }}</span>
+              <button @click.stop="copyText(card.unique_id)" class="text-gray-500 hover:text-blue-400 flex-shrink-0" title="复制抖音号">
+                <Copy class="w-3 h-3" />
+              </button>
+            </div>
             <div v-if="card.ip_location" class="text-[11px] text-gray-500 mt-0.5">{{ card.ip_location }}</div>
           </div>
           <div class="flex flex-col gap-1.5 flex-shrink-0">
