@@ -3,7 +3,7 @@ import { computed } from 'vue';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import {
   Film, FileText, Tag, Settings2, Sparkles, Loader2, Plus, X,
-  RefreshCw, ArrowRight, ArrowLeft, Wand2, Upload, FolderOpen, CheckCircle2, AlertTriangle,
+  RefreshCw, ArrowRight, ArrowLeft, Wand2, Upload, FolderOpen, CheckCircle2, AlertTriangle, Volume2,
 } from 'lucide-vue-next';
 
 import ProjectSidebar from './video-studio/Sidebar.vue';
@@ -19,11 +19,11 @@ const {
   terms, newTerm, isGeneratingTerms,
   videoSource, voiceName, voiceRate, subtitleEnabled, subtitleProvider, subtitlePosition,
   textForeColor, strokeColor, fontSize, bgmType, bgmVolume, clipDuration, concatMode, videoCount,
-  selectedLocalMaterialIds,
+  selectedLocalMaterialIds, isPreviewingVoice,
   isGenerating, progress, stageLabel, finalVideoPath, errorMsg,
   canProceedFromScript, canGenerate,
   generateScript, confirmScriptStep, generateTerms, addTerm, removeTerm,
-  uploadLocalMaterial, toggleLocalMaterial, startGenerate,
+  uploadLocalMaterial, toggleLocalMaterial, previewVoice, startGenerate,
 } = vm;
 
 const STEPS = [
@@ -147,6 +147,9 @@ const openInFinder = async () => {
           <div>
             <h3 class="text-base font-bold text-white">素材搜索关键词</h3>
             <p class="text-xs text-gray-500 mt-1">用于在 Pexels 素材库检索匹配画面。可增删，建议 3–6 个。</p>
+            <p class="text-[11px] text-amber-400/80 mt-1.5 flex items-center gap-1">
+              <AlertTriangle class="w-3.5 h-3.5 shrink-0" />Pexels 素材库以英文索引，关键词请尽量用英文（「AI 生成关键词」会自动产出英文），中文命中率很低。
+            </p>
           </div>
           <div class="flex flex-wrap gap-2">
             <span v-for="t in terms" :key="t" class="flex items-center gap-1.5 bg-blue-600/15 border border-blue-500/30 text-blue-200 px-3 py-1.5 rounded-lg text-sm">
@@ -209,9 +212,15 @@ const openInFinder = async () => {
           <div class="grid grid-cols-2 gap-4">
             <div>
               <label class="text-xs text-gray-400 font-medium">配音音色（Edge TTS · 免费）</label>
-              <select v-model="voiceName" class="mt-1.5 w-full bg-gray-900 border border-gray-800 rounded-xl px-3 py-2.5 text-sm">
-                <option v-for="v in EDGE_VOICES" :key="v.id" :value="v.id">{{ v.name }}</option>
-              </select>
+              <div class="mt-1.5 flex gap-2">
+                <select v-model="voiceName" class="flex-1 bg-gray-900 border border-gray-800 rounded-xl px-3 py-2.5 text-sm">
+                  <option v-for="v in EDGE_VOICES" :key="v.id" :value="v.id">{{ v.name }}</option>
+                </select>
+                <button @click="previewVoice" :disabled="isPreviewingVoice" title="试听该音色"
+                  class="shrink-0 px-3 rounded-xl border border-gray-700 hover:border-blue-500 hover:text-blue-300 disabled:opacity-50 flex items-center gap-1.5 text-sm">
+                  <Loader2 v-if="isPreviewingVoice" class="w-4 h-4 animate-spin" /><Volume2 v-else class="w-4 h-4" />试听
+                </button>
+              </div>
             </div>
             <div>
               <label class="text-xs text-gray-400 font-medium">语速 {{ voiceRate.toFixed(2) }}x</label>

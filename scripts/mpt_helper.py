@@ -3,11 +3,13 @@
 AutoCast AI · MPT 引擎辅助命令（不跑完整生成）。
 
 目前支持：
-  terms   根据主题 + 脚本生成素材搜索关键词（Pexels 检索用），输出 JSON 到 stdout。
+  terms     根据主题 + 脚本生成素材搜索关键词（Pexels 检索用），输出 JSON 到 stdout。
+  preview   用 Edge TTS 合成一段示例音频，供前端试听音色，输出 mp3 路径到 stdout。
 
-由 Rust 命令在「关键词」步骤调用：
-    python scripts/mpt_helper.py terms --params <params.json>
-params.json 至少包含 video_subject / video_script / amount，配置经 MPT_CONFIG 环境变量注入。
+由 Rust 命令调用：
+    python scripts/mpt_helper.py terms   --params <params.json>
+    python scripts/mpt_helper.py preview --params <params.json>
+params.json 视命令而定；配置经 MPT_CONFIG 环境变量注入。
 """
 
 import argparse
@@ -38,9 +40,43 @@ def cmd_terms(data: dict):
     _emit({"status": "ok", "terms": terms})
 
 
+def _sample_text_for(voice_name: str) -> str:
+    # 英文音色用英文示例，其它（中文/粤语/方言）统一用中文示例。
+    if voice_name.lower().startswith("en"):
+        return "Hello, this is a quick voice preview for your video."
+    return "你好，这是配音音色的试听效果，用于预览这条视频的声音。"
+
+
+def cmd_preview(data: dict):
+    import os
+    from app.services import voice as voice_service
+    from app.utils import utils
+
+    voice_name = (data.get("voice_name") or "zh-CN-XiaoxiaoNeural-Female").strip()
+    text = (data.get("text") or "").strip() or _sample_text_for(voice_name)
+
+    out_dir = os.path.join(utils.storage_dir(), "previews")
+    os.makedirs(out_dir, exist_ok=True)
+    safe = voice_name.replace(":", "_").replace("/", "_")
+    out_file = os.path.join(out_dir, f"{safe}.mp3")
+
+    # 同音色已合成过则直接复用缓存，让试听更快。
+    if not (os.path.exists(out_file) and os.path.getsize(out_file) > 0):
+        sub = voice_service.tts(
+            text=text,
+            voice_name=voice_service.parse_voice_name(voice_name),
+            voice_rate=1.0,
+            voice_file=out_file,
+        )
+        if sub is None or not (os.path.exists(out_file) and os.path.getsize(out_file) > 0):
+            raise RuntimeError("配音试听生成失败，请检查网络（Edge TTS 需要联网）。")
+
+    _emit({"status": "ok", "path": out_file})
+
+
 def main():
     parser = argparse.ArgumentParser(description="AutoCast AI MPT helper")
-    parser.add_argument("action", choices=["terms"])
+    parser.add_argument("action", choices=["terms", "preview"])
     parser.add_argument("--params", required=True)
     args = parser.parse_args()
 
@@ -54,6 +90,8 @@ def main():
     try:
         if args.action == "terms":
             cmd_terms(data)
+        elif args.action == "preview":
+            cmd_preview(data)
     except Exception as e:
         try:
             from provider_errors import classify_exception

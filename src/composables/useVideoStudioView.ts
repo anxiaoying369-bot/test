@@ -1,5 +1,5 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import { useVideoProjects, useVideoMaterials } from './useVideoStudio';
@@ -88,6 +88,8 @@ export function useVideoStudioView() {
   const concatMode = ref<'random' | 'sequential'>('random');
   const videoCount = ref(1);
   const selectedLocalMaterialIds = ref<string[]>([]);
+  const isPreviewingVoice = ref(false);
+  let previewAudio: HTMLAudioElement | null = null;
 
   // ── 步骤 4：生成 ──
   const isGenerating = ref(false);
@@ -187,14 +189,11 @@ export function useVideoStudioView() {
         feedback: isFeedback ? scriptFeedback.value : null,
       });
       rawScriptJson.value = json;
-      // 从结构化脚本里取「口播文案」作为纯文案，并预填「建议素材关键词」
+      // 只取「口播文案」作为纯文案。素材关键词不从这里预填：Pexels 素材库以英文索引，
+      // 中文关键词命中率极低，因此关键词统一由「关键词」步骤的英文生成器产出。
       try {
         const data = JSON.parse(json);
         scriptText.value = (data['口播文案'] || data['表演脚本'] || '').toString().trim();
-        const sug = data['建议素材关键词'] || data['核心卖点关键词'] || [];
-        if (Array.isArray(sug) && terms.value.length === 0) {
-          terms.value = sug.map((s: any) => String(s).trim()).filter(Boolean);
-        }
       } catch {
         scriptText.value = json;
       }
@@ -263,6 +262,22 @@ export function useVideoStudioView() {
     const i = selectedLocalMaterialIds.value.indexOf(id);
     if (i >= 0) selectedLocalMaterialIds.value.splice(i, 1);
     else selectedLocalMaterialIds.value.push(id);
+  };
+
+  // 音色试听：用 Edge TTS 合成一小段示例音频并播放（首个音色合成后会缓存）。
+  const previewVoice = async () => {
+    if (isPreviewingVoice.value) return;
+    isPreviewingVoice.value = true;
+    try {
+      const path = await invoke<string>('video_mpt_preview_voice', { voiceName: voiceName.value });
+      if (previewAudio) { previewAudio.pause(); previewAudio = null; }
+      previewAudio = new Audio(convertFileSrc(path));
+      await previewAudio.play();
+    } catch (e) {
+      alert('试听失败：' + e);
+    } finally {
+      isPreviewingVoice.value = false;
+    }
   };
 
   // ── 步骤 4：生成 ──
@@ -361,13 +376,13 @@ export function useVideoStudioView() {
     // options
     videoSource, voiceName, voiceRate, subtitleEnabled, subtitleProvider, fontName,
     subtitlePosition, textForeColor, strokeColor, fontSize, bgmType, bgmVolume,
-    clipDuration, concatMode, videoCount, selectedLocalMaterialIds,
+    clipDuration, concatMode, videoCount, selectedLocalMaterialIds, isPreviewingVoice,
     // generate
     isGenerating, progress, stageLabel, finalVideoPath, errorMsg,
     // computed
     canProceedFromScript, canGenerate,
     // methods
     generateScript, confirmScriptStep, generateTerms, addTerm, removeTerm,
-    uploadLocalMaterial, toggleLocalMaterial, startGenerate, saveProjectConfig,
+    uploadLocalMaterial, toggleLocalMaterial, previewVoice, startGenerate, saveProjectConfig,
   };
 }

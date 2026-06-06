@@ -142,6 +142,7 @@ pub fn run() {
             // Video Studio · MoneyPrinterTurbo 引擎（素材拼接成片，取代旧 AI 生成式视频链路）
             crate::commands::video_studio::mpt::video_mpt_generate,
             crate::commands::video_studio::mpt::video_mpt_generate_terms,
+            crate::commands::video_studio::mpt::video_mpt_preview_voice,
 
             // Video Studio Rendering
             crate::commands::video_studio::rendering::video_test_ffmpeg,
