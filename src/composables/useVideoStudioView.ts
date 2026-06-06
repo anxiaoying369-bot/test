@@ -1,13 +1,11 @@
-import { ref, onMounted, computed, watch } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-import type { VideoMaterial } from '../types/video-studio';
 import { useVideoProjects, useVideoMaterials } from './useVideoStudio';
-import { useVideoTasks } from './useVideoTasks';
 import { useSettings } from './useSettings';
 
-// ============ Constants ============
+// ============ 常量 ============
 export const PLATFORM_OPTIONS = [
   { id: 'douyin', label: '抖音', emoji: '🎵', desc: '快节奏，前 3 秒钩子，强互动' },
   { id: 'kuaishou', label: '快手', emoji: '🧡', desc: '接地气，老铁味，高性价比感' },
@@ -15,124 +13,191 @@ export const PLATFORM_OPTIONS = [
   { id: 'wechat-channel', label: '视频号', emoji: '📽️', desc: '朋友圈调性，信任感，叙述稳重' },
 ];
 
-export const SCRIPT_TYPE_OPTIONS = [
-  { id: 'voiceover', label: '口播带货', desc: '生成专业脚本 + TTS 合成旁白 + 素材拼接' },
-  { id: 'ai-video', label: 'AI 视频流', desc: '生成脚本 + 分镜提示词 + AI 引擎生成画面' },
+export const ASPECT_OPTIONS = [
+  { id: '9:16', label: '竖屏 9:16', hint: '抖音/快手/视频号' },
+  { id: '16:9', label: '横屏 16:9', hint: '西瓜/B站/横版' },
+  { id: '1:1', label: '方形 1:1', hint: '朋友圈/部分信息流' },
 ];
 
-export const IMAGE_SIZE_PRESETS = [
-  { id: '720x1280', label: '竖屏 (9:16)' },
-  { id: '1280x720', label: '横屏 (16:9)' },
-  { id: '1024x1024', label: '方形 (1:1)' },
+// edge-tts 常用音色（免费，无需 API Key）。命名格式与 MPT 引擎一致：<voice>-<Gender>
+export const EDGE_VOICES = [
+  { id: 'zh-CN-XiaoxiaoNeural-Female', name: '晓晓（女·温柔）' },
+  { id: 'zh-CN-XiaoyiNeural-Female', name: '晓伊（女·亲和）' },
+  { id: 'zh-CN-YunxiNeural-Male', name: '云希（男·阳光）' },
+  { id: 'zh-CN-YunjianNeural-Male', name: '云健（男·浑厚）' },
+  { id: 'zh-CN-YunyangNeural-Male', name: '云扬（男·专业）' },
+  { id: 'zh-CN-YunxiaNeural-Male', name: '云夏（男·少年）' },
+  { id: 'zh-CN-liaoning-XiaobeiNeural-Female', name: '晓北（东北女声）' },
+  { id: 'zh-HK-HiuGaaiNeural-Female', name: '曉佳（粤语女）' },
+  { id: 'zh-TW-HsiaoChenNeural-Female', name: '曉臻（台湾女）' },
+  { id: 'en-US-AvaNeural-Female', name: 'Ava（英·女）' },
+  { id: 'en-US-AndrewNeural-Male', name: 'Andrew（英·男）' },
+  { id: 'en-US-EmmaNeural-Female', name: 'Emma（英·女）' },
+  { id: 'en-US-BrianNeural-Male', name: 'Brian（英·男）' },
 ];
+
+export const BGM_OPTIONS = [
+  { id: 'random', label: '随机背景音乐' },
+  { id: '', label: '不加背景音乐' },
+];
+
+export const SUBTITLE_PROVIDER_OPTIONS = [
+  { id: 'edge', label: 'Edge（快速·免费·默认）' },
+  { id: 'whisper', label: 'Whisper（更精准·需下模型）' },
+];
+
+export type StudioStep = 'script' | 'keywords' | 'options' | 'generate';
 
 export function useVideoStudioView() {
-  const activeTab = ref<'script' | 'material' | 'export'>('script');
+  const step = ref<StudioStep>('script');
   const { projects, currentProject, loadProjects, createProject, selectProject, deleteProject } = useVideoProjects();
   const { materials, isUploadingMaterial, loadMaterials, uploadMaterial, deleteMaterial } = useVideoMaterials();
-  const { activeTasks } = useVideoTasks();
   const { config: appConfig, loadSettings } = useSettings();
 
-  // Material lists
-  const audioMaterials = computed(() => materials.value.filter(m => m.material_type === 'audio'));
-  const imageMaterials = computed(() => materials.value.filter(m => m.material_type === 'image'));
   const videoMaterials = computed(() => materials.value.filter(m => m.material_type === 'video'));
 
-  // Script State
+  // ── 步骤 1：脚本 ──
   const productInfo = ref('');
   const referenceScript = ref('');
-  const generatedScript = ref('');
+  const scriptText = ref('');           // 喂给 MPT 的纯口播文案（可编辑）
+  const rawScriptJson = ref('');        // video_generate_script 的原始 JSON（用于反馈迭代）
   const scriptFeedback = ref('');
   const isGeneratingScript = ref(false);
-  const scriptConfirmed = ref(false);
   const selectedPlatform = ref('douyin');
-  const selectedScriptType = ref<'voiceover' | 'ai-video'>('voiceover');
-  const videoRatio = ref('9:16');
+  const videoAspect = ref('9:16');
 
-  // TTS State
-  const ttsVoiceId = ref('');
-  const ttsSpeed = ref(1.0);
-  const isSynthesizingVoice = ref(false);
-  const isLoadingVoices = ref(false);
-  const availableVoices = ref<any[]>([]);
-  const latestVoiceoverPath = ref<string | null>(null);
+  // ── 步骤 2：关键词 ──
+  const terms = ref<string[]>([]);
+  const newTerm = ref('');
+  const isGeneratingTerms = ref(false);
 
-  // Export State
-  const exportSelectedAudio = ref<string | null>(null);
-  const exportSelectedImages = ref<string[]>([]);
-  const exportSelectedVideos = ref<string[]>([]);
-  const isExporting = ref(false);
-  const burnSubtitle = ref(false);
+  // ── 步骤 3：参数 ──
+  const videoSource = ref<'pexels' | 'local'>('pexels');
+  const voiceName = ref('zh-CN-XiaoxiaoNeural-Female');
+  const voiceRate = ref(1.0);
+  const subtitleEnabled = ref(true);
+  const subtitleProvider = ref('edge');
+  const fontName = ref('STHeitiMedium.ttc');
+  const subtitlePosition = ref('bottom');
+  const textForeColor = ref('#FFFFFF');
+  const strokeColor = ref('#000000');
+  const fontSize = ref(60);
+  const bgmType = ref('random');
+  const bgmVolume = ref(0.2);
+  const clipDuration = ref(5);
+  const concatMode = ref<'random' | 'sequential'>('random');
+  const videoCount = ref(1);
+  const selectedLocalMaterialIds = ref<string[]>([]);
 
-  // Modal States
-  const showImageGenModal = ref(false);
-  const imageGenPrompt = ref('');
-  const imageGenRefPath = ref('');
-  const imageGenProvider = ref('fal');
-  const imageGenSize = ref('720x1280');
-  const isGeneratingImage = ref(false);
+  // ── 步骤 4：生成 ──
+  const isGenerating = ref(false);
+  const progress = ref(0);
+  const stageLabel = ref('');
+  const finalVideoPath = ref<string | null>(null);
+  const errorMsg = ref('');
 
-  const showReferencePicker = ref(false);
-  const referenceImageId = ref('');
-  const showNoReferenceWarning = ref(false);
+  let unlistenProgress: UnlistenFn | null = null;
 
-  const previewMaterial = ref<VideoMaterial | null>(null);
-  const previewZoom = ref(1);
-  const previewOffset = ref({ x: 0, y: 0 });
-  const isDragging = ref(false);
-
-  // ============ Logic ============
   onMounted(async () => {
     await loadProjects();
     await loadSettings();
+    // 用设置页的默认值初始化参数
+    const v = appConfig.value?.video || {};
+    if (v.mpt_voice_name) voiceName.value = v.mpt_voice_name;
+    if (v.mpt_subtitle_provider) subtitleProvider.value = v.mpt_subtitle_provider;
+    unlistenProgress = await listen<any>('video-mpt-progress', (event) => {
+      const p = event.payload || {};
+      progress.value = p.progress ?? progress.value;
+      if (p.stage) stageLabel.value = p.stage;
+    });
+  });
+
+  onUnmounted(() => {
+    if (unlistenProgress) unlistenProgress();
   });
 
   watch(currentProject, async (newVal) => {
+    // 切项目时重置流程与已恢复的配置
+    step.value = 'script';
+    finalVideoPath.value = null;
+    errorMsg.value = '';
+    progress.value = 0;
     if (newVal) {
       await loadMaterials(newVal.id);
-      // Restore script from config
-      const cfg = newVal.config?.script || {};
+      const cfg = newVal.config?.mpt || {};
       productInfo.value = cfg.productInfo || '';
       referenceScript.value = cfg.referenceScript || '';
-      generatedScript.value = cfg.generatedScript || '';
-      scriptConfirmed.value = cfg.scriptConfirmed || false;
+      scriptText.value = cfg.scriptText || '';
+      rawScriptJson.value = cfg.rawScriptJson || '';
       selectedPlatform.value = cfg.selectedPlatform || 'douyin';
-      selectedScriptType.value = cfg.selectedScriptType || 'voiceover';
-      videoRatio.value = cfg.videoRatio || '9:16';
-      // 恢复已确认脚本的项目时，自动加载音色（无需手动刷新）
-      if (scriptConfirmed.value) loadVoices();
+      videoAspect.value = cfg.videoAspect || '9:16';
+      terms.value = Array.isArray(cfg.terms) ? cfg.terms : [];
+      videoSource.value = cfg.videoSource || 'pexels';
+      voiceName.value = cfg.voiceName || appConfig.value?.video?.mpt_voice_name || 'zh-CN-XiaoxiaoNeural-Female';
+      voiceRate.value = cfg.voiceRate ?? 1.0;
+      subtitleEnabled.value = cfg.subtitleEnabled ?? true;
+      subtitleProvider.value = cfg.subtitleProvider || appConfig.value?.video?.mpt_subtitle_provider || 'edge';
+      bgmType.value = cfg.bgmType ?? 'random';
+      clipDuration.value = cfg.clipDuration ?? 5;
+      concatMode.value = cfg.concatMode || 'random';
+      videoCount.value = cfg.videoCount ?? 1;
+      if (newVal.final_video_path) finalVideoPath.value = newVal.final_video_path;
     }
   });
 
   const saveProjectConfig = async () => {
     if (!currentProject.value) return;
-    const scriptCfg = {
+    const mpt = {
       productInfo: productInfo.value,
       referenceScript: referenceScript.value,
-      generatedScript: generatedScript.value,
-      scriptConfirmed: scriptConfirmed.value,
+      scriptText: scriptText.value,
+      rawScriptJson: rawScriptJson.value,
       selectedPlatform: selectedPlatform.value,
-      selectedScriptType: selectedScriptType.value,
-      videoRatio: videoRatio.value,
+      videoAspect: videoAspect.value,
+      terms: terms.value,
+      videoSource: videoSource.value,
+      voiceName: voiceName.value,
+      voiceRate: voiceRate.value,
+      subtitleEnabled: subtitleEnabled.value,
+      subtitleProvider: subtitleProvider.value,
+      bgmType: bgmType.value,
+      clipDuration: clipDuration.value,
+      concatMode: concatMode.value,
+      videoCount: videoCount.value,
     };
-    currentProject.value.config = { ...currentProject.value.config, script: scriptCfg };
+    currentProject.value.config = { ...currentProject.value.config, mpt };
     await invoke('video_upsert_project', { project: currentProject.value });
   };
 
+  // ── 步骤 1：脚本 ──
   const generateScript = async (isFeedback: boolean) => {
+    if (!productInfo.value.trim()) {
+      alert('请先填写要做的主题/产品信息');
+      return;
+    }
     isGeneratingScript.value = true;
     try {
-      const script = await invoke<string>('video_generate_script', {
+      const json = await invoke<string>('video_generate_script', {
         product: productInfo.value,
-        referenceScript: referenceScript.value,
-        videoRatio: videoRatio.value,
+        referenceScript: referenceScript.value || null,
+        videoRatio: videoAspect.value,
         platform: selectedPlatform.value,
-        scriptType: selectedScriptType.value,
-        previousScript: isFeedback ? generatedScript.value : null,
+        scriptType: 'voiceover',
+        previousScript: isFeedback ? rawScriptJson.value : null,
         feedback: isFeedback ? scriptFeedback.value : null,
       });
-      generatedScript.value = script;
-      scriptConfirmed.value = false;
+      rawScriptJson.value = json;
+      // 从结构化脚本里取「口播文案」作为纯文案，并预填「建议素材关键词」
+      try {
+        const data = JSON.parse(json);
+        scriptText.value = (data['口播文案'] || data['表演脚本'] || '').toString().trim();
+        const sug = data['建议素材关键词'] || data['核心卖点关键词'] || [];
+        if (Array.isArray(sug) && terms.value.length === 0) {
+          terms.value = sug.map((s: any) => String(s).trim()).filter(Boolean);
+        }
+      } catch {
+        scriptText.value = json;
+      }
       await saveProjectConfig();
     } catch (e) {
       alert('生成脚本失败: ' + e);
@@ -141,254 +206,168 @@ export function useVideoStudioView() {
     }
   };
 
-  const resetScriptFlow = () => {
-    if (!confirm('确定要清除当前脚本并重新输入吗？')) return;
-    generatedScript.value = '';
-    scriptConfirmed.value = false;
-    scriptFeedback.value = '';
-    saveProjectConfig();
-  };
-
-  const confirmScript = () => {
-    scriptConfirmed.value = true;
-    saveProjectConfig();
-    // 进入 TTS 步骤时自动加载音色列表，无需手动刷新
-    loadVoices();
-  };
-
-  // 用户手动编辑脚本后保存（JSON 字符串）
-  const saveScript = (json: string) => {
-    generatedScript.value = json;
-    saveProjectConfig();
-  };
-
-  const loadVoices = async () => {
-    isLoadingVoices.value = true;
-    try {
-      // 先拉最新配置，避免用户在设置页改了音色/Provider 后这里还是旧值
-      await loadSettings();
-      // 只显示用户在设置页自定义的音色组（不再合并 Provider 内置音色）
-      availableVoices.value = (appConfig.value.video.tts_voices || [])
-        .filter((v: any) => v.voice_id)
-        .map((v: any) => ({ id: v.voice_id, name: v.name || v.voice_id }));
-
-      if (availableVoices.value.length > 0 && !ttsVoiceId.value) {
-        const def = appConfig.value.video.default_tts_voice;
-        ttsVoiceId.value = (def && availableVoices.value.some((v: any) => v.id === def))
-          ? def
-          : availableVoices.value[0].id;
-      }
-    } finally {
-      isLoadingVoices.value = false;
-    }
-  };
-
-  const synthesizeVoice = async () => {
-    if (!currentProject.value) return;
-
-    // 优先取「表演脚本」字段用于 TTS，该字段包含语气/声调标注
-    // 如果没有，则退而求其次取「口播文案」
-    let voiceText = '';
-    try {
-      const data = JSON.parse(generatedScript.value);
-      voiceText = (data['表演脚本'] || data['口播文案'] || '').toString().trim();
-    } catch {
-      voiceText = '';
-    }
-    if (!voiceText) {
-      alert('脚本中没有可用的口播内容，无法合成。请重新生成脚本。');
+  const confirmScriptStep = async () => {
+    if (!scriptText.value.trim()) {
+      alert('请先生成或填写口播文案');
       return;
     }
+    await saveProjectConfig();
+    // pexels 模式需要关键词；本地素材模式直接跳到参数步
+    if (videoSource.value === 'local') {
+      step.value = 'options';
+    } else {
+      step.value = 'keywords';
+      if (terms.value.length === 0) await generateTerms();
+    }
+  };
 
-    isSynthesizingVoice.value = true;
+  // ── 步骤 2：关键词 ──
+  const generateTerms = async () => {
+    isGeneratingTerms.value = true;
     try {
-      // 合成前刷新配置，确保用的是设置页最新的 Provider / Base URL / 模型
-      await loadSettings();
-      const path = await invoke<string>('tts_synthesize', {
-        projectId: currentProject.value.id,
-        text: voiceText,
-        voiceId: ttsVoiceId.value,
-        speed: ttsSpeed.value,
-        provider: appConfig.value.video.tts_provider,
-        apiKey: appConfig.value.video.tts_api_key,
-        baseUrl: appConfig.value.video.tts_base_url,
-        model: appConfig.value.video.tts_model,
+      const result = await invoke<string[]>('video_mpt_generate_terms', {
+        videoSubject: productInfo.value,
+        videoScript: scriptText.value,
+        amount: 5,
       });
-      latestVoiceoverPath.value = path;
-      // 重新加载素材库，确保音频出现在素材列表
-      await loadMaterials(currentProject.value.id);
+      terms.value = result;
+      await saveProjectConfig();
     } catch (e) {
-      alert('合成失败: ' + e);
+      alert('关键词生成失败: ' + e);
     } finally {
-      isSynthesizingVoice.value = false;
+      isGeneratingTerms.value = false;
     }
   };
 
-  const startExportRender = async () => {
+  const addTerm = () => {
+    const t = newTerm.value.trim();
+    if (t && !terms.value.includes(t)) {
+      terms.value.push(t);
+      newTerm.value = '';
+      saveProjectConfig();
+    }
+  };
+
+  const removeTerm = (t: string) => {
+    terms.value = terms.value.filter(x => x !== t);
+    saveProjectConfig();
+  };
+
+  // ── 步骤 3：参数 / 本地素材 ──
+  const uploadLocalMaterial = async () => {
     if (!currentProject.value) return;
+    await uploadMaterial(currentProject.value.id, 'video');
+  };
 
-    const audio = audioMaterials.value.find(m => m.id === exportSelectedAudio.value);
-    if (!audio?.local_path) {
-      alert('请先选择主音频');
+  const toggleLocalMaterial = (id: string) => {
+    const i = selectedLocalMaterialIds.value.indexOf(id);
+    if (i >= 0) selectedLocalMaterialIds.value.splice(i, 1);
+    else selectedLocalMaterialIds.value.push(id);
+  };
+
+  // ── 步骤 4：生成 ──
+  const startGenerate = async () => {
+    if (!currentProject.value) return;
+    if (!scriptText.value.trim()) {
+      alert('缺少口播文案，请回到第一步生成脚本');
       return;
     }
-    const visuals = [
-      ...imageMaterials.value.filter(m => exportSelectedImages.value.includes(m.id)),
-      ...videoMaterials.value.filter(m => exportSelectedVideos.value.includes(m.id)),
-    ];
-    const visualPaths = visuals.map(m => m.local_path).filter((p): p is string => !!p);
-    if (visualPaths.length === 0) {
-      alert('请至少选择一个图片或视频素材');
-      return;
-    }
 
-    // 字幕文本：从脚本 JSON 取「口播文案」（与 TTS 配音一致）
-    let subtitleText = '';
-    if (burnSubtitle.value) {
-      try {
-        const data = JSON.parse(generatedScript.value);
-        subtitleText = (data['口播文案'] || '').toString().trim();
-      } catch {
-        subtitleText = '';
-      }
-      if (!subtitleText) {
-        alert('勾选了字幕，但脚本里没有「口播文案」。请先生成脚本，或取消字幕勾选。');
+    // 组装参数
+    const params: Record<string, any> = {
+      video_subject: productInfo.value,
+      video_script: scriptText.value,
+      video_aspect: videoAspect.value,
+      video_source: videoSource.value,
+      voice_name: voiceName.value,
+      voice_rate: voiceRate.value,
+      subtitle_enabled: subtitleEnabled.value,
+      subtitle_provider: subtitleProvider.value,
+      font_name: fontName.value,
+      subtitle_position: subtitlePosition.value,
+      text_fore_color: textForeColor.value,
+      stroke_color: strokeColor.value,
+      font_size: fontSize.value,
+      bgm_type: bgmType.value,
+      bgm_volume: bgmVolume.value,
+      video_clip_duration: clipDuration.value,
+      video_concat_mode: concatMode.value,
+      video_count: videoCount.value,
+    };
+
+    if (videoSource.value === 'local') {
+      const chosen = videoMaterials.value
+        .filter(m => selectedLocalMaterialIds.value.includes(m.id))
+        .map(m => m.local_path)
+        .filter((p): p is string => !!p);
+      if (chosen.length === 0) {
+        alert('本地素材模式下，请至少勾选一个视频素材');
         return;
       }
-    }
-
-    isExporting.value = true;
-    try {
-      // video_export_render 内部 await ffmpeg 完成后才返回，返回成片绝对路径
-      const outputPath = await invoke<string>('video_export_render', {
-        projectId: currentProject.value.id,
-        audioPath: audio.local_path,
-        visualPaths,
-        burnSubtitle: burnSubtitle.value,
-        subtitleText: subtitleText || null,
-      });
-      // 刷新素材库（成片已作为 video 素材入库）
-      await loadMaterials(currentProject.value.id);
-      // 切到素材库并预览成片
-      const newMat = materials.value.find(m => m.local_path === outputPath);
-      if (newMat) {
-        activeTab.value = 'material';
-        openPreview(newMat);
-      } else {
-        alert('合成完成！成片已保存到素材库。');
-      }
-    } catch (e) {
-      alert('合成失败: ' + e);
-    } finally {
-      isExporting.value = false;
-    }
-  };
-
-  // 选择本地参考图（图生图用）
-  const pickImageGenReference = async () => {
-    const selected = await open({
-      multiple: false,
-      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
-    });
-    if (selected && !Array.isArray(selected)) {
-      imageGenRefPath.value = selected;
-    }
-  };
-
-  // AI 生成图片素材
-  const generateImageMaterial = async () => {
-    if (!currentProject.value) return;
-    if (!imageGenPrompt.value.trim()) {
-      alert('请先填写图片描述（提示词）');
-      return;
-    }
-    // 用最新配置（避免前端缓存旧 provider/key）
-    await loadSettings();
-    const v = appConfig.value.video;
-
-    // 图片生成的 Provider 凭证：复用 OpenAI 兼容协议的 key/base_url
-    let apiKey = '';
-    let baseUrl = '';
-    let model = '';
-    if (imageGenProvider.value === 'openai') {
-      apiKey = v.openai_api_key || '';
-      baseUrl = v.openai_base_url || '';
-      model = v.openai_model || '';
-    } else if (imageGenProvider.value === 'fal') {
-      apiKey = v.fal_key || '';
-    } else if (imageGenProvider.value === 'volcengine') {
-      apiKey = v.volc_key || '';
-    }
-    // mock 不需要 key
-
-    isGeneratingImage.value = true;
-    try {
-      await invoke('video_generate_image', {
-        projectId: currentProject.value.id,
-        prompt: imageGenPrompt.value.trim(),
-        size: imageGenSize.value,
-        provider: imageGenProvider.value,
-        apiKey,
-        referenceImagePath: imageGenRefPath.value || null,
-        baseUrl: baseUrl || null,
-        model: model || null,
-      });
-      await loadMaterials(currentProject.value.id);
-      // 关闭弹窗、清空输入
-      showImageGenModal.value = false;
-      imageGenPrompt.value = '';
-      imageGenRefPath.value = '';
-    } catch (e) {
-      alert('图片生成失败: ' + e);
-    } finally {
-      isGeneratingImage.value = false;
-    }
-  };
-
-  const openPreview = (m: VideoMaterial) => {
-    previewMaterial.value = m;
-    previewZoom.value = 1;
-    previewOffset.value = { x: 0, y: 0 };
-  };
-
-  const closePreview = () => {
-    previewMaterial.value = null;
-  };
-
-  const updateResolution = (r: string) => {
-    videoRatio.value = r;
-    if (r === '9:16') {
-      imageGenSize.value = '720x1280';
-    } else if (r === '16:9') {
-      imageGenSize.value = '1280x720';
+      params.video_materials = chosen;
     } else {
-      imageGenSize.value = '1024x1024';
+      if (terms.value.length === 0) {
+        alert('Pexels 模式需要至少一个素材关键词');
+        return;
+      }
+      params.video_terms = terms.value;
+    }
+
+    isGenerating.value = true;
+    progress.value = 5;
+    stageLabel.value = '准备中';
+    errorMsg.value = '';
+    finalVideoPath.value = null;
+    try {
+      const path = await invoke<string>('video_mpt_generate', {
+        projectId: currentProject.value.id,
+        params,
+      });
+      finalVideoPath.value = path;
+      progress.value = 100;
+      stageLabel.value = '完成';
+      await loadProjects();
+      await loadMaterials(currentProject.value.id);
+      // 同步当前项目对象上的成片路径
+      const refreshed = projects.value.find(p => p.id === currentProject.value!.id);
+      if (refreshed) currentProject.value = refreshed;
+    } catch (e) {
+      errorMsg.value = String(e);
+    } finally {
+      isGenerating.value = false;
     }
   };
+
+  const canProceedFromScript = computed(() => !!scriptText.value.trim());
+  const canGenerate = computed(() => {
+    if (!scriptText.value.trim()) return false;
+    if (videoSource.value === 'local') return selectedLocalMaterialIds.value.length > 0;
+    return terms.value.length > 0;
+  });
 
   return {
     // constants
-    PLATFORM_OPTIONS, SCRIPT_TYPE_OPTIONS, IMAGE_SIZE_PRESETS,
-    // projects / materials / tasks
+    PLATFORM_OPTIONS, ASPECT_OPTIONS, EDGE_VOICES, BGM_OPTIONS, SUBTITLE_PROVIDER_OPTIONS,
+    // projects / materials
     projects, currentProject, createProject, selectProject, deleteProject,
-    isUploadingMaterial, uploadMaterial, deleteMaterial,
-    audioMaterials, imageMaterials, videoMaterials, activeTasks,
-    // tabs
-    activeTab,
+    materials, videoMaterials, isUploadingMaterial, deleteMaterial,
+    // step
+    step,
     // script
-    productInfo, referenceScript, scriptFeedback, generatedScript, isGeneratingScript,
-    scriptConfirmed, selectedPlatform, selectedScriptType, videoRatio,
-    // tts
-    ttsVoiceId, ttsSpeed, isSynthesizingVoice, isLoadingVoices, availableVoices, latestVoiceoverPath,
-    // export
-    exportSelectedAudio, exportSelectedImages, exportSelectedVideos, isExporting, burnSubtitle,
-    // modals
-    showImageGenModal, imageGenPrompt, imageGenRefPath, imageGenProvider, imageGenSize, isGeneratingImage,
-    showReferencePicker, referenceImageId, showNoReferenceWarning,
-    // preview
-    previewMaterial, previewZoom, previewOffset, isDragging,
+    productInfo, referenceScript, scriptText, rawScriptJson, scriptFeedback,
+    isGeneratingScript, selectedPlatform, videoAspect,
+    // keywords
+    terms, newTerm, isGeneratingTerms,
+    // options
+    videoSource, voiceName, voiceRate, subtitleEnabled, subtitleProvider, fontName,
+    subtitlePosition, textForeColor, strokeColor, fontSize, bgmType, bgmVolume,
+    clipDuration, concatMode, videoCount, selectedLocalMaterialIds,
+    // generate
+    isGenerating, progress, stageLabel, finalVideoPath, errorMsg,
+    // computed
+    canProceedFromScript, canGenerate,
     // methods
-    generateScript, resetScriptFlow, confirmScript, saveScript, loadVoices, synthesizeVoice,
-    startExportRender, pickImageGenReference, generateImageMaterial, openPreview, closePreview, updateResolution,
+    generateScript, confirmScriptStep, generateTerms, addTerm, removeTerm,
+    uploadLocalMaterial, toggleLocalMaterial, startGenerate, saveProjectConfig,
   };
 }

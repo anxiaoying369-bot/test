@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MessageSquare, Wand2, Mic, Cpu, Image as ImageIcon, Globe, Plus, Trash2, XCircle } from 'lucide-vue-next';
+import { MessageSquare, Wand2, Mic, Cpu, Image as ImageIcon, Globe, Plus, Trash2, XCircle, Film } from 'lucide-vue-next';
 import { useAppConfig } from '../../composables/useAppConfig';
 
 const { config } = useAppConfig();
@@ -189,6 +189,49 @@ function removeTtsVoice(index: number) {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- 3.5 视频生成引擎 (MoneyPrinterTurbo) -->
+    <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-6 shadow-xl">
+      <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+        <Film class="w-4 h-4 text-blue-500" />
+        视频生成引擎 (素材拼接成片)
+      </h3>
+
+      <div class="grid grid-cols-1 gap-6">
+        <div>
+          <label class="block text-sm font-medium text-gray-300 mb-2">Pexels API Key</label>
+          <input v-model="config.video.pexels_api_keys" type="password"
+                 placeholder="在线素材库检索用，多个可用英文逗号分隔；本地素材模式无需填写"
+                 class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 font-mono text-sm" />
+          <p class="text-[11px] text-gray-600 mt-1.5">免费申请：https://www.pexels.com/api/ —— 用于按关键词下载免版权高清视频素材。</p>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">默认配音音色 (Edge TTS)</label>
+            <select v-model="config.video.mpt_voice_name"
+                    class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500 transition-all">
+              <option value="zh-CN-XiaoxiaoNeural-Female">晓晓（女·温柔）</option>
+              <option value="zh-CN-XiaoyiNeural-Female">晓伊（女·亲和）</option>
+              <option value="zh-CN-YunxiNeural-Male">云希（男·阳光）</option>
+              <option value="zh-CN-YunjianNeural-Male">云健（男·浑厚）</option>
+              <option value="zh-CN-YunyangNeural-Male">云扬（男·专业）</option>
+              <option value="en-US-AvaNeural-Female">Ava（英·女）</option>
+              <option value="en-US-AndrewNeural-Male">Andrew（英·男）</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">字幕生成方式</label>
+            <select v-model="config.video.mpt_subtitle_provider"
+                    class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500 transition-all">
+              <option value="edge">Edge（快速·免费·默认）</option>
+              <option value="whisper">Whisper（更精准·需下模型）</option>
+            </select>
+          </div>
+        </div>
+        <p class="text-[11px] text-gray-600 -mt-2">Edge TTS 免费、无需 API Key。Whisper 字幕更精准，但首次使用会下载模型（约 250MB+），需在 requirements.txt 启用 faster-whisper 并重跑依赖安装。</p>
       </div>
     </div>
 

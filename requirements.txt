@@ -36,4 +36,15 @@ protobuf>=7.34.1,<8.0
 proto-plus>=1.27.0,<2.0
 
 # ── 视频生成 (Video Generation) ───────────────────────────────────
-fal-client>=0.4.0              # fal.ai API 客户端
+fal-client>=0.4.0              # fal.ai API 客户端（旧生成式链路，暂留）
+
+# ── MoneyPrinterTurbo 视频引擎（素材拼接成片）────────────────────
+# 主题→脚本→关键词→TTS→字幕→下载素材→MoviePy/FFmpeg 拼接成片。
+moviepy==2.2.1                 # 视频拼接、字幕烧录、BGM 合成
+edge_tts==7.2.7                # 免费 TTS（默认配音 + 字幕时间轴对齐）
+pydub==0.25.1                  # 音频时长/转码（moviepy/edge 辅助）
+loguru>=0.7                    # MPT 引擎日志（输出到 stderr）
+imageio-ffmpeg                 # moviepy 的 ffmpeg 后端解析
+# faster-whisper 可选：仅当字幕模式选 whisper 时需要，首次运行会下载模型（~250MB+）。
+# 默认字幕走 edge 模式，无需安装；如需更精准字幕再取消下一行注释并重跑 prepare:python。
+# faster-whisper==1.1.0

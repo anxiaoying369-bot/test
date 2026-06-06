@@ -66,6 +66,10 @@ export interface VideoConfig {
   tts_voices?: TtsVoice[];          // 自定义音色组
   script_system_prompt?: string;    // 脚本生成系统提示词
   tts_prosody_tags?: string;        // TTS 语气/声调标注模板（后端 generation.rs 用）
+  // MoneyPrinterTurbo 视频引擎
+  pexels_api_keys?: string;         // Pexels 素材库 API Key（多个逗号分隔）
+  mpt_voice_name?: string;          // 默认 edge-tts 音色，如 zh-CN-XiaoxiaoNeural-Female
+  mpt_subtitle_provider?: string;   // 字幕方式：edge / whisper
 }
 
 export interface AppConfig {

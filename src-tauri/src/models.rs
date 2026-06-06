@@ -151,6 +151,25 @@ pub struct VideoConfig {
     /// 用户定义的语气词和声调列表，用于引导表演脚本生成
     #[serde(default)]
     pub tts_prosody_tags: String,
+
+    // ── MoneyPrinterTurbo 视频引擎（素材拼接成片）配置 ──
+    /// Pexels 素材库 API Key（在线素材检索；多个可用英文逗号分隔）
+    #[serde(default)]
+    pub pexels_api_keys: String,
+    /// MPT 默认 edge-tts 配音音色，如 zh-CN-XiaoxiaoNeural-Female
+    #[serde(default = "default_mpt_voice_name")]
+    pub mpt_voice_name: String,
+    /// 字幕生成方式：edge（免费、默认）或 whisper（更精准、需下模型）
+    #[serde(default = "default_mpt_subtitle_provider")]
+    pub mpt_subtitle_provider: String,
+}
+
+pub fn default_mpt_voice_name() -> String {
+    "zh-CN-XiaoxiaoNeural-Female".to_string()
+}
+
+pub fn default_mpt_subtitle_provider() -> String {
+    "edge".to_string()
 }
 
 pub fn default_script_system_prompt() -> String {

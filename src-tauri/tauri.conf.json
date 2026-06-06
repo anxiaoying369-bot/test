@@ -53,6 +53,7 @@
       "../scripts/video_providers/*.py",
       "../scripts/image_providers/*.py",
       "../scripts/tts_providers/*.py",
+      "../scripts/mpt_engine/**/*",
       "../scripts/DouyinComment/*.py",
       "../scripts/DouyinComment/*.yaml",
       "../scripts/DouyinComment/*.txt",

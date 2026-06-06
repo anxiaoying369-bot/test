@@ -136,13 +136,12 @@ pub fn run() {
             crate::commands::video_studio::material::video_upload_material,
             crate::commands::video_studio::material::video_delete_material,
 
-            // Video Studio Generation
+            // Video Studio Generation（脚本生成保留：含知识库 + 平台风格注入，作为 MPT 管线脚本来源）
             crate::commands::video_studio::generation::video_generate_script,
-            crate::commands::video_studio::generation::video_start_generation,
-            crate::commands::video_studio::generation::video_poll_task_status,
-            crate::commands::video_studio::generation::tts_list_voices,
-            crate::commands::video_studio::generation::tts_synthesize,
-            crate::commands::video_studio::generation::video_generate_image,
+
+            // Video Studio · MoneyPrinterTurbo 引擎（素材拼接成片，取代旧 AI 生成式视频链路）
+            crate::commands::video_studio::mpt::video_mpt_generate,
+            crate::commands::video_studio::mpt::video_mpt_generate_terms,
 
             // Video Studio Rendering
             crate::commands::video_studio::rendering::video_test_ffmpeg,

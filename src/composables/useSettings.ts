@@ -30,6 +30,9 @@ export function useSettings() {
       tts_model: 'tts-1',
       default_tts_voice: '',
       default_tts_speed: 1.0,
+      pexels_api_keys: '',
+      mpt_voice_name: 'zh-CN-XiaoxiaoNeural-Female',
+      mpt_subtitle_provider: 'edge',
     }
   });
 
