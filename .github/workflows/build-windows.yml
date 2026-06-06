@@ -114,7 +114,6 @@ jobs:
           name: autocast-windows-installers
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
 
       # 仅当是 tag 触发：把安装包发布到 GitHub Release
@@ -124,4 +123,3 @@ jobs:
         with:
           files: |
             src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
