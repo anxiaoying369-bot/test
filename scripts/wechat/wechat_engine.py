@@ -594,8 +594,12 @@ class Engine:
         import struct
         aes_size = struct.unpack("<I", d[6:10])[0]
         payload = d[0xF:]
-        aes_size = min(aes_size, (len(payload) // 16) * 16)
-        head = AES.new(aes_key, AES.MODE_ECB).decrypt(payload[:aes_size])
+        # AES 段必须按 16 字节块对齐：header 的 aes_size 不一定是 16 的倍数，且高清原图常被
+        # 微信懒下载只下了一半（payload 截断）。两种情况都要把 aes_size 下取整到块边界，
+        # 否则 AES-ECB 会报 "Data must be aligned" 或解密错位导致花屏。
+        aes_size = min(aes_size, len(payload))
+        aes_size -= aes_size % 16
+        head = AES.new(aes_key, AES.MODE_ECB).decrypt(payload[:aes_size]) if aes_size else b""
         tail = bytes(b ^ xor_key for b in payload[aes_size:])
         return head + tail
 
@@ -684,28 +688,50 @@ class Engine:
                 return "image/jpeg", jpg
         return None
 
+    @staticmethod
+    def _image_complete(mime, data):
+        """校验解码后的图片是否完整（关键：微信高清原图常懒下载，磁盘 .dat 可能只下了一半，
+        解出来是截断 JPEG → 顶部正常其余花屏）。"""
+        if mime == "image/jpeg":
+            return data[:3] == b"\xff\xd8\xff" and data.rstrip(b"\x00")[-2:] == b"\xff\xd9"
+        if mime == "image/png":
+            return data[:8] == b"\x89PNG\r\n\x1a\n" and b"IEND" in data[-16:]
+        return len(data) > 64  # gif/webp 等：长度兜底
+
     def _dat_to_image(self, path):
-        dec = self._decrypt_dat(path)
+        """解密单个 .dat 并转成 (mime, bytes)；不完整/无法解码返回 None（交由上层回退候选）。"""
+        try:
+            dec = self._decrypt_dat(path)
+        except Exception as e:
+            log("decrypt dat error:", path, e)
+            return None
         if not dec:
             return None
         kind = _img_magic_kind(dec)
-        if kind and kind != "wxgf":
-            return kind, dec
         if kind == "wxgf":
-            return self._wxgf_to_jpg(dec)
+            return self._wxgf_to_jpg(dec)  # ffmpeg 失败(含截断 HEVC)会返回 None
+        if kind:
+            return (kind, dec) if self._image_complete(kind, dec) else None
         return None
 
-    def _find_dat(self, md5, want_full):
+    def _find_dats(self, md5, want_full):
+        """返回候选 .dat 路径（按优先级）。大图优先高清/原图，再回退缩略图；缩略图模式只用 _t.dat。"""
         base = os.path.join(self.account_dir, "msg")
-        thumb = glob.glob(os.path.join(base, "**", md5 + "_t.dat"), recursive=True)
-        if not want_full:
-            return thumb[0] if thumb else None
-        for suffix in ("_h.dat", ".dat"):
+
+        def find(suffix):
             hits = glob.glob(os.path.join(base, "**", md5 + suffix), recursive=True)
-            hits = [h for h in hits if not h.endswith("_t.dat")]
-            if hits:
-                return hits[0]
-        return thumb[0] if thumb else None
+            if suffix == ".dat":
+                hits = [h for h in hits if not h.endswith("_t.dat") and not h.endswith("_h.dat")]
+            return hits
+
+        thumb = find("_t.dat")
+        if not want_full:
+            return thumb
+        ordered = []
+        for suffix in (".dat", "_h.dat"):
+            ordered += find(suffix)
+        ordered += thumb  # 高清没下全时回退缩略图（完整、低清但不花屏）
+        return ordered
 
     def get_image(self, session_username, local_id, want_full=False):
         if not self.image_keys():
@@ -724,19 +750,15 @@ class Engine:
         md5 = self._md5_from_packed(bytes(row[0])) if (row and row[0]) else None
         if not md5:
             return {"ok": False, "error": "无图片 md5"}
-        path = self._find_dat(md5, want_full)
-        if not path:
-            return {"ok": False, "error": "未找到图片文件"}
-        img = self._dat_to_image(path)
-        if not img and want_full:
-            # 大图失败时回退缩略图
-            tpath = self._find_dat(md5, False)
-            if tpath:
-                img = self._dat_to_image(tpath)
-        if not img:
-            return {"ok": False, "error": "图片解密/转码失败"}
-        mime, data = img
-        return {"ok": True, "mime": mime, "base64": base64.b64encode(data).decode("ascii")}
+        # 依次尝试候选，返回第一个**完整**解码的图片
+        for path in self._find_dats(md5, want_full):
+            img = self._dat_to_image(path)
+            if img:
+                mime, data = img
+                return {"ok": True, "mime": mime,
+                        "base64": base64.b64encode(data).decode("ascii"),
+                        "fallbackThumb": want_full and path.endswith("_t.dat")}
+        return {"ok": False, "error": "图片未下全或解码失败（原图可能尚未下载，请在微信里打开一次）"}
 
     def get_video_path(self, session_username, local_id):
         loc = self.locate_message_table(session_username)

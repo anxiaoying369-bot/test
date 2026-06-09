@@ -266,7 +266,7 @@ onMounted(async () => {
             <div v-else-if="m.localType === 3">
               <img v-if="mediaUrls[m.localId as number]" :src="mediaUrls[m.localId as number]"
                 @click="viewLarge(m)"
-                class="max-w-[220px] max-h-[260px] rounded-lg object-cover cursor-zoom-in hover:opacity-90" />
+                class="max-w-[220px] max-h-[260px] rounded-lg object-contain cursor-zoom-in hover:opacity-90" />
               <div v-else class="w-32 h-32 rounded-lg bg-gray-800 flex items-center justify-center text-xs text-gray-500">
                 [图片] 加载中…
               </div>
