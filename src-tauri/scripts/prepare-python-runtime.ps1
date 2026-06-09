@@ -89,28 +89,33 @@ Write-Host "Installing other dependencies from ${Requirements}..."
 & $PythonBin -m pip install -r $Requirements --extra-index-url https://download.pytorch.org/whl/cpu @PipArgs
 
 Write-Host "Aggressively cleaning up runtime to save space..."
-# 删除所有的调试符号文件、静态库、头文件和源码
-Get-ChildItem -Path $PlatformDir -Recurse -File -Include "*.pdb", "*.lib", "*.a", "*.h", "*.cpp", "*.c", "*.pyi" | Remove-Item -Force -ErrorAction SilentlyContinue
+# 1. 深度清理 __pycache__ (无论在哪里，一律干掉)
+Get-ChildItem -Path $PlatformDir -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-# 删除不必要的文件夹
-$UnneededDirs = @("__pycache__", "tests", "test", "Include", "share", "tcl", "tk", "idlelib", "ensurepip", "doc", "docs")
+# 2. 删除所有的调试符号文件、静态库、头文件和源码
+Get-ChildItem -Path $PlatformDir -Recurse -File -Include "*.pdb", "*.lib", "*.a", "*.h", "*.cpp", "*.c", "*.pyi", "*.pxd" | Remove-Item -Force -ErrorAction SilentlyContinue
+
+# 3. 删除标准库和 site-packages 中无用的文件夹
+$UnneededDirs = @("tests", "test", "Include", "share", "tcl", "tk", "idlelib", "ensurepip", "doc", "docs", "examples", "example", "tutorials")
 foreach ($dir in $UnneededDirs) {
     Get-ChildItem -Path $PlatformDir -Recurse -Directory -Filter $dir | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# 深度清理 torch（非常重要）
+# 4. 深度清理 torch（非常重要）
 $TorchDir = Join-Path $PlatformDir "python\Lib\site-packages\torch"
 if (Test-Path $TorchDir) {
     Write-Host "Cleaning up torch internals..."
-    $TorchUnneeded = @("test", "bin", "include", "lib\*.lib")
+    $TorchUnneeded = @("test", "bin", "include", "lib\*.lib", "lib\*.pdb")
     foreach ($sub in $TorchUnneeded) {
         $subPath = Join-Path $TorchDir $sub
         if (Test-Path $subPath) { Remove-Item -Recurse -Force $subPath -ErrorAction SilentlyContinue }
     }
 }
 
-# 删除 site-packages 里的其它测试文件夹和无用数据
-Get-ChildItem -Path $PlatformDir -Recurse -Directory -Include "tests", "test", "data" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# 5. 清理 llvmlite 和 scipy 等体积巨大的额外二进制（如果存在开发版本遗留）
+Get-ChildItem -Path $PlatformDir -Recurse -Directory -Filter "llvmlite" | ForEach-Object {
+    Get-ChildItem -Path $_.FullName -Recurse -File -Include "*.lib", "*.a", "*.h" | Remove-Item -Force -ErrorAction SilentlyContinue
+}
 
 # -- Report Size ------------------------------------------------
 $Size = (Get-ChildItem -Path $PlatformDir -Recurse | Measure-Object -Property Length -Sum).Sum
