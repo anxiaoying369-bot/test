@@ -116,10 +116,16 @@ install_deps() {
   fi
 
   echo "Upgrading pip..."
-  "$python_bin" -m pip install --upgrade pip --quiet
+  local pip_args=()
+  if [[ -n "${PIP_INDEX_URL:-}" ]]; then
+    pip_args+=("-i" "$PIP_INDEX_URL")
+    echo "Using mirror: $PIP_INDEX_URL"
+  fi
+
+  "$python_bin" -m pip install "${pip_args[@]}" --upgrade pip --quiet
 
   echo "Installing dependencies (from ${REQUIREMENTS})..."
-  "$python_bin" -m pip install -r "$REQUIREMENTS"
+  "$python_bin" -m pip install "${pip_args[@]}" -r "$REQUIREMENTS"
 
   echo "Cleaning __pycache__ and .pyc to reduce size..."
   find "$RUNTIME_DIR/macos" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true

@@ -163,6 +163,7 @@ pub fn run() {
             crate::commands::wechat::wechat_list_contacts,
             crate::commands::wechat::wechat_get_messages,
             crate::commands::wechat::wechat_get_voice,
+            crate::commands::wechat::wechat_transcribe_voice,
             crate::commands::wechat::wechat_get_media,
             crate::commands::wechat::wechat_get_image,
             crate::commands::wechat::wechat_open_video,

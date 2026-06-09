@@ -70,8 +70,9 @@
       "../scripts/DouyinBarrage/scripts/**/*",
       "../scripts/wechat/*.py",
       "resources/wechat/**/*",
-      "python-runtime/macos/python/**/*",
-      "ffmpeg-runtime/macos/**/*"
+      "resources/models/**/*",
+      "python-runtime/*/python/**/*",
+      "ffmpeg-runtime/**/*"
     ],
     "windows": {
       "wix": {

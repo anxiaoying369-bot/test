@@ -294,6 +294,31 @@ pub async fn wechat_get_voice(
     .await
 }
 
+/// 语音转文字：调用 SenseVoiceSmall 进行识别。
+#[tauri::command]
+pub async fn wechat_transcribe_voice(
+    session_id: String,
+    svr_id: Option<i64>,
+    local_id: Option<i64>,
+    create_time: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let mut guard = state.wechat.lock().await;
+    let sc = guard.as_mut().ok_or("尚未连接微信数据库")?;
+    // 转文字可能较慢，给足超时
+    sc.call(
+        "get_voice_text",
+        json!({
+            "sessionId": session_id,
+            "svrId": svr_id.unwrap_or(0),
+            "localId": local_id.unwrap_or(0),
+            "createTime": create_time.unwrap_or(0),
+        }),
+        Duration::from_secs(120),
+    )
+    .await
+}
+
 /// 取图片消息的解密图片（base64）。want_full=false 取缩略图，true 取大图（wxgf 会转码）。
 #[tauri::command]
 pub async fn wechat_get_image(

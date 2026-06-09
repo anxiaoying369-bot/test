@@ -44,6 +44,24 @@ except Exception as e:  # pragma: no cover
     sys.stderr.write("[wechat-engine] 缺少 pycryptodome: %s\n" % e)
     raise
 
+# 动态加载 STT 助手
+STT_HELPER = None
+
+def get_stt_helper():
+    global STT_HELPER
+    if STT_HELPER is None:
+        try:
+            # 确保 scripts/wechat 目录在 sys.path 中，以便 import stt_helper
+            cur_dir = os.path.dirname(os.path.abspath(__file__))
+            if cur_dir not in sys.path:
+                sys.path.append(cur_dir)
+            import stt_helper
+            STT_HELPER = stt_helper.STTHelper.get_instance()
+        except ImportError as e:
+            log(f"stt_helper import failed: {e}")
+    return STT_HELPER
+
+
 PAGE = 4096
 ITER = 256000
 RESERVE = 80  # IV(16) + HMAC-SHA512(64)
@@ -471,6 +489,32 @@ class Engine:
             finally:
                 con.close()
         return {"ok": False, "error": "未找到语音数据"}
+
+    def get_voice_text(self, session_username, svr_id=0, local_id=0, create_time=0):
+        """语音转文字：先取 WAV，再调用 STT 引擎。"""
+        res = self.get_voice(session_username, svr_id, local_id, create_time)
+        if not res.get("ok"):
+            return res
+        
+        stt = get_stt_helper()
+        if not stt:
+            return {"ok": False, "error": "STT 引擎未就绪（请检查是否安装了 funasr/torch）"}
+        
+        # 将 base64 转回临时文件供 STT 读取
+        import tempfile
+        wav_data = base64.b64decode(res["base64"])
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(wav_data)
+            tmp_path = tmp.name
+        
+        try:
+            text = stt.transcribe(tmp_path)
+            return {"ok": True, "text": text}
+        except Exception as e:
+            return {"ok": False, "error": f"转文字失败: {e}"}
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     # ---- 媒体（视频缩略图 = 明文 jpg；图片原图留待 phase 2）----
     @staticmethod
@@ -1030,6 +1074,9 @@ def main():
             elif typ == "get_voice":
                 result = engine.get_voice(req["sessionId"], req.get("svrId", 0),
                                           req.get("localId", 0), req.get("createTime", 0))
+            elif typ == "get_voice_text":
+                result = engine.get_voice_text(req["sessionId"], req.get("svrId", 0),
+                                               req.get("localId", 0), req.get("createTime", 0))
             elif typ == "get_media":
                 result = engine.get_media(req["sessionId"], req.get("localId", 0),
                                           req.get("localType", 0), req.get("svrId", 0),

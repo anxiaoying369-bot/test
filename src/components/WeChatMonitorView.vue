@@ -7,10 +7,14 @@ const wx = useWeChat();
 const {
   connected, monitoring, accountDir, hexKey, statusText, busy,
   contacts, friendCount, groupCount, currentSessionId, messages, watched, newMessages,
+  transcribeVoice,
 } = wx;
 
 // 媒体懒加载：localId → data URL（视频缩略图）
 const mediaUrls = ref<Record<number, string>>({});
+const transcribing = ref<Record<number, boolean>>({}); // localId -> loading
+const transcriptions = ref<Record<number, string>>({}); // localId -> text
+
 const loadingVoice = ref<number | null>(null);
 const playingId = ref<number | null>(null);   // 当前加载到播放器的语音 localId
 const isPaused = ref(false);                   // 当前语音是否处于暂停
@@ -50,6 +54,19 @@ async function toggleVoice(m: WeChatMessage) {
   }
 }
 
+async function doTranscribe(m: WeChatMessage, sessionId?: string) {
+  const id = m.localId;
+  if (id == null || transcribing.value[id]) return;
+  transcribing.value[id] = true;
+  try {
+    const text = await transcribeVoice(m, sessionId);
+    if (text) transcriptions.value[id] = text;
+    else statusText.value = '语音识别未返回结果';
+  } finally {
+    transcribing.value[id] = false;
+  }
+}
+
 async function loadThumb(m: WeChatMessage) {
   const id = m.localId;
   if (id == null || mediaUrls.value[id] !== undefined) return;
@@ -83,6 +100,17 @@ watch(messages, (ms) => {
     if (m.localType === 3 || m.localType === 43) loadThumb(m);
   }
 });
+
+// 自动转文字：新消息到达时
+watch(newMessages, (evts) => {
+  for (const evt of evts) {
+    for (const m of evt.messages) {
+      if (m.localType === 34 && m.localId && !transcriptions.value[m.localId] && !transcribing.value[m.localId]) {
+        doTranscribe(m, evt.sessionId);
+      }
+    }
+  }
+}, { deep: true });
 
 const sessionFilter = ref('');
 const intervalSecs = ref(5);
@@ -246,20 +274,32 @@ onMounted(async () => {
               {{ fmtTime(m.createTime) }}
             </div>
             <!-- 语音：点击播放/暂停，活动时可停止 -->
-            <div v-if="m.localType === 34"
-              :class="['flex items-center gap-1.5 px-2 py-2 rounded-lg',
-                       m.isSender ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-100']">
-              <button @click="toggleVoice(m)" class="flex items-center gap-1.5 hover:opacity-90 min-w-[64px]">
-                <Loader2 v-if="loadingVoice === m.localId" class="w-4 h-4 animate-spin" />
-                <Pause v-else-if="playingId === m.localId && !isPaused" class="w-4 h-4" />
-                <Play v-else class="w-4 h-4" />
-                <Volume2 class="w-4 h-4" />
-                <span class="text-xs">语音</span>
-              </button>
-              <button v-if="playingId === m.localId" @click="stopVoice" title="停止"
-                class="p-0.5 rounded hover:bg-black/20">
-                <Square class="w-3.5 h-3.5" />
-              </button>
+            <div v-if="m.localType === 34" class="space-y-2 max-w-full">
+              <div :class="['flex items-center gap-1.5 px-2 py-2 rounded-lg w-fit',
+                            m.isSender ? 'bg-green-700 text-white ml-auto' : 'bg-gray-800 text-gray-100']">
+                <button @click="toggleVoice(m)" class="flex items-center gap-1.5 hover:opacity-90 min-w-[64px]">
+                  <Loader2 v-if="loadingVoice === m.localId" class="w-4 h-4 animate-spin" />
+                  <Pause v-else-if="playingId === m.localId && !isPaused" class="w-4 h-4" />
+                  <Play v-else class="w-4 h-4" />
+                  <Volume2 class="w-4 h-4" />
+                  <span class="text-xs">语音</span>
+                </button>
+                <button v-if="playingId === m.localId" @click="stopVoice" title="停止"
+                  class="p-0.5 rounded hover:bg-black/20">
+                  <Square class="w-3.5 h-3.5" />
+                </button>
+                <div class="w-px h-3 bg-white/20 mx-1"></div>
+                <button @click="doTranscribe(m)" :disabled="transcribing[m.localId as number]"
+                  class="text-[10px] opacity-70 hover:opacity-100 flex items-center gap-1">
+                  <Loader2 v-if="transcribing[m.localId as number]" class="w-3 h-3 animate-spin" />
+                  {{ transcriptions[m.localId as number] ? '重新识别' : '转文字' }}
+                </button>
+              </div>
+              <div v-if="transcriptions[m.localId as number]"
+                :class="['px-3 py-2 rounded-lg text-xs italic break-words',
+                         m.isSender ? 'bg-green-900/50 text-gray-300 ml-auto' : 'bg-gray-900/50 text-gray-400']">
+                {{ transcriptions[m.localId as number] }}
+              </div>
             </div>
 
             <!-- 图片：缩略图，点击看大图 -->

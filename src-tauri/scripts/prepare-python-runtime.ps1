@@ -94,14 +94,21 @@ if (-not (Test-Path $GetPip)) {
     Write-Host "  Downloading get-pip.py..."
     Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $GetPip -UseBasicParsing
 }
-& $PythonBin $GetPip --quiet
+
+$PipArgs = @()
+if ($env:PIP_INDEX_URL) {
+    $PipArgs += "-i", $env:PIP_INDEX_URL
+    Write-Host "Using mirror: $($env:PIP_INDEX_URL)"
+}
+
+& $PythonBin $GetPip @PipArgs --quiet
 
 # Ensure numpy 1.x is installed for X86_V1 CPU compatibility (pyarrow 16.x requires it)
 Write-Host "Installing numpy 1.x for X86_V1 CPU compatibility..."
-& $PythonBin -m pip install "numpy==1.26.4" --no-cache-dir --force-reinstall --quiet
+& $PythonBin -m pip install "numpy==1.26.4" @PipArgs --no-cache-dir --force-reinstall --quiet
 
 Write-Host "Installing dependencies (from ${Requirements})..."
-& $PythonBin -m pip install -r $Requirements --no-cache-dir --force-reinstall
+& $PythonBin -m pip install -r $Requirements @PipArgs --no-cache-dir --force-reinstall
 
 Write-Host "Cleaning __pycache__ and .pyc..."
 Get-ChildItem -Path $PlatformDir -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

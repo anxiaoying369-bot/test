@@ -39,6 +39,8 @@ scripts/.npm-cache/
 src-tauri/ffmpeg-runtime/
 src-tauri/python-runtime/
 src-tauri/node-runtime/
+src-tauri/resources/models/
+src-tauri/resources/wechat/
 **/video_studio.db
 
 # Local docs (work-in-progress notes)

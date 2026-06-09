@@ -251,6 +251,24 @@ export function useWeChat() {
     }
   }
 
+  // 语音转文字
+  async function transcribeVoice(m: WeChatMessage, sessionId?: string): Promise<string | null> {
+    try {
+      const sid = sessionId || currentSessionId.value;
+      if (!sid) return null;
+      const res = await invoke('wechat_transcribe_voice', {
+        sessionId: sid,
+        svrId: m.svrId || 0,
+        localId: m.localId || 0,
+        createTime: m.createTime || 0,
+      }) as { ok: boolean; text: string; error?: string };
+      return res.ok ? res.text : null;
+    } catch (e) {
+      console.warn('transcribe_voice failed', e);
+      return null;
+    }
+  }
+
   // 取图片的 data URL（wantFull=false 缩略图 / true 大图）
   async function getImageUrl(m: WeChatMessage, wantFull = false): Promise<string | null> {
     try {
@@ -299,6 +317,6 @@ export function useWeChat() {
     // actions
     initListener, loadCredentials, refreshStatus, autoGetKey, connect,
     loadSessions, loadContacts, openSession, resolveSession, toggleWatch,
-    startMonitor, stopMonitor, clearNewMessages, getVoiceUrl, getMediaUrl, getImageUrl, openVideo,
+    startMonitor, stopMonitor, clearNewMessages, getVoiceUrl, transcribeVoice, getMediaUrl, getImageUrl, openVideo,
   };
 }

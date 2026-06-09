@@ -44,36 +44,24 @@ jobs:
             src-tauri/node-runtime
           key: runtimes-windows-${{ hashFiles('requirements.txt', 'src-tauri/scripts/prepare-*.ps1') }}
 
+      - name: 缓存 AI 模型
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/resources/models
+          key: ai-models-${{ hashFiles('scripts/download_model.py') }}
+
       - name: 安装前端依赖
         run: npm ci
 
       # 下载并准备内置 Python / ffmpeg / Node（beforeBuildCommand 不含这步，必须显式跑）
       - name: 准备内置运行时
         run: npm run prepare:all
+        env:
+          PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
 
-      # ============================================================
-      # Patch tauri.conf.json for current platform
-      # ------------------------------------------------------------
-      # 根因：tauri.conf.json 里 bundle.resources 写死的是 macos 路径
-      #   "python-runtime/macos/python/**/*"
-      #   "ffmpeg-runtime/macos/**/*"
-      # 在 macOS runner 上能跑（macos 目录存在），但在 Windows runner 上
-      # prepare 出来的是 windows/ 目录，macos 目录不存在，于是 tauri-bundler
-      # 在做 NSIS/MSI bundle 的 copy_resources 阶段直接报错：
-      #   glob pattern python-runtime/macos/python/**/* path not found
-      #
-      # build.rs 阶段的 TAURI_CONFIG env patch 只对 tauri-build 内部校验
-      # 起作用，tauri-bundler 阶段（cargo build 之后）依然读 tauri.conf.json
-      # 源文件，所以必须在 CI 里临时改 conf。改完备份，build 完恢复。
-      # ============================================================
-      - name: Patch tauri.conf.json for current platform
+      - name: 下载 AI 模型
         run: |
-          Copy-Item -Force src-tauri/tauri.conf.json src-tauri/tauri.conf.json.bak
-          $conf = Get-Content src-tauri/tauri.conf.json -Raw
-          $conf = $conf -replace 'python-runtime/macos/python', 'python-runtime/windows/python'
-          $conf = $conf -replace 'ffmpeg-runtime/macos',        'ffmpeg-runtime/windows'
-          Set-Content -Path src-tauri/tauri.conf.json -Value $conf -NoNewline
-          Write-Host "Patched tauri.conf.json: macos -> windows in resources[]"
+          & src-tauri/python-runtime/windows/python/python.exe scripts/download_model.py
 
       # 触发 tauri build：beforeBuildCommand=npm run build（vue-tsc 类型检查 + vite 构建），
       # 随后 cargo 编译 + 生成 NSIS(.exe) / MSI(.msi) 安装包
