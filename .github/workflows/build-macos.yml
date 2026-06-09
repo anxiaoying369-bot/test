@@ -49,6 +49,14 @@ jobs:
       - name: 打包 Tauri (macOS)
         run: npm run tauri build
 
+      - name: 清除 Quarantine 隔离属性 (防止提示损坏)
+        run: |
+          echo "Clearing quarantine flags for embedded runtimes..."
+          # 针对构建目录中的应用包执行清除
+          sudo xattr -dr com.apple.quarantine src-tauri/target/release/bundle/dmg/*.dmg || true
+          # 虽然 DMG 是只读的，但我们可以尝试在打包后的 app 路径也清理一下
+          find src-tauri/target/release/bundle/macos -name "*.app" -exec sudo xattr -rd com.apple.quarantine {} + || true
+
       - name: 上传安装包 (Artifacts)
         uses: actions/upload-artifact@v4
         with:
