@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
-import { MessageSquare, Users, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, UserSearch } from 'lucide-vue-next';
+import { MessageSquare, Users, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, UserSearch, MessageCircle } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import UserInfoView from './components/UserInfoView.vue';
 import ResultsView from './components/ResultsView.vue';
@@ -12,9 +12,10 @@ import ContentStudioView from './components/ContentStudioView.vue';
 import VideoStudioView from './components/VideoStudioView.vue';
 import HermesGatewayView from './components/HermesGatewayView.vue';
 import AccountsView from './components/AccountsView.vue';
+import WeChatMonitorView from './components/WeChatMonitorView.vue';
 import { useLiveEvents } from './composables/useLiveEvents';
 
-type PageKey = 'chat' | 'accounts' | 'user_info' | 'scraper' | 'results' | 'live_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
+type PageKey = 'chat' | 'accounts' | 'user_info' | 'scraper' | 'results' | 'live_monitor' | 'wechat_monitor' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
 const currentPage = ref<PageKey>('chat');
 const settingsInitialTab = ref<string>('llm');
 
@@ -80,6 +81,10 @@ onMounted(initLiveEventListener);
             {{ Object.values(liveMonitorRooms).filter(r => r.status === 'running').length }}
           </span>
         </a>
+        <a href="#" @click="currentPage = 'wechat_monitor'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'wechat_monitor' ? 'bg-gray-900' : 'text-gray-400']">
+          <MessageCircle class="w-5 h-5 text-green-500" />
+          <span>微信监控</span>
+        </a>
         <div class="pt-4 mt-4 border-t border-gray-900 space-y-1">
           <a href="#" @click="currentPage = 'settings'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'settings' ? 'bg-gray-900' : 'text-gray-400']">
             <Settings class="w-5 h-5" />
@@ -139,6 +144,11 @@ onMounted(initLiveEventListener);
     <!-- 主内容：直播监控 -->
     <main v-if="currentPage === 'live_monitor'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <LiveMonitorView :globalRooms="liveMonitorRooms" />
+    </main>
+
+    <!-- 主内容：微信监控 -->
+    <main v-if="currentPage === 'wechat_monitor'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
+      <WeChatMonitorView />
     </main>
 
     <!-- 主内容：系统设置 -->

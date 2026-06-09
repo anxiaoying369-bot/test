@@ -11,6 +11,12 @@ httpx>=0.27.0                  # 异步 HTTP
 urllib3>=2.0
 websockets>=12.0               # IM bridge
 
+# ── 微信聊天监控 (WeChat Monitor) ─────────────────────────────────
+# 微信 4.0+ 加密库的独立解密（SQLCipher-v4：PBKDF2-HMAC-SHA512 + AES-256-CBC）。
+# 不依赖 WeFlow 的任何原生库。
+pycryptodome>=3.20
+pilk>=0.2.4                    # SILK_V3 语音解码（微信语音 → PCM/WAV，点击播放）
+
 # ── 知识库 (KB) ────────────────────────────────────────────────────
 numpy==1.26.4                  # Required for X86_V1 compatibility
 pyarrow==16.1.0                # Compatible with numpy 1.x

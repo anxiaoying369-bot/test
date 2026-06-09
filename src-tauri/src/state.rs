@@ -39,4 +39,7 @@ pub struct AppState {
     pub process_handles: Mutex<std::collections::HashMap<String, tokio::process::Child>>,
     pub current_task_id: Mutex<Option<String>>,
     pub video_db: Mutex<rusqlite::Connection>,
+    /// 微信 sidecar（node host.js）常驻连接：负责密钥提取 / 读取聊天 / 监控轮询。
+    /// 用 tokio::Mutex 因为对它的调用是异步且需要跨 await 持锁。
+    pub wechat: tokio::sync::Mutex<Option<crate::commands::wechat::WeChatSidecar>>,
 }

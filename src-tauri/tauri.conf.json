@@ -68,6 +68,8 @@
       "../scripts/DouyinBarrage/base/**/*",
       "../scripts/DouyinBarrage/service/**/*",
       "../scripts/DouyinBarrage/scripts/**/*",
+      "../scripts/wechat/*.py",
+      "resources/wechat/**/*",
       "python-runtime/macos/python/**/*",
       "ffmpeg-runtime/macos/**/*"
     ],

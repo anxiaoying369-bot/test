@@ -27,6 +27,7 @@ pub fn run() {
             process_handles: Mutex::new(std::collections::HashMap::new()),
             current_task_id: Mutex::new(None),
             video_db: Mutex::new(db::init_db(get_data_dir()).expect("Failed to init video database")),
+            wechat: tokio::sync::Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             // Diagnostics
@@ -154,6 +155,23 @@ pub fn run() {
 
             // Video Studio Tasks
             crate::commands::video_studio::tasks::video_list_tasks,
+
+            // WeChat 聊天监控
+            crate::commands::wechat::wechat_get_key,
+            crate::commands::wechat::wechat_open,
+            crate::commands::wechat::wechat_list_sessions,
+            crate::commands::wechat::wechat_list_contacts,
+            crate::commands::wechat::wechat_get_messages,
+            crate::commands::wechat::wechat_get_voice,
+            crate::commands::wechat::wechat_get_media,
+            crate::commands::wechat::wechat_get_image,
+            crate::commands::wechat::wechat_open_video,
+            crate::commands::wechat::wechat_resolve_session,
+            crate::commands::wechat::wechat_start_monitor,
+            crate::commands::wechat::wechat_stop_monitor,
+            crate::commands::wechat::wechat_get_status,
+            crate::commands::wechat::wechat_save_credentials,
+            crate::commands::wechat::wechat_load_credentials,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
