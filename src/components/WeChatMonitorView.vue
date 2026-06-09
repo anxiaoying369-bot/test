@@ -391,25 +391,14 @@ onMounted(async () => {
         class="max-w-[92vw] max-h-[92vh] object-contain rounded shadow-2xl" />
     </div>
 
-    <!-- STT 模型下载进度 -->
+    <!-- STT 模型下载提示 -->
     <div v-if="sttDownloading" class="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-6">
-      <div class="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md shadow-2xl space-y-4">
-        <div class="flex items-center gap-3 text-green-400 font-medium">
-          <Loader2 class="w-5 h-5 animate-spin" />
-          正在准备语音识别模型...
+      <div class="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md shadow-2xl flex flex-col items-center justify-center space-y-4">
+        <Loader2 class="w-8 h-8 text-green-500 animate-spin" />
+        <div class="text-green-400 font-medium text-center">
+          正在下载语音识别模型...<br>
+          <span class="text-xs text-gray-400 font-normal mt-2 block">模型约 900MB，仅首次使用需下载。<br>请保持网络连接，这可能需要几分钟时间。</span>
         </div>
-        <div class="space-y-2">
-          <div class="h-2 bg-gray-800 rounded-full overflow-hidden">
-            <div class="h-full bg-green-600 transition-all duration-300" :style="{ width: `${sttProgress.percent}%` }"></div>
-          </div>
-          <div class="flex justify-between text-[11px] text-gray-400">
-            <span>{{ sttProgress.message }}</span>
-            <span>{{ sttProgress.percent }}%</span>
-          </div>
-        </div>
-        <p class="text-[10px] text-gray-500 italic text-center">
-          模型约 900MB，仅首次使用需下载，请保持网络连接。
-        </p>
       </div>
     </div>
   </div>

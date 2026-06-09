@@ -13,7 +13,8 @@ logging.getLogger('funasr').setLevel(logging.ERROR)
 def log_progress(current, total, message=""):
     """向 stderr 输出 JSON 格式的进度，供 Rust/Vue 捕获"""
     percent = int(current * 100 / total) if total > 0 else 0
-    print(json.dumps({
+    # 加一个换行符，防止被 tqdm 的 \r 覆盖或混合，导致 Rust 端 starts_with('{') 解析失败
+    print("\n" + json.dumps({
         "type": "stt_progress",
         "percent": percent,
         "current": current,
@@ -68,29 +69,22 @@ class STTHelper:
                 from modelscope.hub.snapshot_download import snapshot_download
             except ImportError:
                 print("[stt-helper] Missing modelscope, attempting to install...", file=sys.stderr)
-                log_progress(0, 100, "正在安装必需的依赖 (modelscope)...")
                 import subprocess
-                # 尝试静默安装
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "modelscope>=1.14.0", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"])
                 from modelscope.hub.snapshot_download import snapshot_download
 
             print(f"[stt-helper] Starting download to {path}...", file=sys.stderr)
-            
-            # 先输出一个开始信号
-            log_progress(0, 100, "正在从 ModelScope 下载模型 (约 900MB)...")
             
             snapshot_download(
                 'iic/SenseVoiceSmall',
                 local_dir=path
             )
             
-            log_progress(100, 100, "下载完成")
+            print("[stt-helper] Download completed.", file=sys.stderr)
             return True
         except Exception as e:
             err_msg = str(e)
             print(f"[stt-helper] Download failed: {err_msg}", file=sys.stderr)
-            log_progress(0, 100, f"下载失败: {err_msg}")
-            # 抛出异常让外层捕获
             raise Exception(err_msg)
 
     def _ensure_model(self):
