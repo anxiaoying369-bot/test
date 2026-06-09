@@ -75,6 +75,9 @@ if ((Test-Path $Marker) -and ((Get-Content $Marker) -eq $ExpectedMarker)) {
 $PythonBin = Join-Path $PlatformDir "python\python.exe"
 $PipArgs = @("--no-cache-dir", "--quiet")
 
+# 强制 Python 在 Windows 上使用 UTF-8 读取文件，防止 requirements.txt 中的中文注释导致 UnicodeDecodeError
+$env:PYTHONUTF8 = "1"
+
 # 在 CI 环境下，强制安装 CPU 版 torch，并确保不被后续安装覆盖
 if ($env:GITHUB_ACTIONS -eq "true") {
     Write-Host "CI detected: Installing CPU-only torch..."
