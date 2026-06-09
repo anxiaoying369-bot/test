@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost https://asset.localhost https://*.douyinpic.com https://*.douyin.com https://*.amemv.com https://*.bytedance.com https://*.byted.org https://*.byteicdn.com https://*.bytecdn.cn https://*.bdstatic.com https://*.toutiao.com; media-src 'self' asset: http://asset.localhost https://asset.localhost https://*.douyinpic.com https://*.douyin.com https://*.amemv.com https://*.bytedance.com https://*.byted.org https://*.byteicdn.com https://*.bytecdn.cn https://*.bdstatic.com; connect-src 'self' ipc: http://ipc.localhost https://*.douyinpic.com https://*.douyin.com https://*.amemv.com https://*.bytedance.com https://*.byted.org; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost https://asset.localhost https://*.douyinpic.com https://*.douyin.com https://*.amemv.com https://*.bytedance.com https://*.byted.org https://*.byteicdn.com https://*.bytecdn.cn https://*.bdstatic.com https://*.toutiao.com; media-src 'self' data: asset: http://asset.localhost https://asset.localhost https://*.douyinpic.com https://*.douyin.com https://*.amemv.com https://*.bytedance.com https://*.byted.org https://*.byteicdn.com https://*.bytecdn.cn https://*.bdstatic.com; connect-src 'self' ipc: http://ipc.localhost https://*.douyinpic.com https://*.douyin.com https://*.amemv.com https://*.bytedance.com https://*.byted.org; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "assetProtocol": {
         "enable": true,
         "scope": [
