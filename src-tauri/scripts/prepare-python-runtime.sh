@@ -20,7 +20,6 @@ detect_target() {
     case "$(uname -s)" in
       Darwin) os="macos" ;;
       Linux)  os="linux" ;;
-      MINGW*|MSYS*|CYGWIN*) os="windows" ;;
       *) echo "Error: Unknown platform $(uname -s)"; exit 1 ;;
     esac
   fi
@@ -35,7 +34,6 @@ detect_target() {
   case "$os" in
     macos)   PLATFORM_TAG="${arch}-apple-darwin" ;;
     linux)   PLATFORM_TAG="${arch}-unknown-linux-gnu" ;;
-    windows) PLATFORM_TAG="${arch}-pc-windows-msvc" ;;
     *) echo "Error: Unsupported OS: $os"; exit 1 ;;
   esac
 
@@ -61,30 +59,36 @@ download_python() {
     mv "$tarball.tmp" "$tarball"
   fi
 
-  echo "Extracting to $RUNTIME_DIR/macos/"
-  rm -rf "$RUNTIME_DIR/macos"
-  tar -xzf "$tarball" -C "$RUNTIME_DIR"
-  local extracted_dir
-  extracted_dir=$(ls -d "$RUNTIME_DIR"/python-install 2>/dev/null || ls -d "$RUNTIME_DIR"/python 2>/dev/null || echo "")
-  if [[ -n "$extracted_dir" ]]; then
-    mv "$extracted_dir" "$RUNTIME_DIR/macos"
+  echo "Extracting Python..."
+  local temp_extract_dir="$RUNTIME_DIR/tmp_extract"
+  rm -rf "$temp_extract_dir"
+  mkdir -p "$temp_extract_dir"
+  tar -xzf "$tarball" -C "$temp_extract_dir"
+
+  # 确保目标平台目录存在
+  local platform_dir="$RUNTIME_DIR/macos"
+  rm -rf "$platform_dir"
+  mkdir -p "$platform_dir"
+
+  # 寻找解压出的顶级目录（通常是 'python'）并移动到 macos/python
+  local extracted
+  extracted=$(ls -d "$temp_extract_dir"/python-install 2>/dev/null || ls -d "$temp_extract_dir"/python 2>/dev/null || echo "")
+  
+  if [[ -n "$extracted" ]]; then
+    mv "$extracted" "$platform_dir/python"
   else
-    mkdir -p "$RUNTIME_DIR/macos"
-    shopt -s dotglob
-    mv "$RUNTIME_DIR"/*/ "$RUNTIME_DIR/macos/" 2>/dev/null || true
-    shopt -u dotglob
+    # 兜底：如果目录名不是 python，则将 tmp_extract 下所有内容移入 macos/python
+    mkdir -p "$platform_dir/python"
+    mv "$temp_extract_dir"/* "$platform_dir/python/"
   fi
+  
+  rm -rf "$temp_extract_dir"
   echo "$PYTHON_VERSION-$PLATFORM_TAG" > "$marker"
 }
 
 # -- Install Dependencies ---------------------------------------
 install_deps() {
-  local python_bin
-  if [[ "$PLATFORM_TAG" == *windows* ]]; then
-    python_bin="$RUNTIME_DIR/windows/python/python.exe"
-  else
-    python_bin="$RUNTIME_DIR/macos/python/bin/python3"
-  fi
+  local python_bin="$RUNTIME_DIR/macos/python/bin/python3"
 
   if [[ ! -x "$python_bin" ]]; then
     echo "Error: Cannot find python: $python_bin"
@@ -108,11 +112,16 @@ install_deps() {
   "${pip_cmd[@]}" -r "$REQUIREMENTS" --no-cache-dir --quiet
 
   echo "Aggressively cleaning up runtime..."
+  # 删除开发文件
   find "$RUNTIME_DIR/macos" -type f \( -name "*.pdb" -o -name "*.lib" -o -name "*.a" -o -name "*.h" -o -name "*.cpp" \) -delete 2>/dev/null || true
+  
+  # 删除不必要的文件夹
   local unneeded_dirs=("__pycache__" "tests" "test" "Include" "share" "tcl" "tk" "idlelib" "ensurepip")
   for d in "${unneeded_dirs[@]}"; do
     find "$RUNTIME_DIR/macos" -type d -name "$d" -exec rm -rf {} + 2>/dev/null || true
   done
+  
+  # 进一步清理 site-packages 中的测试文件
   find "$RUNTIME_DIR/macos" -type d \( -name "tests" -o -name "test" \) -exec rm -rf {} + 2>/dev/null || true
 }
 
