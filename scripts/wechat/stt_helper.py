@@ -63,11 +63,20 @@ class STTHelper:
         try:
             # 使用国内镜像
             os.environ["MODELSCOPE_DOMAIN"] = "www.modelscope.cn"
-            from modelscope.hub.snapshot_download import snapshot_download
+            
+            try:
+                from modelscope.hub.snapshot_download import snapshot_download
+            except ImportError:
+                print("[stt-helper] Missing modelscope, attempting to install...", file=sys.stderr)
+                log_progress(0, 100, "正在安装必需的依赖 (modelscope)...")
+                import subprocess
+                # 尝试静默安装
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "modelscope>=1.14.0", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"])
+                from modelscope.hub.snapshot_download import snapshot_download
+
             print(f"[stt-helper] Starting download to {path}...", file=sys.stderr)
             
-            # 这里的 snapshot_download 在底层其实不太好拿具体进度百分比
-            # 我们先输出一个开始信号
+            # 先输出一个开始信号
             log_progress(0, 100, "正在从 ModelScope 下载模型 (约 900MB)...")
             
             snapshot_download(
@@ -78,8 +87,11 @@ class STTHelper:
             log_progress(100, 100, "下载完成")
             return True
         except Exception as e:
-            print(f"[stt-helper] Download failed: {e}", file=sys.stderr)
-            return False
+            err_msg = str(e)
+            print(f"[stt-helper] Download failed: {err_msg}", file=sys.stderr)
+            log_progress(0, 100, f"下载失败: {err_msg}")
+            # 抛出异常让外层捕获
+            raise Exception(err_msg)
 
     def _ensure_model(self):
         with self._load_lock:
