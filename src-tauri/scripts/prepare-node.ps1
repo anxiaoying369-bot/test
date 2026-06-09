@@ -14,6 +14,11 @@ if (-not (Test-Path $PlatformDir)) {
     New-Item -ItemType Directory -Force -Path $PlatformDir | Out-Null
 }
 
+if (Test-Path (Join-Path $PlatformDir "node.exe")) {
+    Write-Host "Node.js already exists in $PlatformDir, skipping."
+    return
+}
+
 Write-Host "Target Platform: Windows/$Arch"
 
 $Url = "https://nodejs.org/dist/$NodeVersion/node-$NodeVersion-win-$Arch.zip"

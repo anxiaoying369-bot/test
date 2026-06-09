@@ -10,6 +10,11 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 RUNTIME_DIR="$( cd "$SCRIPT_DIR/.." && pwd )/node-runtime"
 PLATFORM_DIR="$RUNTIME_DIR/macos"
 
+if [ -f "$PLATFORM_DIR/bin/node" ]; then
+    echo "Node.js already exists in $PLATFORM_DIR, skipping."
+    exit 0
+fi
+
 mkdir -p "$RUNTIME_DIR/.cache"
 mkdir -p "$PLATFORM_DIR"
 

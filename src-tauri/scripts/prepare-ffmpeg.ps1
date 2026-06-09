@@ -15,6 +15,11 @@ if (-not (Test-Path $PLATFORM_DIR)) {
     New-Item -ItemType Directory -Force -Path $PLATFORM_DIR | Out-Null
 }
 
+if (Test-Path (Join-Path $PLATFORM_DIR "ffmpeg.exe")) {
+    Write-Host "FFmpeg binaries already exist in $PLATFORM_DIR, skipping."
+    return
+}
+
 Write-Host "Target Platform: windows/x64"
 
 $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"

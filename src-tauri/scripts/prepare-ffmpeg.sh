@@ -43,6 +43,14 @@ detect_target() {
 
 # -- Download and Extract ---------------------------------------
 download_ffmpeg() {
+  local platform_dir="$RUNTIME_DIR/macos"
+  if [[ "$OS" == "windows" ]]; then platform_dir="$RUNTIME_DIR/windows"; fi
+  
+  if [[ -f "$platform_dir/ffmpeg" ]] || [[ -f "$platform_dir/ffmpeg.exe" ]]; then
+    echo "FFmpeg binaries already exist in $platform_dir, skipping."
+    return 0
+  fi
+
   mkdir -p "$RUNTIME_DIR/.cache"
   
   if [[ "$OS" == "macos" ]]; then
