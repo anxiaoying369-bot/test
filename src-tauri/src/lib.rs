@@ -171,6 +171,8 @@ pub fn run() {
             crate::commands::wechat::wechat_start_monitor,
             crate::commands::wechat::wechat_stop_monitor,
             crate::commands::wechat::wechat_get_status,
+            crate::commands::wechat::wechat_check_stt_model,
+            crate::commands::wechat::wechat_download_stt_model,
             crate::commands::wechat::wechat_save_credentials,
             crate::commands::wechat::wechat_load_credentials,
         ])

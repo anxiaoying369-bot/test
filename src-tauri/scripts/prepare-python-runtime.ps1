@@ -108,13 +108,29 @@ Write-Host "Installing numpy 1.x for X86_V1 CPU compatibility..."
 & $PythonBin -m pip install "numpy==1.26.4" @PipArgs --no-cache-dir --force-reinstall --quiet
 
 Write-Host "Installing dependencies (from ${Requirements})..."
-& $PythonBin -m pip install -r $Requirements @PipArgs --no-cache-dir --force-reinstall
+$PipInstallArgs = @("-m", "pip", "install", "-r", $Requirements)
+if ($env:PIP_INDEX_URL) {
+    $PipInstallArgs += "-i", $env:PIP_INDEX_URL
+}
+# 关键：在 CI 环境下通过额外参数强制使用 CPU 版 torch 以减小体积
+if ($env:GITHUB_ACTIONS -eq "true") {
+    Write-Host "CI detected: Forcing CPU versions of torch/torchaudio to save space..."
+    & $PythonBin -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu @PipArgs --no-cache-dir --quiet
+}
+& $PythonBin @PipInstallArgs --no-cache-dir --quiet
 
-Write-Host "Cleaning __pycache__ and .pyc..."
-Get-ChildItem -Path $PlatformDir -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $PlatformDir -Recurse -File -Filter "*.pyc" | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $PlatformDir -Recurse -Directory -Filter "tests" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $PlatformDir -Recurse -Directory -Filter "test"  | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "Aggressively cleaning up runtime to save space..."
+# 删除所有的调试符号文件、静态库和头文件（运行时不需要）
+Get-ChildItem -Path $PlatformDir -Recurse -File -Include "*.pdb", "*.lib", "*.a", "*.h", "*.cpp" | Remove-Item -Force -ErrorAction SilentlyContinue
+
+# 删除不必要的文件夹
+$UnneededDirs = @("__pycache__", "tests", "test", "Include", "share", "tcl", "tk", "idlelib", "ensurepip")
+foreach ($dir in $UnneededDirs) {
+    Get-ChildItem -Path $PlatformDir -Recurse -Directory -Filter $dir | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# 删除 site-packages 里的测试文件夹
+Get-ChildItem -Path $PlatformDir -Recurse -Directory -Include "tests", "test" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 # -- Report Size ------------------------------------------------
 $Size = (Get-ChildItem -Path $PlatformDir -Recurse | Measure-Object -Property Length -Sum).Sum

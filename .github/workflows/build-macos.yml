@@ -40,22 +40,8 @@ jobs:
             src-tauri/node-runtime
           key: runtimes-macos-${{ hashFiles('requirements.txt', 'src-tauri/scripts/prepare-*.sh') }}
 
-      - name: 缓存 AI 模型
-        uses: actions/cache@v4
-        with:
-          path: src-tauri/resources/models
-          key: ai-models-${{ hashFiles('scripts/download_model.py') }}
-
-      - name: 安装前端依赖
-        run: npm ci
-
       - name: 准备内置运行时
         run: npm run prepare:all
-
-      - name: 下载 AI 模型
-        run: |
-          # 确保 python 运行时已准备好，以便运行下载脚本
-          ./src-tauri/python-runtime/macos/python/bin/python3 scripts/download_model.py
 
       - name: 打包 Tauri (macOS)
         run: npm run tauri build

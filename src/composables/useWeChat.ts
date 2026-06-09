@@ -58,26 +58,76 @@ const watched = ref<Record<string, string>>({});
 // 监控推送过来的新消息（最新在前）
 const newMessages = ref<NewMessageEvent[]>([]);
 
+// STT 模型状态
+const sttReady = ref(false);
+const sttDownloading = ref(false);
+const sttProgress = ref({ percent: 0, message: '' });
+
 let unlisten: any = null;
+let unlistenSTT: any = null;
 
 export function useWeChat() {
   async function initListener() {
-    if (unlisten) return;
-    unlisten = await listen('wechat-new-message', (event: any) => {
-      const data = event.payload as { sessionId: string; displayName: string; messages: WeChatMessage[] };
-      newMessages.value.unshift({
-        sessionId: data.sessionId,
-        displayName: data.displayName,
-        messages: data.messages || [],
-        receivedAt: Date.now(),
-      });
-      if (newMessages.value.length > 200) newMessages.value.pop();
+    if (!unlisten) {
+      unlisten = await listen('wechat-new-message', (event: any) => {
+        const data = event.payload as { sessionId: string; displayName: string; messages: WeChatMessage[] };
+        newMessages.value.unshift({
+          sessionId: data.sessionId,
+          displayName: data.displayName,
+          messages: data.messages || [],
+          receivedAt: Date.now(),
+        });
+        if (newMessages.value.length > 200) newMessages.value.pop();
 
-      // 如果新消息属于当前正在查看的会话，追加到消息列表尾部
-      if (data.sessionId === currentSessionId.value) {
-        messages.value.push(...(data.messages || []));
+        if (data.sessionId === currentSessionId.value) {
+          messages.value.push(...(data.messages || []));
+        }
+      });
+    }
+
+    if (!unlistenSTT) {
+      unlistenSTT = await listen('wechat-stt-progress', (event: any) => {
+        const payload = event.payload as { percent: number; message: string };
+        sttProgress.value = {
+          percent: payload.percent,
+          message: payload.message || '正在下载...',
+        };
+        if (payload.percent === 100) {
+          sttReady.value = true;
+          sttDownloading.value = false;
+        }
+      });
+    }
+  }
+
+  async function checkSTTModel() {
+    try {
+      const res = await invoke('wechat_check_stt_model') as { ready: boolean };
+      sttReady.value = res.ready;
+      return res.ready;
+    } catch (e) {
+      console.warn('check_stt_model failed', e);
+      return false;
+    }
+  }
+
+  async function downloadSTTModel() {
+    sttDownloading.value = true;
+    sttProgress.value = { percent: 0, message: '准备下载...' };
+    try {
+      const res = await invoke('wechat_download_stt_model') as { ok: boolean; error?: string };
+      if (res.ok) {
+        sttReady.value = true;
+      } else {
+        console.error('download_stt_model failed', res.error);
       }
-    });
+      return res.ok;
+    } catch (e) {
+      console.error('download_stt_model invoke failed', e);
+      return false;
+    } finally {
+      sttDownloading.value = false;
+    }
   }
 
   async function loadCredentials() {
@@ -314,9 +364,11 @@ export function useWeChat() {
     // state
     connected, monitoring, accountDir, hexKey, statusText, busy,
     sessions, contacts, friendCount, groupCount, currentSessionId, messages, watched, newMessages,
+    sttReady, sttDownloading, sttProgress,
     // actions
     initListener, loadCredentials, refreshStatus, autoGetKey, connect,
     loadSessions, loadContacts, openSession, resolveSession, toggleWatch,
     startMonitor, stopMonitor, clearNewMessages, getVoiceUrl, transcribeVoice, getMediaUrl, getImageUrl, openVideo,
+    checkSTTModel, downloadSTTModel,
   };
 }

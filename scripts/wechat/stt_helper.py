@@ -4,10 +4,22 @@ import os
 import sys
 import threading
 import logging
+import json
 
 # 屏蔽 modelscope/funasr 的冗余日志
 logging.getLogger('modelscope').setLevel(logging.ERROR)
 logging.getLogger('funasr').setLevel(logging.ERROR)
+
+def log_progress(current, total, message=""):
+    """向 stderr 输出 JSON 格式的进度，供 Rust/Vue 捕获"""
+    percent = int(current * 100 / total) if total > 0 else 0
+    print(json.dumps({
+        "type": "stt_progress",
+        "percent": percent,
+        "current": current,
+        "total": total,
+        "message": message
+    }), file=sys.stderr, flush=True)
 
 class STTHelper:
     _instance = None
@@ -24,35 +36,70 @@ class STTHelper:
                 cls._instance = STTHelper()
             return cls._instance
 
+    def get_model_path(self):
+        """获取模型存储路径：~/Library/Application Support/AutoCastAI/models/SenseVoiceSmall"""
+        base_dir = os.environ.get("WECHAT_USER_DATA")
+        if not base_dir:
+            # Fallback
+            if sys.platform == "darwin":
+                base_dir = os.path.expanduser("~/Library/Application Support/AutoCastAI/wechat")
+            else:
+                base_dir = os.path.join(os.environ.get("APPDATA", ""), "AutoCastAI", "wechat")
+        
+        # 将模型放在 User Data 目录下，而不是 Bundle 内，这样打包更轻量
+        models_dir = os.path.join(os.path.dirname(base_dir), "models")
+        return os.path.join(models_dir, "SenseVoiceSmall")
+
+    def is_model_ready(self):
+        path = self.get_model_path()
+        return os.path.exists(os.path.join(path, "model.pt"))
+
+    def download_model(self):
+        """下载模型（国内镜像）"""
+        path = self.get_model_path()
+        if self.is_model_ready():
+            return True
+        
+        try:
+            # 使用国内镜像
+            os.environ["MODELSCOPE_DOMAIN"] = "www.modelscope.cn"
+            from modelscope.hub.snapshot_download import snapshot_download
+            print(f"[stt-helper] Starting download to {path}...", file=sys.stderr)
+            
+            # 这里的 snapshot_download 在底层其实不太好拿具体进度百分比
+            # 我们先输出一个开始信号
+            log_progress(0, 100, "正在从 ModelScope 下载模型 (约 900MB)...")
+            
+            snapshot_download(
+                'iic/SenseVoiceSmall',
+                local_dir=path
+            )
+            
+            log_progress(100, 100, "下载完成")
+            return True
+        except Exception as e:
+            print(f"[stt-helper] Download failed: {e}", file=sys.stderr)
+            return False
+
     def _ensure_model(self):
         with self._load_lock:
             if self.model is not None:
                 return
             
+            if not self.is_model_ready():
+                raise Exception("模型未就绪，请先下载")
+
             try:
                 from funasr import AutoModel
                 import torch
                 
                 device = "cuda" if torch.cuda.is_available() else "cpu"
-                # 如果是 Mac M1/M2/M3，可以使用 mps
                 if sys.platform == "darwin" and torch.backends.mps.is_available():
                     device = "mps"
                 
-                print(f"[stt-helper] Loading SenseVoiceSmall on {device}...", file=sys.stderr)
-                
-                # 尝试定位本地模型
-                model_path = "iic/SenseVoiceSmall"
-                resources_path = os.environ.get("WCDB_RESOURCES_PATH")
-                if resources_path:
-                    # WCDB_RESOURCES_PATH 通常指向 .../resources/wechat
-                    # 本地模型预期在 .../resources/models/SenseVoiceSmall
-                    local_model = os.path.join(os.path.dirname(resources_path), "models", "SenseVoiceSmall")
-                    if os.path.exists(local_model) and os.path.isdir(local_model):
-                        model_path = local_model
-                        print(f"[stt-helper] Using local model: {model_path}", file=sys.stderr)
-                
+                print(f"[stt-helper] Loading SenseVoiceSmall from {self.get_model_path()} on {device}...", file=sys.stderr)
                 self.model = AutoModel(
-                    model=model_path,
+                    model=self.get_model_path(),
                     device=device,
                     disable_pbar=True,
                     disable_log=True
@@ -65,13 +112,9 @@ class STTHelper:
     def transcribe(self, wav_path):
         self._ensure_model()
         try:
-            # SenseVoiceSmall generate returns a list of results
             res = self.model.generate(input=wav_path, cache={}, language="auto", use_itn=True)
             if res and len(res) > 0:
-                # res[0] is usually {'text': '...', 'token': [...]}
-                # SenseVoiceSmall output might contain event tags like <|zh|><|NEUTRAL|><|Speech|>
                 text = res[0].get('text', '')
-                # 清洗掉 SenseVoice 的标签
                 import re
                 text = re.sub(r'<\|.*?\|>', '', text).strip()
                 return text
@@ -82,3 +125,9 @@ class STTHelper:
 
 def transcribe_wav(wav_path):
     return STTHelper.get_instance().transcribe(wav_path)
+
+def check_stt_model():
+    return STTHelper.get_instance().is_model_ready()
+
+def download_stt_model():
+    return STTHelper.get_instance().download_model()

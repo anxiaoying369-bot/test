@@ -44,31 +44,19 @@ jobs:
             src-tauri/node-runtime
           key: runtimes-windows-${{ hashFiles('requirements.txt', 'src-tauri/scripts/prepare-*.ps1') }}
 
-      - name: 缓存 AI 模型
-        uses: actions/cache@v4
-        with:
-          path: src-tauri/resources/models
-          key: ai-models-${{ hashFiles('scripts/download_model.py') }}
-
       - name: 安装前端依赖
         run: npm ci
 
-      # 下载并准备内置 Python / ffmpeg / Node（beforeBuildCommand 不含这步，必须显式跑）
+      # 下载并准备内置 Python / ffmpeg / Node
       - name: 准备内置运行时
         run: npm run prepare:all
 
-      - name: 下载 AI 模型
-        run: |
-          & src-tauri/python-runtime/windows/python/python.exe scripts/download_model.py
-
-      # 触发 tauri build：beforeBuildCommand=npm run build（vue-tsc 类型检查 + vite 构建），
-      # 随后 cargo 编译 + 生成 NSIS(.exe) / MSI(.msi) 安装包
-      - name: 打包 Tauri（Windows）
+      # 触发 tauri build：执行 npm run build（vue-tsc 类型检查 + vite 构建），随后 cargo 编译并生成 NSIS(.exe) 安装包
+      - name: 打包 Tauri (Windows)
         run: npm run tauri build
         id: tauri-build
 
-      # 失败时上传完整日志到 artifact（默认 artifacts 在工作流被删后 90 天保留），
-      # 便于本地/未登录用户也能拿到原始错误信息（GitHub 页面上的 logs 需登录才能看）
+      # 失败时上传完整日志到 artifact
       - name: 上传失败日志（debug 用）
         if: failure()
         uses: actions/upload-artifact@v4
@@ -76,25 +64,13 @@ jobs:
           name: build-windows-failure-logs
           path: |
             src-tauri/target/release/build/autocast-*/output
-            src-tauri/target/release/bundle/macos/bundle_dmg.sh.log
             src-tauri/target/release/bundle/nsis/*.log
             ${{ runner.temp }}/**/npm-*.log
           if-no-files-found: ignore
           retention-days: 30
 
-      # 始终跑（无论成功失败）：恢复 tauri.conf.json 的 resources 字段，
-      # 以防上一 step 失败中途把 runner 重启导致 conf 没被还原。
-      # 见 "Patch tauri.conf.json for current platform" step 注释
-      - name: 恢复 tauri.conf.json
-        if: always()
-        run: |
-          if (Test-Path src-tauri/tauri.conf.json.bak) {
-            Move-Item -Force src-tauri/tauri.conf.json.bak src-tauri/tauri.conf.json
-            Write-Host "Restored tauri.conf.json from backup"
-          }
-
-      # 把安装包作为工作流产物上传（在该次 run 页面的 Artifacts 下载）
-      - name: 上传安装包（Artifacts）
+      # 把安装包作为工作流产物上传
+      - name: 上传安装包 (Artifacts)
         uses: actions/upload-artifact@v4
         with:
           name: autocast-windows-installers
@@ -103,7 +79,7 @@ jobs:
           if-no-files-found: error
 
       # 仅当是 tag 触发：把安装包发布到 GitHub Release
-      - name: 发布到 Release（仅 tag 触发）
+      - name: 发布到 Release (仅 tag 触发)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:

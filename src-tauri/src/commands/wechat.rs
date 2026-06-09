@@ -117,7 +117,7 @@ fn resolve_wechat_resources_dir() -> Option<PathBuf> {
 }
 
 /// 确保引擎已启动；首次调用时拉起 python wechat_engine.py 并挂上 stdout/stderr 读取任务。
-async fn ensure_sidecar(state: &State<'_, AppState>) -> Result<(), String> {
+async fn ensure_sidecar(app_handle: &AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.wechat.lock().await;
     if guard.is_some() {
         return Ok(());
@@ -170,11 +170,23 @@ async fn ensure_sidecar(state: &State<'_, AppState>) -> Result<(), String> {
         }
     });
 
-    // stderr：日志透传
+    // stderr：日志透传 + 捕获进度
+    let app_handle_err = app_handle.clone();
     tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            eprintln!("{line}");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // 尝试解析 STT 进度 JSON
+            if line.starts_with('{') && line.contains("\"stt_progress\"") {
+                if let Ok(v) = serde_json::from_str::<Value>(line) {
+                    let _ = app_handle_err.emit("wechat-stt-progress", v).unwrap_or(());
+                }
+            } else {
+                eprintln!("{line}");
+            }
         }
     });
 
@@ -199,8 +211,8 @@ fn creds_path() -> PathBuf {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn wechat_get_key(state: State<'_, AppState>) -> Result<Value, String> {
-    ensure_sidecar(&state).await?;
+pub async fn wechat_get_key(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
     let mut guard = state.wechat.lock().await;
     let sc = guard.as_mut().ok_or("引擎未初始化")?;
     // 密钥提取含 sudo 授权 + hook，给足超时
@@ -210,11 +222,12 @@ pub async fn wechat_get_key(state: State<'_, AppState>) -> Result<Value, String>
 
 #[tauri::command]
 pub async fn wechat_open(
+    app: AppHandle,
     account_dir: String,
     hex_key: String,
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    ensure_sidecar(&state).await?;
+    ensure_sidecar(&app, &state).await?;
     let mut guard = state.wechat.lock().await;
     let sc = guard.as_mut().ok_or("引擎未初始化")?;
     let res = sc
@@ -240,14 +253,33 @@ pub async fn wechat_open(
 }
 
 #[tauri::command]
-pub async fn wechat_list_sessions(state: State<'_, AppState>) -> Result<Value, String> {
+pub async fn wechat_check_stt_model(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
+    let mut guard = state.wechat.lock().await;
+    let sc = guard.as_mut().ok_or("引擎未初始化")?;
+    sc.call("check_stt_model", json!({}), Duration::from_secs(10)).await
+}
+
+#[tauri::command]
+pub async fn wechat_download_stt_model(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
+    let mut guard = state.wechat.lock().await;
+    let sc = guard.as_mut().ok_or("引擎未初始化")?;
+    // 下载很慢，给一个小时超时
+    sc.call("download_stt_model", json!({}), Duration::from_secs(3600)).await
+}
+
+#[tauri::command]
+pub async fn wechat_list_sessions(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
     let mut guard = state.wechat.lock().await;
     let sc = guard.as_mut().ok_or("尚未连接微信数据库")?;
     sc.call("get_sessions", json!({}), Duration::from_secs(60)).await
 }
 
 #[tauri::command]
-pub async fn wechat_list_contacts(state: State<'_, AppState>) -> Result<Value, String> {
+pub async fn wechat_list_contacts(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
     let mut guard = state.wechat.lock().await;
     let sc = guard.as_mut().ok_or("尚未连接微信数据库")?;
     sc.call("get_contacts", json!({}), Duration::from_secs(60)).await
@@ -255,11 +287,13 @@ pub async fn wechat_list_contacts(state: State<'_, AppState>) -> Result<Value, S
 
 #[tauri::command]
 pub async fn wechat_get_messages(
+    app: AppHandle,
     session_id: String,
     limit: Option<i64>,
     offset: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
     let mut guard = state.wechat.lock().await;
     let sc = guard.as_mut().ok_or("尚未连接微信数据库")?;
     sc.call(
@@ -273,12 +307,14 @@ pub async fn wechat_get_messages(
 /// 取某条语音消息的可播放音频（SILK→WAV，base64）。
 #[tauri::command]
 pub async fn wechat_get_voice(
+    app: AppHandle,
     session_id: String,
     svr_id: Option<i64>,
     local_id: Option<i64>,
     create_time: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
     let mut guard = state.wechat.lock().await;
     let sc = guard.as_mut().ok_or("尚未连接微信数据库")?;
     sc.call(
@@ -297,12 +333,14 @@ pub async fn wechat_get_voice(
 /// 语音转文字：调用 SenseVoiceSmall 进行识别。
 #[tauri::command]
 pub async fn wechat_transcribe_voice(
+    app: AppHandle,
     session_id: String,
     svr_id: Option<i64>,
     local_id: Option<i64>,
     create_time: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
     let mut guard = state.wechat.lock().await;
     let sc = guard.as_mut().ok_or("尚未连接微信数据库")?;
     // 转文字可能较慢，给足超时
@@ -322,11 +360,13 @@ pub async fn wechat_transcribe_voice(
 /// 取图片消息的解密图片（base64）。want_full=false 取缩略图，true 取大图（wxgf 会转码）。
 #[tauri::command]
 pub async fn wechat_get_image(
+    app: AppHandle,
     session_id: String,
     local_id: i64,
     want_full: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
     let mut guard = state.wechat.lock().await;
     let sc = guard.as_mut().ok_or("尚未连接微信数据库")?;
     sc.call(
@@ -340,10 +380,12 @@ pub async fn wechat_get_image(
 /// 解析视频消息的明文 mp4 路径并用系统默认播放器打开。
 #[tauri::command]
 pub async fn wechat_open_video(
+    app: AppHandle,
     session_id: String,
     local_id: i64,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    ensure_sidecar(&app, &state).await?;
     let res = {
         let mut guard = state.wechat.lock().await;
         let sc = guard.as_mut().ok_or("尚未连接微信数据库")?;
@@ -380,6 +422,7 @@ pub async fn wechat_open_video(
 /// 取某条媒体消息（视频缩略图等）的图片数据（base64）。
 #[tauri::command]
 pub async fn wechat_get_media(
+    app: AppHandle,
     session_id: String,
     local_id: i64,
     local_type: i64,
@@ -387,6 +430,7 @@ pub async fn wechat_get_media(
     create_time: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
     let mut guard = state.wechat.lock().await;
     let sc = guard.as_mut().ok_or("尚未连接微信数据库")?;
     sc.call(
@@ -405,9 +449,11 @@ pub async fn wechat_get_media(
 
 #[tauri::command]
 pub async fn wechat_resolve_session(
+    app: AppHandle,
     keyword: String,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
+    ensure_sidecar(&app, &state).await?;
     let mut guard = state.wechat.lock().await;
     let sc = guard.as_mut().ok_or("尚未连接微信数据库")?;
     sc.call("resolve_session", json!({ "keyword": keyword }), Duration::from_secs(60))

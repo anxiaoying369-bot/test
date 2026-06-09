@@ -1077,6 +1077,24 @@ def main():
             elif typ == "get_voice_text":
                 result = engine.get_voice_text(req["sessionId"], req.get("svrId", 0),
                                                req.get("localId", 0), req.get("createTime", 0))
+            elif typ == "check_stt_model":
+                stt = get_stt_helper()
+                result = {"ready": stt.is_model_ready() if stt else False}
+            elif typ == "download_stt_model":
+                stt = get_stt_helper()
+                if not stt:
+                    send({"id": rid, "result": {"ok": False, "error": "STT 模块加载失败"}})
+                    continue
+                
+                def _do_download(rid_inner):
+                    try:
+                        ok = stt.download_model()
+                        send({"id": rid_inner, "result": {"ok": ok}})
+                    except Exception as e:
+                        send({"id": rid_inner, "error": str(e)})
+                
+                threading.Thread(target=_do_download, args=(rid,), daemon=True).start()
+                continue
             elif typ == "get_media":
                 result = engine.get_media(req["sessionId"], req.get("localId", 0),
                                           req.get("localType", 0), req.get("svrId", 0),

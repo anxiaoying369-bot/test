@@ -1,20 +1,6 @@
 #!/usr/bin/env bash
 #
 # Download python-build-standalone (from astral-sh), extract to src-tauri/python-runtime/
-# Final structure:
-#   src-tauri/python-runtime/
-#     ├── macos/
-#     │   ├── bin/python3         (macOS)
-#     │   ├── include/            (macOS)
-#     │   └── lib/python3.11/site-packages/  <- pip packages here
-#     └── windows/
-#         ├── python.exe        (Windows)
-#         ├── python311.dll
-#         └── lib/python3.11/site-packages/   <- pip packages here
-#
-# Usage:
-#   ./prepare-python-runtime.sh                  # auto detect platform
-#   TARGET_OS=windows ./prepare-python-runtime.sh  # force specified platform
 #
 set -euo pipefail
 
@@ -83,7 +69,6 @@ download_python() {
   if [[ -n "$extracted_dir" ]]; then
     mv "$extracted_dir" "$RUNTIME_DIR/macos"
   else
-    # fallback
     mkdir -p "$RUNTIME_DIR/macos"
     shopt -s dotglob
     mv "$RUNTIME_DIR"/*/ "$RUNTIME_DIR/macos/" 2>/dev/null || true
@@ -93,9 +78,6 @@ download_python() {
 }
 
 # -- Install Dependencies ---------------------------------------
-# python-build-standalone 解压后顶层是 "python/" 目录（保留这一层，跟
-# src-tauri/src/utils.rs:320-321 和 ps1 端 prepare-python-runtime.ps1 对齐）。
-# 所以真实路径是 RUNTIME_DIR/<platform>/python/<bin>，不是 RUNTIME_DIR/<platform>/<bin>。
 install_deps() {
   local python_bin
   if [[ "$PLATFORM_TAG" == *windows* ]]; then
@@ -106,45 +88,38 @@ install_deps() {
 
   if [[ ! -x "$python_bin" ]]; then
     echo "Error: Cannot find python: $python_bin"
-    ls -la "$RUNTIME_DIR/macos/" 2>&1 | head -20
-    exit 1
-  fi
-
-  if [[ ! -f "$REQUIREMENTS" ]]; then
-    echo "Error: Cannot find requirements.txt: $REQUIREMENTS"
     exit 1
   fi
 
   echo "Upgrading pip..."
-  local pip_args=()
+  "$python_bin" -m pip install --upgrade pip --quiet
+
+  echo "Installing dependencies..."
+  local pip_cmd=("$python_bin" -m pip install)
   if [[ -n "${PIP_INDEX_URL:-}" ]]; then
-    pip_args+=("-i" "$PIP_INDEX_URL")
-    echo "Using mirror: $PIP_INDEX_URL"
+    pip_cmd+=("-i" "$PIP_INDEX_URL")
   fi
 
-  "$python_bin" -m pip install "${pip_args[@]}" --upgrade pip --quiet
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "CI detected: Forcing CPU-only versions of torch/torchaudio..."
+    "${pip_cmd[@]}" torch torchaudio --index-url https://download.pytorch.org/whl/cpu --no-cache-dir --quiet
+  fi
 
-  echo "Installing dependencies (from ${REQUIREMENTS})..."
-  "$python_bin" -m pip install "${pip_args[@]}" -r "$REQUIREMENTS"
+  "${pip_cmd[@]}" -r "$REQUIREMENTS" --no-cache-dir --quiet
 
-  echo "Cleaning __pycache__ and .pyc to reduce size..."
-  find "$RUNTIME_DIR/macos" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-  find "$RUNTIME_DIR/macos" -name "*.pyc" -delete 2>/dev/null || true
-  find "$RUNTIME_DIR/macos" -name "*.pyo" -delete 2>/dev/null || true
-  find "$RUNTIME_DIR/macos" -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
-  find "$RUNTIME_DIR/macos" -type d -name "test"  -exec rm -rf {} + 2>/dev/null || true
+  echo "Aggressively cleaning up runtime..."
+  find "$RUNTIME_DIR/macos" -type f \( -name "*.pdb" -o -name "*.lib" -o -name "*.a" -o -name "*.h" -o -name "*.cpp" \) -delete 2>/dev/null || true
+  local unneeded_dirs=("__pycache__" "tests" "test" "Include" "share" "tcl" "tk" "idlelib" "ensurepip")
+  for d in "${unneeded_dirs[@]}"; do
+    find "$RUNTIME_DIR/macos" -type d -name "$d" -exec rm -rf {} + 2>/dev/null || true
+  done
+  find "$RUNTIME_DIR/macos" -type d \( -name "tests" -o -name "test" \) -exec rm -rf {} + 2>/dev/null || true
 }
 
-# -- Report Size ------------------------------------------------
 report_size() {
   local size
   size=$(du -sh "$RUNTIME_DIR/macos" 2>/dev/null | awk '{print $1}')
-  echo ""
-  echo "Python runtime prepared successfully."
-  echo "   Path: $RUNTIME_DIR/macos"
-  echo "   Size: ${size:-Unknown}"
-  echo ""
-  echo "Next step: Run npm run tauri build"
+  echo "Python runtime size: ${size:-Unknown}"
 }
 
 main() {

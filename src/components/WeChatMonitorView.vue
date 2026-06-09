@@ -7,7 +7,7 @@ const wx = useWeChat();
 const {
   connected, monitoring, accountDir, hexKey, statusText, busy,
   contacts, friendCount, groupCount, currentSessionId, messages, watched, newMessages,
-  transcribeVoice,
+  transcribeVoice, sttReady, sttDownloading, sttProgress, checkSTTModel, downloadSTTModel,
 } = wx;
 
 // 媒体懒加载：localId → data URL（视频缩略图）
@@ -57,6 +57,23 @@ async function toggleVoice(m: WeChatMessage) {
 async function doTranscribe(m: WeChatMessage, sessionId?: string) {
   const id = m.localId;
   if (id == null || transcribing.value[id]) return;
+
+  // 检查模型是否就绪
+  if (!sttReady.value) {
+    const ok = await checkSTTModel();
+    if (!ok) {
+      if (confirm('语音转文字需要下载 SenseVoiceSmall 模型 (约 900MB)，是否立即下载？\n建议在 Wi-Fi 环境下进行。')) {
+        const success = await downloadSTTModel();
+        if (!success) {
+          statusText.value = '模型下载失败，请检查网络';
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+  }
+
   transcribing.value[id] = true;
   try {
     const text = await transcribeVoice(m, sessionId);
@@ -103,6 +120,8 @@ watch(messages, (ms) => {
 
 // 自动转文字：新消息到达时
 watch(newMessages, (evts) => {
+  // 如果模型没好，自动转文字暂不触发，避免频繁弹窗（手动点转文字才会弹窗）
+  if (!sttReady.value) return;
   for (const evt of evts) {
     for (const m of evt.messages) {
       if (m.localType === 34 && m.localId && !transcriptions.value[m.localId] && !transcribing.value[m.localId]) {
@@ -150,6 +169,7 @@ onMounted(async () => {
   await wx.loadCredentials();
   await wx.refreshStatus();
   if (connected.value) await wx.loadContacts();
+  await checkSTTModel(); // 启动时异步检查模型状态
 });
 </script>
 
@@ -369,6 +389,28 @@ onMounted(async () => {
       <Loader2 v-if="bigLoading" class="w-8 h-8 text-white animate-spin" />
       <img v-else-if="bigImage" :src="bigImage" @click.stop
         class="max-w-[92vw] max-h-[92vh] object-contain rounded shadow-2xl" />
+    </div>
+
+    <!-- STT 模型下载进度 -->
+    <div v-if="sttDownloading" class="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-6">
+      <div class="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md shadow-2xl space-y-4">
+        <div class="flex items-center gap-3 text-green-400 font-medium">
+          <Loader2 class="w-5 h-5 animate-spin" />
+          正在准备语音识别模型...
+        </div>
+        <div class="space-y-2">
+          <div class="h-2 bg-gray-800 rounded-full overflow-hidden">
+            <div class="h-full bg-green-600 transition-all duration-300" :style="{ width: `${sttProgress.percent}%` }"></div>
+          </div>
+          <div class="flex justify-between text-[11px] text-gray-400">
+            <span>{{ sttProgress.message }}</span>
+            <span>{{ sttProgress.percent }}%</span>
+          </div>
+        </div>
+        <p class="text-[10px] text-gray-500 italic text-center">
+          模型约 900MB，仅首次使用需下载，请保持网络连接。
+        </p>
+      </div>
     </div>
   </div>
 </template>
