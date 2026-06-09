@@ -324,10 +324,26 @@ class Engine:
     def _name2id(self, con):
         return {rid: uname for rid, uname in con.execute("SELECT rowid, user_name FROM Name2Id")}
 
+    @staticmethod
+    def _content_text(content):
+        """message_content 可能是明文 str，也可能是 WCDB zstd 压缩的 BLOB（魔数 28 b5 2f fd）。"""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (bytes, bytearray)):
+            b = bytes(content)
+            if b[:4] == b"\x28\xb5\x2f\xfd":  # zstd magic
+                try:
+                    import zstandard as zstd
+                    b = zstd.ZstdDecompressor().decompress(b, max_output_size=16 << 20)
+                except Exception:
+                    pass
+            return b.decode("utf-8", "replace")
+        return ""
+
     def _row_to_msg(self, row, n2i, is_group, cmap):
         local_id, server_id, ltype, sort_seq, sender_id, create_time, content = row
         sender = n2i.get(sender_id, "")
-        text = content if isinstance(content, str) else (content or b"").decode("utf-8", "replace")
+        text = self._content_text(content)
         # 群聊文本前缀 "wxid:\n正文"
         if is_group and ltype == 1 and text:
             idx = text.find(":\n")
@@ -583,21 +599,11 @@ class Engine:
         tail = bytes(b ^ xor_key for b in payload[aes_size:])
         return head + tail
 
-    def _wxgf_to_jpg(self, buf):
-        """wxgf 容器（内含 HEVC）→ jpg。先找内嵌 jpeg/png，否则提取 HEVC NALU 重建后用 ffmpeg 转。"""
-        # 内嵌传统图片
-        for i in range(4, min(len(buf) - 12, 4096)):
-            if buf[i] == 0xFF and buf[i + 1] == 0xD8 and buf[i + 2] == 0xFF:
-                return "image/jpeg", buf[i:]
-            if buf[i] == 0x89 and buf[i + 1] == 0x50 and buf[i + 2] == 0x4E and buf[i + 3] == 0x47:
-                return "image/png", buf[i:]
-        ffmpeg = os.environ.get("WECHAT_FFMPEG")
-        if not ffmpeg or not os.path.exists(ffmpeg):
-            return None
-        # 提取 annexb NALU（3/4 字节起始码）
+    @staticmethod
+    def _extract_nalus(buf):
+        """提取 annexb HEVC NALU（兼容 3/4 字节起始码，丢弃 forbidden_zero_bit 异常单元）。"""
         starts = []
-        i = 4
-        n = len(buf)
+        i, n = 4, len(buf)
         while i < n - 3:
             if buf[i] == 0 and buf[i + 1] == 0 and buf[i + 2] == 0 and buf[i + 3] == 1:
                 starts.append((i, 4)); i += 4; continue
@@ -610,6 +616,10 @@ class Engine:
             pay = buf[s + pl:e]
             if len(pay) >= 2 and (pay[0] & 0x80) == 0:
                 units.append(pay)
+        return units
+
+    def _ffmpeg_hevc_to_jpg(self, ffmpeg, units):
+        """把一组 NALU 重建为 annexb 流并用 ffmpeg 取第一帧 jpg。多帧偏移做兜底尝试。"""
         if not units:
             return None
         annexb = b"".join(b"\x00\x00\x00\x01" + u for u in units)
@@ -618,20 +628,60 @@ class Engine:
         try:
             with open(inp, "wb") as f:
                 f.write(annexb)
-            r = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-f", "hevc",
-                                "-i", inp, "-frames:v", "1", out],
-                               capture_output=True, timeout=30)
-            if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0:
-                with open(out, "rb") as f:
-                    return "image/jpeg", f.read()
-        except Exception as e:
-            log("ffmpeg wxgf error:", e)
+            for extra in ([], ["-vf", "select=eq(n\\,1)"], ["-vf", "select=eq(n\\,5)"]):
+                try:
+                    if os.path.exists(out):
+                        os.remove(out)
+                except OSError:
+                    pass
+                cmd = [ffmpeg, "-y", "-loglevel", "error", "-f", "hevc", "-i", inp]
+                cmd += extra + ["-frames:v", "1", out]
+                try:
+                    r = subprocess.run(cmd, capture_output=True, timeout=30)
+                except Exception:
+                    continue
+                if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 1000:
+                    with open(out, "rb") as f:
+                        return f.read()
+            return None
         finally:
             for x in (inp, out):
                 try:
                     os.remove(x)
                 except OSError:
                     pass
+
+    def _wxgf_to_jpg(self, buf):
+        """wxgf 容器（内含 HEVC）→ jpg。先找内嵌 jpeg/png，否则提取 NALU、按 VPS 分组成多个
+        候选流分别交 ffmpeg（兼容实况/多帧），取第一个成功的。"""
+        # 内嵌传统图片
+        for i in range(4, min(len(buf) - 12, 4096)):
+            if buf[i] == 0xFF and buf[i + 1] == 0xD8 and buf[i + 2] == 0xFF:
+                return "image/jpeg", buf[i:]
+            if buf[i] == 0x89 and buf[i + 1] == 0x50 and buf[i + 2] == 0x4E and buf[i + 3] == 0x47:
+                return "image/png", buf[i:]
+        ffmpeg = os.environ.get("WECHAT_FFMPEG")
+        if not ffmpeg or not os.path.exists(ffmpeg):
+            return None
+        units = self._extract_nalus(buf)
+        if not units:
+            return None
+
+        # 候选 1：整条流
+        candidates = [units]
+        # 候选 2..：按 VPS(type=32) 分组，取每个含 VCL 帧的组
+        vps_idx = [i for i, u in enumerate(units) if ((u[0] >> 1) & 0x3F) == 32]
+        for gi in range(len(vps_idx)):
+            start = vps_idx[gi]
+            end = vps_idx[gi + 1] if gi + 1 < len(vps_idx) else len(units)
+            group = units[start:end]
+            if any(((u[0] >> 1) & 0x3F) in (19, 20, 21, 1, 0) for u in group):
+                candidates.append(group)
+
+        for cand in candidates:
+            jpg = self._ffmpeg_hevc_to_jpg(ffmpeg, cand)
+            if jpg:
+                return "image/jpeg", jpg
         return None
 
     def _dat_to_image(self, path):
@@ -703,11 +753,13 @@ class Engine:
         md5 = self._md5_from_packed(bytes(row[0])) if (row and row[0]) else None
         if not md5:
             return {"ok": False, "error": "无视频 md5"}
-        hits = glob.glob(os.path.join(self.account_dir, "msg", "video", "**", md5 + ".mp4"),
-                         recursive=True)
-        if hits:
-            return {"ok": True, "path": hits[0]}
-        return {"ok": False, "error": "未找到视频文件（可能尚未下载原视频）"}
+        # 原视频可能在 video 下，也可能其它命名；放宽到整个 msg 目录搜 <md5>*.mp4
+        for pat in (os.path.join(self.account_dir, "msg", "video", "**", md5 + ".mp4"),
+                    os.path.join(self.account_dir, "msg", "**", md5 + "*.mp4")):
+            hits = glob.glob(pat, recursive=True)
+            if hits:
+                return {"ok": True, "path": hits[0]}
+        return {"ok": False, "error": "原视频尚未下载到本地，请先在微信里播放一次该视频后再试"}
 
     def resolve_session(self, keyword):
         kw = (keyword or "").strip()

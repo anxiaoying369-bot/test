@@ -16,6 +16,7 @@ websockets>=12.0               # IM bridge
 # 不依赖 WeFlow 的任何原生库。
 pycryptodome>=3.20
 pilk>=0.2.4                    # SILK_V3 语音解码（微信语音 → PCM/WAV，点击播放）
+zstandard>=0.22               # 解压 WCDB zstd 压缩的 message_content（部分文本/卡片消息）
 
 # ── 知识库 (KB) ────────────────────────────────────────────────────
 numpy==1.26.4                  # Required for X86_V1 compatibility
