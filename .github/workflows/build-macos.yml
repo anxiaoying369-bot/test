@@ -40,6 +40,9 @@ jobs:
             src-tauri/node-runtime
           key: runtimes-macos-${{ hashFiles('requirements.txt', 'src-tauri/scripts/prepare-*.sh') }}
 
+      - name: 安装前端依赖
+        run: npm ci
+
       - name: 准备内置运行时
         run: npm run prepare:all
 
