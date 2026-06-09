@@ -7,7 +7,7 @@ const wx = useWeChat();
 const {
   connected, monitoring, accountDir, hexKey, statusText, busy,
   contacts, friendCount, groupCount, currentSessionId, messages, watched, newMessages,
-  transcribeVoice, sttReady, sttDownloading, sttProgress, checkSTTModel, downloadSTTModel,
+  transcribeVoice, sttReady, sttDownloading, checkSTTModel, downloadSTTModel,
 } = wx;
 
 // 媒体懒加载：localId → data URL（视频缩略图）
