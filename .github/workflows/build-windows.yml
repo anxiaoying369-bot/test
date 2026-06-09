@@ -56,8 +56,6 @@ jobs:
       # 下载并准备内置 Python / ffmpeg / Node（beforeBuildCommand 不含这步，必须显式跑）
       - name: 准备内置运行时
         run: npm run prepare:all
-        env:
-          PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
 
       - name: 下载 AI 模型
         run: |
