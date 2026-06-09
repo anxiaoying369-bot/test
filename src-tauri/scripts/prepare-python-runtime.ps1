@@ -72,65 +72,42 @@ if ((Test-Path $Marker) -and ((Get-Content $Marker) -eq $ExpectedMarker)) {
 }
 
 # -- Install Dependencies ---------------------------------------
-# After the extract step, the python-build-standalone tree lives at
-#   $PlatformDir\python\python.exe
-# (we keep the "python/" subdirectory so it matches src-tauri/src/utils.rs
-# expectations and the macOS prepare-python-runtime.sh layout).
 $PythonBin = Join-Path $PlatformDir "python\python.exe"
-if (-not (Test-Path $PythonBin)) {
-    Write-Error "Cannot find python.exe: $PythonBin"
-    exit 1
-}
-if (-not (Test-Path $Requirements)) {
-    Write-Error "Cannot find requirements.txt: $Requirements"
-    exit 1
-}
+$PipArgs = @("--no-cache-dir", "--quiet")
 
-# python-build-standalone install_only tarball does NOT ship pip.
-# Bootstrap pip using get-pip.py.
-Write-Host "Bootstrapping pip (python-build-standalone install_only lacks pip)..."
-$GetPip = Join-Path $CacheDir "get-pip.py"
-if (-not (Test-Path $GetPip)) {
-    Write-Host "  Downloading get-pip.py..."
-    Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $GetPip -UseBasicParsing
-}
-
-$PipArgs = @()
-if ($env:PIP_INDEX_URL) {
-    $PipArgs += "-i", $env:PIP_INDEX_URL
-    Write-Host "Using mirror: $($env:PIP_INDEX_URL)"
-}
-
-& $PythonBin $GetPip @PipArgs --quiet
-
-# Ensure numpy 1.x is installed for X86_V1 CPU compatibility (pyarrow 16.x requires it)
-Write-Host "Installing numpy 1.x for X86_V1 CPU compatibility..."
-& $PythonBin -m pip install "numpy==1.26.4" @PipArgs --no-cache-dir --force-reinstall --quiet
-
-Write-Host "Installing dependencies (from ${Requirements})..."
-$PipInstallArgs = @("-m", "pip", "install", "-r", $Requirements)
-if ($env:PIP_INDEX_URL) {
-    $PipInstallArgs += "-i", $env:PIP_INDEX_URL
-}
-# 关键：在 CI 环境下通过额外参数强制使用 CPU 版 torch 以减小体积
+# 在 CI 环境下，强制安装 CPU 版 torch，并确保不被后续安装覆盖
 if ($env:GITHUB_ACTIONS -eq "true") {
-    Write-Host "CI detected: Forcing CPU versions of torch/torchaudio to save space..."
-    & $PythonBin -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu @PipArgs --no-cache-dir --quiet
+    Write-Host "CI detected: Installing CPU-only torch..."
+    & $PythonBin -m pip install torch==2.4.1+cpu torchaudio==2.4.1+cpu --index-url https://download.pytorch.org/whl/cpu @PipArgs
 }
-& $PythonBin @PipInstallArgs --no-cache-dir --quiet
+
+Write-Host "Installing other dependencies from ${Requirements}..."
+# 使用 --extra-index-url 确保 pip 能找到 CPU 版 torch 的依赖，同时不触发 GPU 版升级
+& $PythonBin -m pip install -r $Requirements --extra-index-url https://download.pytorch.org/whl/cpu @PipArgs
 
 Write-Host "Aggressively cleaning up runtime to save space..."
-# 删除所有的调试符号文件、静态库和头文件（运行时不需要）
-Get-ChildItem -Path $PlatformDir -Recurse -File -Include "*.pdb", "*.lib", "*.a", "*.h", "*.cpp" | Remove-Item -Force -ErrorAction SilentlyContinue
+# 删除所有的调试符号文件、静态库、头文件和源码
+Get-ChildItem -Path $PlatformDir -Recurse -File -Include "*.pdb", "*.lib", "*.a", "*.h", "*.cpp", "*.c", "*.pyi" | Remove-Item -Force -ErrorAction SilentlyContinue
 
 # 删除不必要的文件夹
-$UnneededDirs = @("__pycache__", "tests", "test", "Include", "share", "tcl", "tk", "idlelib", "ensurepip")
+$UnneededDirs = @("__pycache__", "tests", "test", "Include", "share", "tcl", "tk", "idlelib", "ensurepip", "doc", "docs")
 foreach ($dir in $UnneededDirs) {
     Get-ChildItem -Path $PlatformDir -Recurse -Directory -Filter $dir | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# 删除 site-packages 里的测试文件夹
-Get-ChildItem -Path $PlatformDir -Recurse -Directory -Include "tests", "test" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# 深度清理 torch（非常重要）
+$TorchDir = Join-Path $PlatformDir "python\Lib\site-packages\torch"
+if (Test-Path $TorchDir) {
+    Write-Host "Cleaning up torch internals..."
+    $TorchUnneeded = @("test", "bin", "include", "lib\*.lib")
+    foreach ($sub in $TorchUnneeded) {
+        $subPath = Join-Path $TorchDir $sub
+        if (Test-Path $subPath) { Remove-Item -Recurse -Force $subPath -ErrorAction SilentlyContinue }
+    }
+}
+
+# 删除 site-packages 里的其它测试文件夹和无用数据
+Get-ChildItem -Path $PlatformDir -Recurse -Directory -Include "tests", "test", "data" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 # -- Report Size ------------------------------------------------
 $Size = (Get-ChildItem -Path $PlatformDir -Recurse | Measure-Object -Property Length -Sum).Sum

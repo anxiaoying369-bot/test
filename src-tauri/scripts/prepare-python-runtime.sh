@@ -65,19 +65,16 @@ download_python() {
   mkdir -p "$temp_extract_dir"
   tar -xzf "$tarball" -C "$temp_extract_dir"
 
-  # 确保目标平台目录存在
   local platform_dir="$RUNTIME_DIR/macos"
   rm -rf "$platform_dir"
   mkdir -p "$platform_dir"
 
-  # 寻找解压出的顶级目录（通常是 'python'）并移动到 macos/python
   local extracted
   extracted=$(ls -d "$temp_extract_dir"/python-install 2>/dev/null || ls -d "$temp_extract_dir"/python 2>/dev/null || echo "")
   
   if [[ -n "$extracted" ]]; then
     mv "$extracted" "$platform_dir/python"
   else
-    # 兜底：如果目录名不是 python，则将 tmp_extract 下所有内容移入 macos/python
     mkdir -p "$platform_dir/python"
     mv "$temp_extract_dir"/* "$platform_dir/python/"
   fi
@@ -99,30 +96,36 @@ install_deps() {
   "$python_bin" -m pip install --upgrade pip --quiet
 
   echo "Installing dependencies..."
-  local pip_cmd=("$python_bin" -m pip install)
+  local pip_cmd=("$python_bin" -m pip install --no-cache-dir --quiet)
   if [[ -n "${PIP_INDEX_URL:-}" ]]; then
     pip_cmd+=("-i" "$PIP_INDEX_URL")
   fi
 
   if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    echo "CI detected: Forcing CPU-only versions of torch/torchaudio..."
-    "${pip_cmd[@]}" torch torchaudio --index-url https://download.pytorch.org/whl/cpu --no-cache-dir --quiet
+    echo "CI detected: Installing CPU-only torch..."
+    "${pip_cmd[@]}" torch==2.4.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cpu
   fi
 
-  "${pip_cmd[@]}" -r "$REQUIREMENTS" --no-cache-dir --quiet
+  "${pip_cmd[@]}" -r "$REQUIREMENTS" --extra-index-url https://download.pytorch.org/whl/cpu
 
   echo "Aggressively cleaning up runtime..."
   # 删除开发文件
-  find "$RUNTIME_DIR/macos" -type f \( -name "*.pdb" -o -name "*.lib" -o -name "*.a" -o -name "*.h" -o -name "*.cpp" \) -delete 2>/dev/null || true
+  find "$RUNTIME_DIR/macos" -type f \( -name "*.pdb" -o -name "*.lib" -o -name "*.a" -o -name "*.h" -o -name "*.cpp" -o -name "*.c" -o -name "*.pyi" \) -delete 2>/dev/null || true
   
   # 删除不必要的文件夹
-  local unneeded_dirs=("__pycache__" "tests" "test" "Include" "share" "tcl" "tk" "idlelib" "ensurepip")
+  local unneeded_dirs=("__pycache__" "tests" "test" "Include" "share" "tcl" "tk" "idlelib" "ensurepip" "doc" "docs")
   for d in "${unneeded_dirs[@]}"; do
     find "$RUNTIME_DIR/macos" -type d -name "$d" -exec rm -rf {} + 2>/dev/null || true
   done
+
+  # 深度清理 torch
+  local torch_dir="$RUNTIME_DIR/macos/python/lib/python3.11/site-packages/torch"
+  if [[ -d "$torch_dir" ]]; then
+    echo "Cleaning up torch internals..."
+    rm -rf "$torch_dir/test" "$torch_dir/bin" "$torch_dir/include" "$torch_dir/lib"/*.a 2>/dev/null || true
+  fi
   
-  # 进一步清理 site-packages 中的测试文件
-  find "$RUNTIME_DIR/macos" -type d \( -name "tests" -o -name "test" \) -exec rm -rf {} + 2>/dev/null || true
+  find "$RUNTIME_DIR/macos" -type d \( -name "tests" -o -name "test" -o -name "data" \) -exec rm -rf {} + 2>/dev/null || true
 }
 
 report_size() {

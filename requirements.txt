@@ -16,8 +16,9 @@ websockets>=12.0               # IM bridge
 funasr>=1.1.0
 modelscope>=1.14.0
 # 建议在 CI 或打包环境中强制安装 torch-cpu 以节省体积
-torch>=2.0.0
-torchaudio>=2.0.0
+# 下方为通用版本，CI 脚本中会优先尝试安装 +cpu 版本
+torch>=2.4.1
+torchaudio>=2.4.1
 # huggingface_hub 已在下方定义
 
 # ── 微信聊天监控 (WeChat Monitor) ─────────────────────────────────
