@@ -25,3 +25,13 @@ export interface MobileReceivedFile {
   file_type: string;
   received_at: number;
 }
+
+/** 已回传并落盘的通话录音 */
+export interface RecordingItem {
+  device_id: string;
+  name: string;
+  path: string;
+  size: number;
+  /** Unix 秒 */
+  modified: number;
+}

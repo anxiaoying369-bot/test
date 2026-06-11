@@ -2,18 +2,22 @@
 import { ref, computed, onMounted } from 'vue';
 import {
   Smartphone, RefreshCw, Pencil, Check, X, Trash2, Play, Square,
-  ArrowLeft, Home, LayoutGrid, Bell, Camera, FileAudio,
+  ArrowLeft, Home, LayoutGrid, Bell, Camera, Phone,
 } from 'lucide-vue-next';
 import { useMobileControl } from '../composables/useMobileControl';
 import type { MobileDevice } from '../types/mobile';
 
 const {
-  devices, serverInfo, frames, frameAt, receivedFiles, streamingId, lastError,
-  init, refreshDevices, startStream, stopStream, requestScreenshot,
+  devices, serverInfo, frames, frameAt, recordings, streamingId, lastError,
+  init, refreshDevices, refreshRecordings, recordingUrl, deleteRecording,
+  startStream, stopStream, requestScreenshot,
   tap, swipe, pressKey, setRemark, deleteDevice,
 } = useMobileControl();
 
 onMounted(init);
+
+// ─── 右侧面板：实时控制 / 通话记录 ───
+const viewMode = ref<'control' | 'recordings'>('control');
 
 // ─── 设备选择 ───
 const selectedId = ref<string | null>(null);
@@ -122,6 +126,13 @@ function onPointerUp(e: PointerEvent) {
   }
 }
 
+// 当前所选设备的录音；未选设备时显示全部
+const visibleRecordings = computed(() =>
+  selectedId.value
+    ? recordings.value.filter((r) => r.device_id === selectedId.value)
+    : recordings.value,
+);
+
 function fmtTime(ts: number) {
   return ts ? new Date(ts * 1000).toLocaleString() : '—';
 }
@@ -202,18 +213,31 @@ function fmtSize(bytes: number) {
           </div>
         </div>
 
-        <!-- 收到的文件（录音回传） -->
-        <div v-if="receivedFiles.length" class="pt-3 mt-3 border-t border-gray-800">
-          <div class="text-xs text-gray-400 mb-2 flex items-center gap-1.5"><FileAudio class="w-3.5 h-3.5" /> 收到的文件</div>
-          <div v-for="f in receivedFiles.slice(0, 10)" :key="f.path + f.received_at" class="text-[11px] text-gray-500 mb-1.5 leading-snug">
-            <div class="text-gray-300 truncate">{{ f.name }} <span class="text-gray-500">({{ fmtSize(f.size) }})</span></div>
-            <div class="truncate">来自 {{ devices.find(d => d.device_id === f.device_id) ? displayName(devices.find(d => d.device_id === f.device_id)!) : f.device_id }}</div>
-          </div>
-        </div>
       </div>
 
-      <!-- 右侧：屏幕画面 + 控制 -->
+      <!-- 右侧：屏幕画面 + 控制 / 通话记录 -->
       <div class="flex-1 min-w-0 flex flex-col">
+        <!-- 模式切换 -->
+        <div class="flex items-center gap-1 px-3 pt-3 border-b border-gray-800">
+          <button
+            @click="viewMode = 'control'"
+            :class="['flex items-center gap-1.5 text-xs px-3 py-2 rounded-t-lg border-b-2 -mb-px',
+              viewMode === 'control' ? 'border-emerald-500 text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300']"
+          >
+            <Smartphone class="w-3.5 h-3.5" /> 实时控制
+          </button>
+          <button
+            @click="viewMode = 'recordings'; refreshRecordings()"
+            :class="['flex items-center gap-1.5 text-xs px-3 py-2 rounded-t-lg border-b-2 -mb-px',
+              viewMode === 'recordings' ? 'border-emerald-500 text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300']"
+          >
+            <Phone class="w-3.5 h-3.5" /> 通话记录
+            <span v-if="visibleRecordings.length" class="text-[10px] bg-gray-700 text-gray-200 px-1.5 rounded-full">{{ visibleRecordings.length }}</span>
+          </button>
+        </div>
+
+        <!-- 实时控制 -->
+        <div v-if="viewMode === 'control'" class="flex-1 min-h-0 flex flex-col">
         <div v-if="!selected" class="flex-1 flex items-center justify-center text-gray-600 text-sm">
           从左侧选择一台手机开始控制
         </div>
@@ -294,6 +318,51 @@ function fmtSize(bytes: number) {
             </span>
           </div>
         </template>
+        </div>
+
+        <!-- 通话记录 -->
+        <div v-else class="flex-1 min-h-0 flex flex-col">
+          <div class="flex items-center gap-2 px-4 py-2.5 border-b border-gray-800">
+            <span class="text-sm font-medium">
+              通话录音
+              <span v-if="selected" class="text-gray-500 text-xs">· {{ displayName(selected) }}</span>
+              <span v-else class="text-gray-500 text-xs">· 全部设备</span>
+            </span>
+            <button @click="refreshRecordings()" class="ml-auto flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200">
+              <RefreshCw class="w-3.5 h-3.5" /> 刷新
+            </button>
+          </div>
+
+          <div class="flex-1 overflow-y-auto p-4 space-y-2">
+            <div v-if="visibleRecordings.length === 0" class="text-sm text-gray-500 text-center pt-12 leading-relaxed">
+              暂无通话录音。<br />
+              通话结束后手机会自动回传录音（需在手机系统设置中开启「通话自动录音」）。
+            </div>
+            <div
+              v-for="r in visibleRecordings" :key="r.path"
+              class="rounded-lg border border-gray-800 bg-gray-900/40 p-3"
+            >
+              <div class="flex items-center gap-2 mb-2">
+                <Phone class="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                <span class="text-sm text-gray-200 truncate">{{ r.name }}</span>
+                <button
+                  @click="deleteRecording(r.path)"
+                  class="ml-auto text-gray-600 hover:text-red-400" title="删除录音"
+                >
+                  <Trash2 class="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div class="text-[11px] text-gray-500 mb-2 flex flex-wrap gap-x-3">
+                <span>{{ fmtTime(r.modified) }}</span>
+                <span>{{ fmtSize(r.size) }}</span>
+                <span v-if="!selectedId" class="truncate">
+                  {{ devices.find(d => d.device_id === r.device_id) ? displayName(devices.find(d => d.device_id === r.device_id)!) : r.device_id }}
+                </span>
+              </div>
+              <audio :src="recordingUrl(r.path)" controls preload="none" class="w-full h-9" />
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>

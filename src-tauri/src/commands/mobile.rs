@@ -503,3 +503,81 @@ pub async fn mobile_request_screenshot(
 ) -> Result<(), String> {
     send_to_device(&state, &device_id, serde_json::json!({ "type": "screenshot" })).await
 }
+
+// ============ 通话录音记录 ============
+
+#[derive(Serialize)]
+pub struct RecordingItem {
+    pub device_id: String,
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    /// 文件修改时间（Unix 秒）
+    pub modified: i64,
+}
+
+/// 列出已回传的通话录音。`device_id` 为空时返回所有设备的录音，按时间倒序。
+#[tauri::command]
+pub fn mobile_list_recordings(device_id: Option<String>) -> Result<Vec<RecordingItem>, String> {
+    let base = get_data_dir().join("mobile").join("recordings");
+    let mut out: Vec<RecordingItem> = Vec::new();
+    if !base.exists() {
+        return Ok(out);
+    }
+
+    let dirs: Vec<std::path::PathBuf> = match &device_id {
+        Some(id) if !id.is_empty() => vec![base.join(id)],
+        _ => std::fs::read_dir(&base)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect(),
+    };
+
+    for dir in dirs {
+        let dev = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            out.push(RecordingItem {
+                device_id: dev.clone(),
+                name: path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                path: path.to_string_lossy().to_string(),
+                size: meta.len(),
+                modified,
+            });
+        }
+    }
+
+    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    Ok(out)
+}
+
+/// 删除一条录音文件。`path` 必须位于录音目录内（防越权删除）。
+#[tauri::command]
+pub fn mobile_delete_recording(path: String) -> Result<(), String> {
+    let base = get_data_dir().join("mobile").join("recordings");
+    let target = std::path::Path::new(&path);
+    let canon_base = base.canonicalize().map_err(|e| e.to_string())?;
+    let canon_target = target.canonicalize().map_err(|e| e.to_string())?;
+    if !canon_target.starts_with(&canon_base) {
+        return Err("非法路径".into());
+    }
+    std::fs::remove_file(&canon_target).map_err(|e| e.to_string())
+}

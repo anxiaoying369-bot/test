@@ -192,6 +192,8 @@ pub fn run() {
             crate::commands::mobile::mobile_swipe,
             crate::commands::mobile::mobile_key,
             crate::commands::mobile::mobile_request_screenshot,
+            crate::commands::mobile::mobile_list_recordings,
+            crate::commands::mobile::mobile_delete_recording,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

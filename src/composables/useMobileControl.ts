@@ -1,7 +1,7 @@
 import { ref, onUnmounted } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { MobileDevice, MobileServerInfo, MobileReceivedFile } from '../types/mobile';
+import type { MobileDevice, MobileServerInfo, MobileReceivedFile, RecordingItem } from '../types/mobile';
 
 /**
  * 手机无线控制：设备列表 / 实时画面 / 触控指令。
@@ -15,6 +15,7 @@ export function useMobileControl() {
   /** device_id -> 最新帧到达时间（ms） */
   const frameAt = ref<Record<string, number>>({});
   const receivedFiles = ref<MobileReceivedFile[]>([]);
+  const recordings = ref<RecordingItem[]>([]);
   /** 正在实时刷新的设备 id（同一时刻只串流一台） */
   const streamingId = ref<string | null>(null);
   const lastError = ref('');
@@ -51,8 +52,38 @@ export function useMobileControl() {
       await listen<Omit<MobileReceivedFile, 'received_at'>>('mobile-file-received', (event) => {
         receivedFiles.value.unshift({ ...event.payload, received_at: Date.now() });
         if (receivedFiles.value.length > 50) receivedFiles.value.pop();
+        // 新录音到达，刷新通话记录列表
+        if (event.payload.file_type === 'audio') refreshRecordings();
       }),
     );
+
+    await refreshRecordings();
+  }
+
+  // ─── 通话录音记录 ───
+
+  async function refreshRecordings(deviceId?: string) {
+    try {
+      recordings.value = await invoke<RecordingItem[]>('mobile_list_recordings', {
+        deviceId: deviceId ?? null,
+      });
+    } catch (e) {
+      lastError.value = String(e);
+    }
+  }
+
+  /** 本地录音文件转成可播放 URL（走 Tauri asset 协议） */
+  function recordingUrl(path: string): string {
+    return convertFileSrc(path);
+  }
+
+  async function deleteRecording(path: string) {
+    try {
+      await invoke('mobile_delete_recording', { path });
+      recordings.value = recordings.value.filter((r) => r.path !== path);
+    } catch (e) {
+      lastError.value = String(e);
+    }
   }
 
   function dispose() {
@@ -143,10 +174,14 @@ export function useMobileControl() {
     frames,
     frameAt,
     receivedFiles,
+    recordings,
     streamingId,
     lastError,
     init,
     refreshDevices,
+    refreshRecordings,
+    recordingUrl,
+    deleteRecording,
     startStream,
     stopStream,
     requestScreenshot,
