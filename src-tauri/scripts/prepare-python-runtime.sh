@@ -116,6 +116,13 @@ install_deps() {
   done
 
   find "$RUNTIME_DIR/macos" -type d \( -name "tests" -o -name "test" -o -name "data" \) -exec rm -rf {} + 2>/dev/null || true
+
+  # strip 原生扩展(.so/.dylib)的符号以缩小体积，并 ad-hoc 重签名
+  # （macOS 上 strip 会让代码签名失效→加载时被系统杀，必须重新签名）。
+  # 全程 `|| true`，任何失败都不影响构建。
+  echo "Stripping + re-signing native libs..."
+  find "$RUNTIME_DIR/macos" \( -name "*.so" -o -name "*.dylib" \) -exec strip -x {} \; 2>/dev/null || true
+  find "$RUNTIME_DIR/macos" \( -name "*.so" -o -name "*.dylib" \) -exec codesign --force --sign - {} \; 2>/dev/null || true
 }
 
 report_size() {
