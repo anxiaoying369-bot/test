@@ -82,11 +82,13 @@ let pressStart: { x: number; y: number; t: number } | null = null;
 /** 把鼠标在 <img> 上的位置换算成手机屏幕像素坐标 */
 function toDeviceCoords(e: PointerEvent): { x: number; y: number } | null {
   const img = screenImg.value;
-  const dev = selected.value;
-  if (!img || !dev) return null;
+  if (!img) return null;
   const rect = img.getBoundingClientRect();
-  const w = dev.width || img.naturalWidth;
-  const h = dev.height || img.naturalHeight;
+  // 必须用截图自身的像素尺寸：截图与 dispatchGesture 共用同一全屏坐标系。
+  // device_info 的 displayMetrics 在带虚拟导航键的机型上不含导航栏高度，
+  // 用它换算会导致 Y 轴整体偏移（底部按钮机型点不准）。
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
   if (!w || !h || !rect.width || !rect.height) return null;
   const x = ((e.clientX - rect.left) / rect.width) * w;
   const y = ((e.clientY - rect.top) / rect.height) * h;
