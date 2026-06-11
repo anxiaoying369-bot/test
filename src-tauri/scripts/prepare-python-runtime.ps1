@@ -121,7 +121,7 @@ $UnusedPackages = @(
 foreach ($pkg in $UnusedPackages) {
     $pkgDir = Join-Path $SitePackages $pkg
     if (Test-Path $pkgDir) {
-        $sz = (Get-ChildItem -Path $pkgDir -Recurse -File | Measure-Object -Length -Sum).Sum
+        $sz = (Get-ChildItem -Path $pkgDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
         Remove-Item -Recurse -Force $pkgDir -ErrorAction SilentlyContinue
         Write-Host "  - Removed unused package: $pkg  ($([math]::Round($sz/1MB,1)) MB)"
     }
@@ -131,7 +131,7 @@ foreach ($pkg in $UnusedPackages) {
 #     运行时按需 lazy import，用户只用到 SenseVoice（走 funasr 而非 transformers 直接加载）
 $TxModelsDir = Join-Path $SitePackages "transformers\models"
 if (Test-Path $TxModelsDir) {
-    $sz = (Get-ChildItem -Path $TxModelsDir -Recurse -File | Measure-Object -Length -Sum).Sum
+    $sz = (Get-ChildItem -Path $TxModelsDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
     Remove-Item -Recurse -Force $TxModelsDir -ErrorAction SilentlyContinue
     Write-Host "  - Removed transformers\models\  ($([math]::Round($sz/1MB,1)) MB)"
 }
@@ -141,7 +141,7 @@ $PyArrowInclude = Join-Path $SitePackages "pyarrow\include"
 $PyArrowSrc     = Join-Path $SitePackages "pyarrow\src"
 foreach ($d in @($PyArrowInclude, $PyArrowSrc)) {
     if (Test-Path $d) {
-        $sz = (Get-ChildItem -Path $d -Recurse -File | Measure-Object -Length -Sum).Sum
+        $sz = (Get-ChildItem -Path $d -Recurse -File | Measure-Object -Property Length -Sum).Sum
         Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
         Write-Host "  - Removed $d  ($([math]::Round($sz/1MB,1)) MB)"
     }
@@ -168,11 +168,13 @@ foreach ($pattern in $DeepUnneededDirs) {
 # 6.6 删除 *.dist-info/ 下的 RECORD 文件（pip 元数据，安装完已无用处；不删整个目录以免破坏 importlib.metadata）
 #     RECORD 文件通常 1-10KB，但 transformers/models/ 大量包各自带一份累计也不小
 #     限定在 *.dist-info 目录下避免误伤同名文件（极少见但稳妥起见）
+#     注意：必须保留 METADATA / WHEEL —— importlib.metadata.version() 依赖 METADATA，
+#     很多包（openai 等）import 时会查自身版本，删了会导致装好的 app 一启动就崩。
 Get-ChildItem -Path $SitePackages -Directory -Filter "*.dist-info" -ErrorAction SilentlyContinue | ForEach-Object {
     $distInfo = $_.FullName
-    foreach ($f in @("RECORD", "INSTALLER", "METADATA", "WHEEL")) {
+    foreach ($f in @("RECORD", "INSTALLER")) {
         $fp = Join-Path $distInfo $f
-        if (Test-Path $fp) { Remove-Item -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $fp) { Remove-Item -Force $fp -ErrorAction SilentlyContinue }
     }
 }
 
