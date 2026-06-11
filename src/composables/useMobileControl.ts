@@ -48,6 +48,7 @@ export function useMobileControl() {
         const { device_id, data } = event.payload;
         frames.value[device_id] = `data:image/jpeg;base64,${data}`;
         frameAt.value[device_id] = Date.now();
+        lastError.value = ''; // 收到画面说明设备可达，清掉可能残留的“不在线”提示
       }),
       await listen<Omit<MobileReceivedFile, 'received_at'>>('mobile-file-received', (event) => {
         receivedFiles.value.unshift({ ...event.payload, received_at: Date.now() });
@@ -98,9 +99,9 @@ export function useMobileControl() {
     stopStream();
     streamingId.value = deviceId;
     const tick = () => {
-      invoke('mobile_request_screenshot', { deviceId }).catch((e) => {
-        lastError.value = String(e);
-      });
+      // 后台轮询：设备抖动/断连的瞬时失败不写顶部错误栏（在线状态以设备徽标为准），
+      // 否则一次“不在线”会一直挂在顶上即便设备已恢复。
+      invoke('mobile_request_screenshot', { deviceId }).catch(() => {});
     };
     tick();
     streamTimer = setInterval(tick, intervalMs);
@@ -115,6 +116,7 @@ export function useMobileControl() {
   async function requestScreenshot(deviceId: string) {
     try {
       await invoke('mobile_request_screenshot', { deviceId });
+      lastError.value = '';
     } catch (e) {
       lastError.value = String(e);
     }
@@ -125,6 +127,7 @@ export function useMobileControl() {
   async function tap(deviceId: string, x: number, y: number) {
     try {
       await invoke('mobile_tap', { deviceId, x, y });
+      lastError.value = '';
     } catch (e) {
       lastError.value = String(e);
     }
@@ -133,6 +136,7 @@ export function useMobileControl() {
   async function swipe(deviceId: string, x1: number, y1: number, x2: number, y2: number, duration: number) {
     try {
       await invoke('mobile_swipe', { deviceId, x1, y1, x2, y2, duration });
+      lastError.value = '';
     } catch (e) {
       lastError.value = String(e);
     }
@@ -141,6 +145,7 @@ export function useMobileControl() {
   async function pressKey(deviceId: string, name: 'back' | 'home' | 'recents' | 'notifications') {
     try {
       await invoke('mobile_key', { deviceId, name });
+      lastError.value = '';
     } catch (e) {
       lastError.value = String(e);
     }
