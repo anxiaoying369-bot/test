@@ -12,3 +12,4 @@ pub mod live_monitor;
 pub mod geo;
 pub mod video_studio;
 pub mod wechat;
+pub mod mobile;

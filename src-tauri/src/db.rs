@@ -56,6 +56,18 @@ pub fn init_db(data_dir: PathBuf) -> Result<Connection> {
         [],
     )?;
 
+    // 手机设备表：记录通过 WebSocket 连接过的手机及其备注
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS mobile_devices (
+            device_id TEXT PRIMARY KEY,
+            model TEXT,
+            remark TEXT,
+            last_seen INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )",
+        [],
+    )?;
+
     // ─── Migration：旧库幂等加列（SQLite ALTER ADD COLUMN 重复时返回错误，吞掉即可） ───
     let migrations: &[&str] = &[
         "ALTER TABLE video_projects ADD COLUMN is_locked INTEGER DEFAULT 0",
@@ -69,4 +81,58 @@ pub fn init_db(data_dir: PathBuf) -> Result<Connection> {
     }
 
     Ok(conn)
+}
+
+// ─── 手机设备（备注）───
+
+pub struct MobileDeviceRecord {
+    pub device_id: String,
+    pub model: String,
+    pub remark: Option<String>,
+    pub last_seen: i64,
+}
+
+pub fn mobile_upsert_device(conn: &Connection, device_id: &str, model: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO mobile_devices (device_id, model, last_seen) VALUES (?1, ?2, strftime('%s','now'))
+         ON CONFLICT(device_id) DO UPDATE SET model = ?2, last_seen = strftime('%s','now')",
+        [device_id, model],
+    )?;
+    Ok(())
+}
+
+pub fn mobile_touch_device(conn: &Connection, device_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE mobile_devices SET last_seen = strftime('%s','now') WHERE device_id = ?1",
+        [device_id],
+    )?;
+    Ok(())
+}
+
+pub fn mobile_set_remark(conn: &Connection, device_id: &str, remark: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE mobile_devices SET remark = ?2 WHERE device_id = ?1",
+        [device_id, remark],
+    )?;
+    Ok(())
+}
+
+pub fn mobile_delete_device(conn: &Connection, device_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM mobile_devices WHERE device_id = ?1", [device_id])?;
+    Ok(())
+}
+
+pub fn mobile_list_devices(conn: &Connection) -> Result<Vec<MobileDeviceRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT device_id, COALESCE(model, ''), remark, COALESCE(last_seen, 0) FROM mobile_devices",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(MobileDeviceRecord {
+            device_id: row.get(0)?,
+            model: row.get(1)?,
+            remark: row.get(2)?,
+            last_seen: row.get(3)?,
+        })
+    })?;
+    rows.collect()
 }

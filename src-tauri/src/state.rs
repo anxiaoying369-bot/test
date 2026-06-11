@@ -42,4 +42,6 @@ pub struct AppState {
     /// 微信 sidecar（node host.js）常驻连接：负责密钥提取 / 读取聊天 / 监控轮询。
     /// 用 tokio::Mutex 因为对它的调用是异步且需要跨 await 持锁。
     pub wechat: tokio::sync::Mutex<Option<crate::commands::wechat::WeChatSidecar>>,
+    /// 手机无线控制：在线设备连接表（WebSocket server 与命令共享）。
+    pub mobile: crate::commands::mobile::MobileState,
 }

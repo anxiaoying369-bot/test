@@ -20,6 +20,12 @@ pub fn run() {
             if let Ok(res_dir) = app.path().resource_dir() {
                 let _ = RESOURCE_DIR.set(res_dir);
             }
+            // 手机无线控制 WebSocket Server（autocast-mobile 连接 1422 端口）
+            let mobile_devices = app.state::<AppState>().mobile.devices.clone();
+            tauri::async_runtime::spawn(crate::commands::mobile::run_ws_server(
+                app.handle().clone(),
+                mobile_devices,
+            ));
             Ok(())
         })
         .manage(AppState {
@@ -28,6 +34,7 @@ pub fn run() {
             current_task_id: Mutex::new(None),
             video_db: Mutex::new(db::init_db(get_data_dir()).expect("Failed to init video database")),
             wechat: tokio::sync::Mutex::new(None),
+            mobile: Default::default(),
         })
         .invoke_handler(tauri::generate_handler![
             // Diagnostics
@@ -175,6 +182,16 @@ pub fn run() {
             crate::commands::wechat::wechat_download_stt_model,
             crate::commands::wechat::wechat_save_credentials,
             crate::commands::wechat::wechat_load_credentials,
+
+            // 手机控制（autocast-mobile 无线控制）
+            crate::commands::mobile::mobile_get_server_info,
+            crate::commands::mobile::mobile_list_devices,
+            crate::commands::mobile::mobile_set_device_remark,
+            crate::commands::mobile::mobile_delete_device,
+            crate::commands::mobile::mobile_tap,
+            crate::commands::mobile::mobile_swipe,
+            crate::commands::mobile::mobile_key,
+            crate::commands::mobile::mobile_request_screenshot,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

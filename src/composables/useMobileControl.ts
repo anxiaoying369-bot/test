@@ -1,0 +1,159 @@
+import { ref, onUnmounted } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import type { MobileDevice, MobileServerInfo, MobileReceivedFile } from '../types/mobile';
+
+/**
+ * 手机无线控制：设备列表 / 实时画面 / 触控指令。
+ * 截图与文件由后端通过事件异步推送（mobile-screenshot / mobile-file-received）。
+ */
+export function useMobileControl() {
+  const devices = ref<MobileDevice[]>([]);
+  const serverInfo = ref<MobileServerInfo | null>(null);
+  /** device_id -> 最新一帧截图 dataURL */
+  const frames = ref<Record<string, string>>({});
+  /** device_id -> 最新帧到达时间（ms） */
+  const frameAt = ref<Record<string, number>>({});
+  const receivedFiles = ref<MobileReceivedFile[]>([]);
+  /** 正在实时刷新的设备 id（同一时刻只串流一台） */
+  const streamingId = ref<string | null>(null);
+  const lastError = ref('');
+
+  let streamTimer: ReturnType<typeof setInterval> | null = null;
+  let unlistens: Array<() => void> = [];
+
+  async function refreshDevices() {
+    try {
+      devices.value = await invoke<MobileDevice[]>('mobile_list_devices');
+    } catch (e) {
+      lastError.value = String(e);
+    }
+  }
+
+  async function init() {
+    try {
+      serverInfo.value = await invoke<MobileServerInfo>('mobile_get_server_info');
+    } catch (e) {
+      lastError.value = String(e);
+    }
+    await refreshDevices();
+
+    unlistens.push(
+      await listen('mobile-devices-changed', () => {
+        // 事件只做触发器：列表（含备注）以后端命令返回为准
+        refreshDevices();
+      }),
+      await listen<{ device_id: string; data: string }>('mobile-screenshot', (event) => {
+        const { device_id, data } = event.payload;
+        frames.value[device_id] = `data:image/jpeg;base64,${data}`;
+        frameAt.value[device_id] = Date.now();
+      }),
+      await listen<Omit<MobileReceivedFile, 'received_at'>>('mobile-file-received', (event) => {
+        receivedFiles.value.unshift({ ...event.payload, received_at: Date.now() });
+        if (receivedFiles.value.length > 50) receivedFiles.value.pop();
+      }),
+    );
+  }
+
+  function dispose() {
+    stopStream();
+    unlistens.forEach((fn) => fn());
+    unlistens = [];
+  }
+
+  // ─── 实时画面：按固定间隔向手机请求截图 ───
+
+  function startStream(deviceId: string, intervalMs = 800) {
+    stopStream();
+    streamingId.value = deviceId;
+    const tick = () => {
+      invoke('mobile_request_screenshot', { deviceId }).catch((e) => {
+        lastError.value = String(e);
+      });
+    };
+    tick();
+    streamTimer = setInterval(tick, intervalMs);
+  }
+
+  function stopStream() {
+    if (streamTimer) clearInterval(streamTimer);
+    streamTimer = null;
+    streamingId.value = null;
+  }
+
+  async function requestScreenshot(deviceId: string) {
+    try {
+      await invoke('mobile_request_screenshot', { deviceId });
+    } catch (e) {
+      lastError.value = String(e);
+    }
+  }
+
+  // ─── 触控 / 按键 ───
+
+  async function tap(deviceId: string, x: number, y: number) {
+    try {
+      await invoke('mobile_tap', { deviceId, x, y });
+    } catch (e) {
+      lastError.value = String(e);
+    }
+  }
+
+  async function swipe(deviceId: string, x1: number, y1: number, x2: number, y2: number, duration: number) {
+    try {
+      await invoke('mobile_swipe', { deviceId, x1, y1, x2, y2, duration });
+    } catch (e) {
+      lastError.value = String(e);
+    }
+  }
+
+  async function pressKey(deviceId: string, name: 'back' | 'home' | 'recents' | 'notifications') {
+    try {
+      await invoke('mobile_key', { deviceId, name });
+    } catch (e) {
+      lastError.value = String(e);
+    }
+  }
+
+  // ─── 备注 / 记录管理 ───
+
+  async function setRemark(deviceId: string, remark: string) {
+    try {
+      await invoke('mobile_set_device_remark', { deviceId, remark });
+      await refreshDevices();
+    } catch (e) {
+      lastError.value = String(e);
+    }
+  }
+
+  async function deleteDevice(deviceId: string) {
+    try {
+      await invoke('mobile_delete_device', { deviceId });
+      await refreshDevices();
+    } catch (e) {
+      lastError.value = String(e);
+    }
+  }
+
+  onUnmounted(dispose);
+
+  return {
+    devices,
+    serverInfo,
+    frames,
+    frameAt,
+    receivedFiles,
+    streamingId,
+    lastError,
+    init,
+    refreshDevices,
+    startStream,
+    stopStream,
+    requestScreenshot,
+    tap,
+    swipe,
+    pressKey,
+    setRemark,
+    deleteDevice,
+  };
+}
