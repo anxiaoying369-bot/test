@@ -101,12 +101,9 @@ install_deps() {
     pip_cmd+=("-i" "$PIP_INDEX_URL")
   fi
 
-  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    echo "CI detected: Installing CPU-only torch..."
-    "${pip_cmd[@]}" torch==2.4.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cpu
-  fi
-
-  "${pip_cmd[@]}" -r "$REQUIREMENTS" --extra-index-url https://download.pytorch.org/whl/cpu
+  # 注意：STT 已从 funasr+torch 切到 sherpa-onnx（纯 ONNX，无 torch），
+  # 不再安装 torch，避免内置 Python 体积过大导致 Windows NSIS 打包溢出。
+  "${pip_cmd[@]}" -r "$REQUIREMENTS"
 
   echo "Aggressively cleaning up runtime..."
   # 删除开发文件
@@ -118,13 +115,6 @@ install_deps() {
     find "$RUNTIME_DIR/macos" -type d -name "$d" -exec rm -rf {} + 2>/dev/null || true
   done
 
-  # 深度清理 torch
-  local torch_dir="$RUNTIME_DIR/macos/python/lib/python3.11/site-packages/torch"
-  if [[ -d "$torch_dir" ]]; then
-    echo "Cleaning up torch internals..."
-    rm -rf "$torch_dir/test" "$torch_dir/bin" "$torch_dir/include" "$torch_dir/lib"/*.a 2>/dev/null || true
-  fi
-  
   find "$RUNTIME_DIR/macos" -type d \( -name "tests" -o -name "test" -o -name "data" \) -exec rm -rf {} + 2>/dev/null || true
 }
 

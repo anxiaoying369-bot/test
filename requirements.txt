@@ -12,14 +12,11 @@ urllib3>=2.0
 websockets>=12.0               # IM bridge
 
 # ── 语音识别与处理 (ASR/STT) ──────────────────────────────────────
-# SenseVoiceSmall: 阿里开源的高性能多语言语音识别模型
-funasr>=1.1.0
-modelscope>=1.14.0
-# 建议在 CI 或打包环境中强制安装 torch-cpu 以节省体积
-# 下方为通用版本，CI 脚本中会优先尝试安装 +cpu 版本
-torch>=2.4.1
-torchaudio>=2.4.1
-# huggingface_hub 已在下方定义
+# SenseVoice 多语种语音识别，用 sherpa-onnx 纯 ONNX 推理（无 torch）。
+# 之前用 funasr+torch（torch 在 Windows ~1.5GB）会把内置 Python 撑到 >2GB，
+# 导致 NSIS 安装包 32 位偏移溢出而打包失败。sherpa-onnx wheel 仅 ~77MB。
+# 模型 model.int8.onnx(~228MB) 不打进安装包，运行时从 modelscope.cn 按需下载。
+sherpa-onnx>=1.10.0
 
 # ── 微信聊天监控 (WeChat Monitor) ─────────────────────────────────
 # 微信 4.0+ 加密库的独立解密（SQLCipher-v4：PBKDF2-HMAC-SHA512 + AES-256-CBC）。

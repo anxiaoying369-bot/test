@@ -498,7 +498,7 @@ class Engine:
         
         stt = get_stt_helper()
         if not stt:
-            return {"ok": False, "error": "STT 引擎未就绪（请检查是否安装了 funasr/torch）"}
+            return {"ok": False, "error": "STT 引擎未就绪（sherpa-onnx 未安装）"}
         
         # 将 base64 转回临时文件供 STT 读取
         import tempfile
