@@ -11,8 +11,10 @@ const {
   transcribeVoice, sttReady, sttDownloading, checkSTTModel, downloadSTTModel,
 } = wx;
 
-// 媒体懒加载：localId → data URL（视频缩略图）
+// 媒体懒加载：localId → data URL（缩略图，快速占位）
 const mediaUrls = ref<Record<number, string>>({});
+// 图片高清原图：localId → data URL（异步加载后替换缩略图，避免糊）
+const fullUrls = ref<Record<number, string>>({});
 const transcribing = ref<Record<number, boolean>>({}); // localId -> loading
 const transcriptions = ref<Record<number, string>>({}); // localId -> text
 
@@ -92,6 +94,17 @@ async function loadThumb(m: WeChatMessage) {
   // 图片走 get_image（缩略图），视频走 get_media（明文 jpg 缩略图）
   const url = m.localType === 3 ? await wx.getImageUrl(m, false) : await wx.getMediaUrl(m);
   if (url) mediaUrls.value[id] = url;
+  // 图片：缩略图占位后，再异步取高清原图替换（取不到则保留缩略图）
+  if (m.localType === 3) loadFull(m);
+}
+
+// 异步加载图片高清原图，成功后替换缩略图
+async function loadFull(m: WeChatMessage) {
+  const id = m.localId;
+  if (id == null || fullUrls.value[id] !== undefined) return;
+  fullUrls.value[id] = '';  // 占位，避免重复请求
+  const url = await wx.getImageUrl(m, true);
+  if (url) fullUrls.value[id] = url;
 }
 
 // 大图查看 modal
@@ -114,6 +127,7 @@ function closeLarge() { bigImage.value = null; bigLoading.value = false; }
 watch(messages, (ms) => {
   stopVoice();
   mediaUrls.value = {};
+  fullUrls.value = {};
   for (const m of ms) {
     if (m.localType === 3 || m.localType === 43) loadThumb(m);
   }
@@ -311,11 +325,12 @@ onMounted(async () => {
               </div>
             </div>
 
-            <!-- 图片：缩略图，点击看大图 -->
+            <!-- 图片：缩略图秒显占位，高清原图就绪后自动替换；点击看大图 -->
             <div v-else-if="m.localType === 3">
-              <img v-if="mediaUrls[m.localId as number]" :src="mediaUrls[m.localId as number]"
+              <img v-if="fullUrls[m.localId as number] || mediaUrls[m.localId as number]"
+                :src="fullUrls[m.localId as number] || mediaUrls[m.localId as number]"
                 @click="viewLarge(m)"
-                class="max-w-[220px] max-h-[260px] rounded-lg object-contain cursor-zoom-in hover:opacity-90" />
+                class="max-w-[320px] max-h-[420px] w-auto h-auto rounded-lg object-contain cursor-zoom-in hover:opacity-90" />
               <div v-else class="w-32 h-32 rounded-lg bg-gray-800 flex items-center justify-center text-xs text-gray-500">
                 [图片] 加载中…
               </div>
