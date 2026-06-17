@@ -176,6 +176,7 @@ pub fn run() {
             crate::commands::wechat::wechat_open_video,
             crate::commands::wechat::wechat_resolve_session,
             crate::commands::wechat::wechat_start_monitor,
+            crate::commands::wechat::wechat_start_monitor_auto,
             crate::commands::wechat::wechat_stop_monitor,
             crate::commands::wechat::wechat_get_status,
             crate::commands::wechat::wechat_check_stt_model,

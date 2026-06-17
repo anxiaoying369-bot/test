@@ -38,6 +38,18 @@ export interface NewMessageEvent {
   receivedAt: number;
 }
 
+// 自动监控命中的一个会话（含拉取到的 100 条历史）
+export interface MonitoredChat {
+  sessionId: string;
+  displayName: string;
+  isGroup: boolean;
+  category: 'friend' | 'group';
+  summary: string;
+  lastTimestamp: number;
+  newCount: number;
+  messages: WeChatMessage[];
+}
+
 // 全局单例状态（跨视图共享）
 const connected = ref(false);
 const monitoring = ref(false);
@@ -53,10 +65,15 @@ const groupCount = ref(0);
 const currentSessionId = ref<string>('');
 const messages = ref<WeChatMessage[]>([]);
 
-// 被监控的会话集合（sessionId → displayName）
+// 被监控的会话集合（sessionId → displayName）—— 旧的按会话勾选监控仍保留
 const watched = ref<Record<string, string>>({});
 // 监控推送过来的新消息（最新在前）
 const newMessages = ref<NewMessageEvent[]>([]);
+
+// 自动监控：命中的会话列表（最新在前），以及"监控类型"勾选
+const monitoredChats = ref<MonitoredChat[]>([]);
+const monitorContacts = ref(true);
+const monitorGroups = ref(true);
 
 // STT 模型状态
 const sttReady = ref(false);
@@ -65,6 +82,7 @@ const sttProgress = ref({ percent: 0, message: '' });
 
 let unlisten: any = null;
 let unlistenSTT: any = null;
+let unlistenHit: any = null;
 
 export function useWeChat() {
   async function initListener() {
@@ -81,6 +99,46 @@ export function useWeChat() {
 
         if (data.sessionId === currentSessionId.value) {
           messages.value.push(...(data.messages || []));
+        }
+      });
+    }
+
+    if (!unlistenHit) {
+      unlistenHit = await listen('wechat-monitor-hit', (event: any) => {
+        const d = event.payload as {
+          sessionId: string; displayName: string; isGroup: boolean;
+          category: 'friend' | 'group'; summary: string; lastTimestamp: number;
+          messages: WeChatMessage[];
+        };
+        // 后端默认按时间倒序返回，倒一下让最新在底部
+        const msgs = (d.messages || []).slice().reverse();
+        const idx = monitoredChats.value.findIndex(c => c.sessionId === d.sessionId);
+        if (idx >= 0) {
+          const existing = monitoredChats.value[idx];
+          existing.displayName = d.displayName || existing.displayName;
+          existing.summary = d.summary || existing.summary;
+          existing.lastTimestamp = d.lastTimestamp || existing.lastTimestamp;
+          existing.newCount += 1;
+          existing.messages = msgs;
+          // 置顶
+          monitoredChats.value.splice(idx, 1);
+          monitoredChats.value.unshift(existing);
+        } else {
+          monitoredChats.value.unshift({
+            sessionId: d.sessionId,
+            displayName: d.displayName || d.sessionId,
+            isGroup: !!d.isGroup,
+            category: d.category || (d.isGroup ? 'group' : 'friend'),
+            summary: d.summary || '',
+            lastTimestamp: d.lastTimestamp || 0,
+            newCount: 1,
+            messages: msgs,
+          });
+        }
+        if (monitoredChats.value.length > 200) monitoredChats.value.pop();
+        // 若当前正在查看该会话，实时刷新中间消息区
+        if (currentSessionId.value === d.sessionId) {
+          messages.value = msgs;
         }
       });
     }
@@ -281,6 +339,33 @@ export function useWeChat() {
     }
   }
 
+  // 全局自动监控：进入页面点一下即可，监控所有会话的新消息（前端按类型勾选过滤显示）
+  async function startAutoMonitor(intervalSecs = 5) {
+    try {
+      await invoke('wechat_start_monitor_auto', { intervalSecs });
+      monitoring.value = true;
+      statusText.value = '已开始监控微信新消息';
+    } catch (e: any) {
+      statusText.value = '开始监控失败：' + (e?.message || e);
+    }
+  }
+
+  // 归档：从监控列表移除该会话
+  function archiveChat(sessionId: string) {
+    monitoredChats.value = monitoredChats.value.filter(c => c.sessionId !== sessionId);
+    if (currentSessionId.value === sessionId) {
+      currentSessionId.value = '';
+      messages.value = [];
+    }
+  }
+
+  // 打开某条监控命中的会话：直接用已拉取的 100 条历史，并清零未读计数
+  function openMonitoredChat(chat: MonitoredChat) {
+    currentSessionId.value = chat.sessionId;
+    messages.value = chat.messages.slice();
+    chat.newCount = 0;
+  }
+
   function clearNewMessages() {
     newMessages.value = [];
   }
@@ -364,11 +449,13 @@ export function useWeChat() {
     // state
     connected, monitoring, accountDir, hexKey, statusText, busy,
     sessions, contacts, friendCount, groupCount, currentSessionId, messages, watched, newMessages,
+    monitoredChats, monitorContacts, monitorGroups,
     sttReady, sttDownloading, sttProgress,
     // actions
     initListener, loadCredentials, refreshStatus, autoGetKey, connect,
     loadSessions, loadContacts, openSession, resolveSession, toggleWatch,
-    startMonitor, stopMonitor, clearNewMessages, getVoiceUrl, transcribeVoice, getMediaUrl, getImageUrl, openVideo,
+    startMonitor, stopMonitor, startAutoMonitor, archiveChat, openMonitoredChat,
+    clearNewMessages, getVoiceUrl, transcribeVoice, getMediaUrl, getImageUrl, openVideo,
     checkSTTModel, downloadSTTModel,
   };
 }

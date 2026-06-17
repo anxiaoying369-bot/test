@@ -15,12 +15,21 @@ use serde_json::{json, Value};
 
 use chrono::TimeZone;
 
-use crate::commands::account::list_accounts;
+use crate::commands::account::{delete_account, list_accounts, sync_local_accounts, verify_account};
+use crate::commands::diagnostics::autocast_diagnostics;
 use crate::commands::geo::geo_monitor_query;
-use crate::commands::knowledge_base::{list_kb_files, search_kb_internal};
-use crate::commands::scraper::{get_scraped_comments, get_scraped_videos, list_scraped_users};
-use crate::commands::studio::studio_analyze_video_comments;
+use crate::commands::knowledge_base::{get_kb_file_details, list_kb_files, search_kb_internal};
+use crate::commands::live_monitor::{generate_live_reply, get_live_history, resolve_live_url};
+use crate::commands::scraper::{
+    delete_scraped_user, fetch_douyin_user_info, get_scrape_progress, get_scraped_comments,
+    get_scraped_videos, list_scraped_users, resolve_user_sec_uid,
+};
+use crate::commands::studio::{studio_analyze_video_comments, studio_generate_content};
+use crate::commands::user_cards::{
+    delete_user_card, list_user_cards, query_and_save_user, refresh_user_card,
+};
 use crate::commands::video_studio::generation::video_generate_script;
+use crate::commands::video_studio::mpt::video_mpt_generate_terms;
 
 /// 单个工具结果序列化后允许的最大字符数，超出则截断，防止撑爆 LLM 上下文。
 pub const MAX_TOOL_RESULT_CHARS: usize = 6000;
@@ -148,6 +157,173 @@ pub fn tool_definitions() -> Value {
                     "required": ["query"]
                 }
             }
+        },
+
+        // ===== Phase 4：扩展只读 / 分析工具（自动执行）=====
+        {
+            "type": "function",
+            "function": {
+                "name": "get_kb_document_details",
+                "description": "查看企业知识库中某个文档的详情（切片数、元数据等）。文档名可用 list_kb_documents 获取。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": { "type": "string", "description": "知识库中的文档名" }
+                    },
+                    "required": ["filename"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "resolve_user_sec_uid",
+                "description": "把抖音分享链接 / 抖音号 / 主页 URL 解析成博主唯一 sec_uid。需要 sec_uid 但用户只给了链接或抖音号时调用。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "input": { "type": "string", "description": "抖音分享链接、抖音号或主页地址" }
+                    },
+                    "required": ["input"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_scrape_progress",
+                "description": "查询某个采集任务的进度（已采条数、状态等）。task_id 由 start_scrape 返回。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "采集任务 ID" }
+                    },
+                    "required": ["task_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "fetch_douyin_user_info",
+                "description": "在线拉取某个抖音博主的主页资料（昵称、粉丝数、简介等）。会发起网络请求。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "account_name": { "type": "string", "description": "博主昵称/账号名（用于展示）" },
+                        "user_id":      { "type": "string", "description": "博主 sec_uid 或抖音号" }
+                    },
+                    "required": ["account_name", "user_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_user_cards",
+                "description": "列出已保存的抖音用户画像卡片（含昵称、sec_uid、粉丝数等画像信息）。",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_and_save_user",
+                "description": "在线查询某抖音博主资料并生成/保存为画像卡片。会写入本地画像库。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "account_name": { "type": "string", "description": "博主昵称/账号名" },
+                        "user_id":      { "type": "string", "description": "博主 sec_uid 或抖音号" }
+                    },
+                    "required": ["account_name", "user_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "generate_content",
+                "description": "通用内容生成：根据主题+素材，按指定模式与目标平台生成文案/脚本。比 generate_script 更通用。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "topic":           { "type": "string", "description": "内容主题" },
+                        "material":        { "type": "string", "description": "参考素材/背景信息" },
+                        "mode":            { "type": "string", "description": "生成模式（如 口播/图文/标题 等，按业务约定）" },
+                        "platform":        { "type": "string", "description": "目标平台 ID（douyin/xiaohongshu 等）" },
+                        "platform_prompt": { "type": "string", "description": "平台风格补充提示，可选" }
+                    },
+                    "required": ["topic", "material", "mode", "platform"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "generate_video_search_terms",
+                "description": "为短视频脚本生成一组素材检索关键词（用于到素材库/网络找配图配片）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "video_subject": { "type": "string", "description": "视频主题" },
+                        "video_script":  { "type": "string", "description": "视频脚本全文" },
+                        "amount":        { "type": "integer", "description": "关键词数量，默认 5" }
+                    },
+                    "required": ["video_subject", "video_script"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "resolve_live_url",
+                "description": "把抖音直播间链接解析成 room_id。需要监控直播间但只有链接时调用。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "抖音直播间分享链接或地址" }
+                    },
+                    "required": ["url"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_live_history",
+                "description": "查询某个直播间已记录的历史弹幕/互动数据。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "room_id": { "type": "string", "description": "直播间 ID" }
+                    },
+                    "required": ["room_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "generate_live_reply",
+                "description": "为直播间某条观众弹幕生成一条合适的回复话术。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "user_name": { "type": "string", "description": "发言观众昵称" },
+                        "content":   { "type": "string", "description": "观众弹幕内容" }
+                    },
+                    "required": ["user_name", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_diagnostics",
+                "description": "运行 AutoCast 一键自检，返回依赖/网关/配置等环境健康状况。当用户报告功能异常、想排查环境时调用。",
+                "parameters": { "type": "object", "properties": {} }
+            }
         }
     ])
 }
@@ -221,6 +397,89 @@ pub fn tool_definitions_action() -> Value {
                     "required": ["project_id", "text", "voice_id"]
                 }
             }
+        },
+
+        // ===== Phase 4：扩展动作工具（需前端确认）=====
+        {
+            "type": "function",
+            "function": {
+                "name": "verify_account",
+                "description": "校验某个平台账号的登录状态（Cookie 是否仍有效）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "platform": { "type": "string", "description": "平台 ID（douyin/kuaishou 等）" },
+                        "name":     { "type": "string", "description": "账号名" }
+                    },
+                    "required": ["platform", "name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sync_local_accounts",
+                "description": "扫描本地 cookie 目录，把发现的账号回写到账号库。",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_account",
+                "description": "删除某个平台账号（破坏性操作）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "platform": { "type": "string", "description": "平台 ID" },
+                        "name":     { "type": "string", "description": "账号名" }
+                    },
+                    "required": ["platform", "name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_scraped_user",
+                "description": "删除某个已采集博主的全部本地作品/评论数据（破坏性操作）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "sec_uid": { "type": "string", "description": "博主唯一 sec_uid" }
+                    },
+                    "required": ["sec_uid"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "refresh_user_card",
+                "description": "重新在线拉取并刷新某个用户画像卡片。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "account_name": { "type": "string", "description": "博主昵称/账号名" },
+                        "sec_uid":      { "type": "string", "description": "博主唯一 sec_uid" }
+                    },
+                    "required": ["account_name", "sec_uid"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_user_card",
+                "description": "删除某个用户画像卡片（破坏性操作）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "sec_uid": { "type": "string", "description": "博主唯一 sec_uid" }
+                    },
+                    "required": ["sec_uid"]
+                }
+            }
         }
     ])
 }
@@ -239,7 +498,19 @@ pub fn tool_definitions_all() -> Value {
 
 /// Phase 3 动作工具名集合（用于 chat.rs 判断是否需走 human-in-the-loop）。
 pub fn is_action_tool(name: &str) -> bool {
-    matches!(name, "start_scrape" | "add_document_to_kb" | "delete_kb_file" | "synthesize_speech")
+    matches!(
+        name,
+        "start_scrape"
+            | "add_document_to_kb"
+            | "delete_kb_file"
+            | "synthesize_speech"
+            | "verify_account"
+            | "sync_local_accounts"
+            | "delete_account"
+            | "delete_scraped_user"
+            | "refresh_user_card"
+            | "delete_user_card"
+    )
 }
 
 /// Phase 3 审计日志目录
@@ -422,6 +693,81 @@ pub async fn dispatch_tool(name: &str, args: &Value) -> Value {
             None => Err("缺少必填参数 query".to_string()),
         },
 
+        // ===== Phase 4：扩展只读 / 分析 =====
+        "get_kb_document_details" => match arg_str(args, "filename") {
+            Some(f) => get_kb_file_details(f).await,
+            None => Err("缺少必填参数 filename".to_string()),
+        },
+
+        "resolve_user_sec_uid" => match arg_str(args, "input") {
+            Some(input) => resolve_user_sec_uid(input).await.map(|s| json!({ "sec_uid": s })),
+            None => Err("缺少必填参数 input".to_string()),
+        },
+
+        "get_scrape_progress" => match arg_str(args, "task_id") {
+            Some(tid) => get_scrape_progress(tid)
+                .await
+                .and_then(|p| serde_json::to_value(p).map_err(|e| e.to_string())),
+            None => Err("缺少必填参数 task_id".to_string()),
+        },
+
+        "fetch_douyin_user_info" => match (arg_str(args, "account_name"), arg_str(args, "user_id")) {
+            (Some(name), Some(uid)) => fetch_douyin_user_info(name, uid).await,
+            _ => Err("缺少必填参数 account_name / user_id".to_string()),
+        },
+
+        "list_user_cards" => list_user_cards()
+            .await
+            .and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string())),
+
+        "query_and_save_user" => match (arg_str(args, "account_name"), arg_str(args, "user_id")) {
+            (Some(name), Some(uid)) => query_and_save_user(name, uid)
+                .await
+                .and_then(|c| serde_json::to_value(c).map_err(|e| e.to_string())),
+            _ => Err("缺少必填参数 account_name / user_id".to_string()),
+        },
+
+        "generate_content" => {
+            match (arg_str(args, "topic"), arg_str(args, "material"), arg_str(args, "mode"), arg_str(args, "platform")) {
+                (Some(topic), Some(material), Some(mode), Some(platform)) => {
+                    let platform_prompt = arg_str(args, "platform_prompt");
+                    studio_generate_content(topic, material, mode, platform, platform_prompt).await
+                }
+                _ => Err("缺少必填参数 topic / material / mode / platform".to_string()),
+            }
+        }
+
+        "generate_video_search_terms" => {
+            match (arg_str(args, "video_subject"), arg_str(args, "video_script")) {
+                (Some(subject), Some(script)) => {
+                    let amount = args.get("amount").and_then(|v| v.as_u64()).map(|n| n as u32);
+                    video_mpt_generate_terms(subject, script, amount)
+                        .await
+                        .map(|terms| json!({ "terms": terms }))
+                }
+                _ => Err("缺少必填参数 video_subject / video_script".to_string()),
+            }
+        }
+
+        "resolve_live_url" => match arg_str(args, "url") {
+            Some(url) => resolve_live_url(url).await.map(|s| json!({ "room_id": s })),
+            None => Err("缺少必填参数 url".to_string()),
+        },
+
+        "get_live_history" => match arg_str(args, "room_id") {
+            Some(rid) => get_live_history(rid).await.map(|v| json!({ "history": v })),
+            None => Err("缺少必填参数 room_id".to_string()),
+        },
+
+        "generate_live_reply" => match (arg_str(args, "user_name"), arg_str(args, "content")) {
+            (Some(name), Some(content)) => {
+                generate_live_reply(name, content).await.map(|s| json!({ "reply": s }))
+            }
+            _ => Err("缺少必填参数 user_name / content".to_string()),
+        },
+
+        "run_diagnostics" => autocast_diagnostics().await,
+
         // ===== Phase 3：动作/写入（需先经前端确认）=====
         // 详见 chat.rs 中的 confirm_tool_call 流程
         "add_document_to_kb" => match arg_str(args, "file_path") {
@@ -432,6 +778,39 @@ pub async fn dispatch_tool(name: &str, args: &Value) -> Value {
             Some(n) => crate::commands::knowledge_base::delete_kb_file(n).await,
             None => Err("缺少必填参数 filename".to_string()),
         },
+
+        // ===== Phase 4：扩展动作（无 State 依赖，经前端确认后走本函数）=====
+        "verify_account" => match (arg_str(args, "platform"), arg_str(args, "name")) {
+            (Some(p), Some(n)) => verify_account(p, n)
+                .await
+                .and_then(|r| serde_json::to_value(r).map_err(|e| e.to_string())),
+            _ => Err("缺少必填参数 platform / name".to_string()),
+        },
+
+        "sync_local_accounts" => sync_local_accounts().await.map(|n| json!({ "synced": n })),
+
+        "delete_account" => match (arg_str(args, "platform"), arg_str(args, "name")) {
+            (Some(p), Some(n)) => delete_account(p, n).await.map(|_| json!({ "status": "ok" })),
+            _ => Err("缺少必填参数 platform / name".to_string()),
+        },
+
+        "delete_scraped_user" => match arg_str(args, "sec_uid") {
+            Some(uid) => delete_scraped_user(uid).await.map(|_| json!({ "status": "ok" })),
+            None => Err("缺少必填参数 sec_uid".to_string()),
+        },
+
+        "refresh_user_card" => match (arg_str(args, "account_name"), arg_str(args, "sec_uid")) {
+            (Some(name), Some(uid)) => refresh_user_card(name, uid)
+                .await
+                .and_then(|c| serde_json::to_value(c).map_err(|e| e.to_string())),
+            _ => Err("缺少必填参数 account_name / sec_uid".to_string()),
+        },
+
+        "delete_user_card" => match arg_str(args, "sec_uid") {
+            Some(uid) => delete_user_card(uid).await.map(|_| json!({ "status": "ok" })),
+            None => Err("缺少必填参数 sec_uid".to_string()),
+        },
+
         // start_scrape / synthesize_speech 因依赖 State<'_, AppState>，在 chat.rs 中
         // 通过专用 confirm-and-execute 路径直接调用，不走本函数。
 
@@ -486,6 +865,32 @@ pub fn summarize_action_result(tool_name: &str, args: &Value, result: &Value) ->
             } else {
                 format!("✅ 语音合成完成。音频文件：`{}`", path)
             }
+        }
+        "verify_account" => {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let message = result.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            format!("账号 **{}** 校验结果：{} {}", name, status, message)
+        }
+        "sync_local_accounts" => {
+            let n = result.get("synced").and_then(|v| v.as_i64()).unwrap_or(0);
+            format!("✅ 已同步本地账号，共 **{}** 个。", n)
+        }
+        "delete_account" => {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            format!("✅ 已删除账号 **{}**。", name)
+        }
+        "delete_scraped_user" => {
+            let uid = args.get("sec_uid").and_then(|v| v.as_str()).unwrap_or("");
+            format!("✅ 已删除博主 `{}` 的本地采集数据。", uid)
+        }
+        "refresh_user_card" => {
+            let name = args.get("account_name").and_then(|v| v.as_str()).unwrap_or("该用户");
+            format!("✅ 已刷新 **{}** 的画像卡片。", name)
+        }
+        "delete_user_card" => {
+            let uid = args.get("sec_uid").and_then(|v| v.as_str()).unwrap_or("");
+            format!("✅ 已删除画像卡片 `{}`。", uid)
         }
         _ => {
             let s = serde_json::to_string(result).unwrap_or_default();

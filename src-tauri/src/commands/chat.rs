@@ -44,6 +44,27 @@ fn describe_action_tool(name: &str, args: &serde_json::Value) -> String {
             };
             format!("合成语音：「{}」", preview)
         }
+        "verify_account" => {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("校验账号「{}」的登录状态", name)
+        }
+        "sync_local_accounts" => "扫描本地 cookie 目录并同步账号库".to_string(),
+        "delete_account" => {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("删除账号「{}」", name)
+        }
+        "delete_scraped_user" => {
+            let uid = args.get("sec_uid").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("删除博主「{}」的本地采集数据", uid)
+        }
+        "refresh_user_card" => {
+            let name = args.get("account_name").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("刷新「{}」的用户画像卡片", name)
+        }
+        "delete_user_card" => {
+            let uid = args.get("sec_uid").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("删除用户画像卡片「{}」", uid)
+        }
         _ => format!("执行工具 {}", name),
     }
 }

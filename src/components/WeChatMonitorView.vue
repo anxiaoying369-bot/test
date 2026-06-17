@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue';
-import { MessageCircle, KeyRound, Plug, Search, Bell, Radio, Loader2, Play, Pause, Square, Volume2 } from 'lucide-vue-next';
-import { useWeChat, type WeChatMessage } from '../composables/useWeChat';
+import { MessageCircle, KeyRound, Plug, Bell, Radio, Loader2, Play, Pause, Square, Volume2, Archive, Users, UsersRound } from 'lucide-vue-next';
+import { useWeChat, type WeChatMessage, type MonitoredChat } from '../composables/useWeChat';
 
 const wx = useWeChat();
 const {
   connected, monitoring, accountDir, hexKey, statusText, busy,
-  contacts, friendCount, groupCount, currentSessionId, messages, watched, newMessages,
+  currentSessionId, messages,
+  monitoredChats, monitorContacts, monitorGroups,
   transcribeVoice, sttReady, sttDownloading, checkSTTModel, downloadSTTModel,
 } = wx;
 
@@ -118,42 +119,17 @@ watch(messages, (ms) => {
   }
 });
 
-// 自动转文字：新消息到达时
-watch(newMessages, (evts) => {
-  // 如果模型没好，自动转文字暂不触发，避免频繁弹窗（手动点转文字才会弹窗）
-  if (!sttReady.value) return;
-  for (const evt of evts) {
-    for (const m of evt.messages) {
-      if (m.localType === 34 && m.localId && !transcriptions.value[m.localId] && !transcribing.value[m.localId]) {
-        doTranscribe(m, evt.sessionId);
-      }
-    }
-  }
-}, { deep: true });
-
-const sessionFilter = ref('');
 const intervalSecs = ref(5);
-const activeFilter = ref<'all' | 'friend' | 'group'>('all');
 
-const filteredContacts = computed(() => {
-  const kw = sessionFilter.value.trim().toLowerCase();
-  return contacts.value.filter(c => {
-    if (activeFilter.value !== 'all' && c.category !== activeFilter.value) return false;
-    if (!kw) return true;
-    return (c.displayName || '').toLowerCase().includes(kw) ||
-           (c.username || '').toLowerCase().includes(kw);
-  });
-});
+// 监控列表：按勾选的「联系人 / 群聊」类型过滤显示
+const filteredChats = computed(() => monitoredChats.value.filter(c =>
+  (c.category === 'friend' && monitorContacts.value) ||
+  (c.category === 'group' && monitorGroups.value)
+));
 
-const currentSessionName = computed(() => {
-  const c = contacts.value.find(c => c.username === currentSessionId.value);
-  return c ? c.displayName : currentSessionId.value;
-});
-
-const currentIsGroup = computed(() => {
-  const c = contacts.value.find(c => c.username === currentSessionId.value);
-  return !!(c && c.isGroup);
-});
+const currentChat = computed(() => monitoredChats.value.find(c => c.sessionId === currentSessionId.value) || null);
+const currentSessionName = computed(() => currentChat.value?.displayName || '');
+const currentIsGroup = computed(() => !!currentChat.value?.isGroup);
 
 function fmtTime(sec: number) {
   if (!sec) return '';
@@ -164,11 +140,23 @@ function msgText(m: WeChatMessage) {
   return m.parsedContent || m.content || '';
 }
 
+function openChat(chat: MonitoredChat) {
+  wx.openMonitoredChat(chat);
+}
+
+function archive(chat: MonitoredChat) {
+  wx.archiveChat(chat.sessionId);
+}
+
+async function toggleMonitor() {
+  if (monitoring.value) await wx.stopMonitor();
+  else await wx.startAutoMonitor(intervalSecs.value);
+}
+
 onMounted(async () => {
   await wx.initListener();
   await wx.loadCredentials();
   await wx.refreshStatus();
-  if (connected.value) await wx.loadContacts();
   await checkSTTModel(); // 启动时异步检查模型状态
 });
 </script>
@@ -212,78 +200,79 @@ onMounted(async () => {
         </div>
       </div>
 
+      <!-- 监控控制：类型勾选 + 监控按钮 -->
+      <div class="flex flex-wrap items-center gap-3">
+        <span class="text-xs text-gray-400">监控类型：</span>
+        <label class="flex items-center gap-1.5 text-sm cursor-pointer select-none">
+          <input type="checkbox" v-model="monitorContacts" class="accent-green-600" />
+          <Users class="w-4 h-4 text-gray-400" /> 联系人
+        </label>
+        <label class="flex items-center gap-1.5 text-sm cursor-pointer select-none">
+          <input type="checkbox" v-model="monitorGroups" class="accent-green-600" />
+          <UsersRound class="w-4 h-4 text-gray-400" /> 群聊
+        </label>
+
+        <div class="flex items-center gap-1.5 text-xs text-gray-400 ml-auto">
+          轮询间隔
+          <input v-model.number="intervalSecs" type="number" min="2" max="120" :disabled="monitoring"
+            class="w-16 bg-gray-900 border border-gray-700 rounded px-1.5 py-1 text-gray-100 disabled:opacity-50" /> 秒
+        </div>
+        <button @click="toggleMonitor" :disabled="!connected"
+          :class="['flex items-center gap-1.5 px-4 py-1.5 rounded text-sm disabled:opacity-50',
+                   monitoring ? 'bg-gray-700 hover:bg-gray-600' : 'bg-red-700 hover:bg-red-600']">
+          <Square v-if="monitoring" class="w-4 h-4" />
+          <Radio v-else class="w-4 h-4" />
+          {{ monitoring ? '停止监控' : '开始监控' }}
+        </button>
+      </div>
+
       <p v-if="statusText" class="text-xs text-gray-400">{{ statusText }}</p>
     </div>
 
-    <!-- 主体：会话列表 / 聊天 / 新消息 -->
+    <!-- 主体：监控命中列表 / 聊天内容 -->
     <div class="flex flex-1 min-h-0">
-      <!-- 左：会话列表 -->
-      <div class="w-72 flex-shrink-0 border-r border-gray-800 flex flex-col">
-        <div class="p-2 border-b border-gray-800 space-y-2">
-          <div class="flex items-center gap-2 bg-gray-900 rounded px-2">
-            <Search class="w-4 h-4 text-gray-500" />
-            <input v-model="sessionFilter" placeholder="搜索联系人/群"
-              class="flex-1 bg-transparent py-1.5 text-sm focus:outline-none" />
-          </div>
-          <!-- 筛选 tab：全部 / 联系人 / 群聊 -->
-          <div class="flex gap-1 text-xs">
-            <button @click="activeFilter = 'all'"
-              :class="['flex-1 py-1 rounded', activeFilter === 'all' ? 'bg-green-700 text-white' : 'bg-gray-900 text-gray-400 hover:bg-gray-800']">
-              全部 {{ friendCount + groupCount }}
-            </button>
-            <button @click="activeFilter = 'friend'"
-              :class="['flex-1 py-1 rounded', activeFilter === 'friend' ? 'bg-green-700 text-white' : 'bg-gray-900 text-gray-400 hover:bg-gray-800']">
-              联系人 {{ friendCount }}
-            </button>
-            <button @click="activeFilter = 'group'"
-              :class="['flex-1 py-1 rounded', activeFilter === 'group' ? 'bg-green-700 text-white' : 'bg-gray-900 text-gray-400 hover:bg-gray-800']">
-              群聊 {{ groupCount }}
-            </button>
-          </div>
+      <!-- 左：监控到的会话列表 -->
+      <div class="w-80 flex-shrink-0 border-r border-gray-800 flex flex-col">
+        <div class="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
+          <span class="text-sm font-medium flex items-center gap-1.5">
+            <Bell class="w-4 h-4 text-amber-400" /> 监控列表
+          </span>
+          <span class="text-[11px] text-gray-500">{{ filteredChats.length }} 个会话</span>
         </div>
-
         <div class="flex-1 overflow-y-auto">
-          <div v-if="!connected" class="p-4 text-xs text-gray-500">连接后显示通讯录</div>
-          <div v-else-if="!filteredContacts.length" class="p-4 text-xs text-gray-500">无匹配的联系人</div>
-          <div v-for="c in filteredContacts" :key="c.username"
-            @click="wx.openSession(c.username)"
-            :class="['flex items-center gap-2 px-3 py-2 cursor-pointer border-b border-gray-900',
-                     currentSessionId === c.username ? 'bg-gray-900' : 'hover:bg-gray-900/50']">
-            <input type="checkbox" :checked="!!watched[c.username]" @click.stop="wx.toggleWatch(c)"
-              class="accent-green-600" title="监控此会话" />
+          <div v-if="!connected" class="p-4 text-xs text-gray-500">请先连接微信数据库</div>
+          <div v-else-if="!monitoring && !filteredChats.length" class="p-4 text-xs text-gray-500">
+            点击上方「开始监控」后，有新消息的会话会出现在这里。
+          </div>
+          <div v-else-if="!filteredChats.length" class="p-4 text-xs text-gray-500">
+            监控中，暂无新消息…
+          </div>
+          <div v-for="chat in filteredChats" :key="chat.sessionId"
+            @click="openChat(chat)"
+            :class="['group flex items-start gap-2 px-3 py-2.5 cursor-pointer border-b border-gray-900',
+                     currentSessionId === chat.sessionId ? 'bg-gray-900' : 'hover:bg-gray-900/50']">
             <div class="flex-1 min-w-0">
               <div class="text-sm truncate flex items-center gap-1.5">
-                <span v-if="c.isGroup" class="text-[9px] bg-gray-700 text-gray-300 px-1 rounded shrink-0">群</span>
-                {{ c.displayName || c.username }}
+                <span v-if="chat.isGroup" class="text-[9px] bg-gray-700 text-gray-300 px-1 rounded shrink-0">群</span>
+                <span v-else class="text-[9px] bg-emerald-800 text-emerald-200 px-1 rounded shrink-0">友</span>
+                <span class="truncate">{{ chat.displayName || chat.sessionId }}</span>
+                <span v-if="chat.newCount > 0" class="text-[10px] bg-red-600 text-white px-1.5 rounded-full shrink-0">{{ chat.newCount }}</span>
               </div>
-              <div class="text-[10px] text-gray-500 truncate">{{ c.username }}</div>
+              <div class="text-[11px] text-gray-500 truncate mt-0.5">{{ chat.summary || '—' }}</div>
+              <div class="text-[10px] text-gray-600 mt-0.5">{{ fmtTime(chat.lastTimestamp) }}</div>
             </div>
-            <Bell v-if="watched[c.username]" class="w-3.5 h-3.5 text-amber-400" />
+            <button @click.stop="archive(chat)" title="归档（从列表移除）"
+              class="opacity-0 group-hover:opacity-100 transition p-1 rounded hover:bg-gray-700 text-gray-400 hover:text-amber-400 shrink-0">
+              <Archive class="w-4 h-4" />
+            </button>
           </div>
-        </div>
-
-        <!-- 监控控制 -->
-        <div class="p-2 border-t border-gray-800 space-y-2">
-          <div class="flex items-center gap-2 text-xs text-gray-400">
-            轮询间隔
-            <input v-model.number="intervalSecs" type="number" min="2" max="120"
-              class="w-16 bg-gray-900 border border-gray-700 rounded px-1.5 py-1 text-gray-100" /> 秒
-          </div>
-          <button v-if="!monitoring" @click="wx.startMonitor(intervalSecs)" :disabled="!connected"
-            class="w-full px-3 py-1.5 rounded bg-red-700 hover:bg-red-600 text-sm disabled:opacity-50">
-            开始监控（已选 {{ Object.keys(watched).length }}）
-          </button>
-          <button v-else @click="wx.stopMonitor()"
-            class="w-full px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">
-            停止监控
-          </button>
         </div>
       </div>
 
-      <!-- 中：聊天内容 -->
+      <!-- 中：聊天内容（监控命中的 100 条历史）-->
       <div class="flex-1 min-w-0 flex flex-col">
         <div class="px-4 py-2 border-b border-gray-800 text-sm font-medium">
-          {{ currentSessionName || '选择左侧会话查看聊天记录' }}
+          {{ currentSessionName || '选择左侧会话查看最近 100 条聊天记录' }}
         </div>
         <div class="flex-1 overflow-y-auto p-4 space-y-3">
           <div v-if="!messages.length" class="text-xs text-gray-500">暂无消息</div>
@@ -351,33 +340,6 @@ onMounted(async () => {
                           m.isSender ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-100']">
               {{ msgText(m) }}
             </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 右：新消息提示 -->
-      <div class="w-80 flex-shrink-0 border-l border-gray-800 flex flex-col">
-        <div class="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
-          <span class="text-sm font-medium flex items-center gap-1.5">
-            <Bell class="w-4 h-4 text-amber-400" /> 新消息
-          </span>
-          <button @click="wx.clearNewMessages()" class="text-[11px] text-gray-500 hover:text-gray-300">清空</button>
-        </div>
-        <div class="flex-1 overflow-y-auto p-2 space-y-2">
-          <div v-if="!newMessages.length" class="p-3 text-xs text-gray-500">
-            勾选会话并开始监控后，新消息会实时出现在这里。
-          </div>
-          <div v-for="(evt, i) in newMessages" :key="i"
-            @click="wx.openSession(evt.sessionId)"
-            class="bg-gray-900 rounded-lg p-2.5 cursor-pointer hover:bg-gray-800 border border-gray-800">
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-sm font-medium text-green-400 truncate">{{ evt.displayName || evt.sessionId }}</span>
-              <span class="text-[10px] bg-red-600 text-white px-1.5 rounded-full">{{ evt.messages.length }}</span>
-            </div>
-            <div v-for="(m, j) in evt.messages.slice(0, 3)" :key="j" class="text-xs text-gray-300 truncate">
-              {{ msgText(m) }}
-            </div>
-            <div v-if="evt.messages.length > 3" class="text-[10px] text-gray-500">…等 {{ evt.messages.length }} 条</div>
           </div>
         </div>
       </div>
