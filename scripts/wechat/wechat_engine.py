@@ -676,9 +676,9 @@ class Engine:
 
     @staticmethod
     def _frame_looks_corrupt(jpg_bytes):
-        """像素层面检测 ffmpeg 从截断 HEVC 解出的「绿屏/花屏」帧：
-        ① 底部约 1/4 区域近乎纯色（解码器没写到的填充区，真实图几乎不会这样）；
-        ② 整图大片纯绿（YUV(0,0,0)→RGB 的填充绿）。命中任一→判损坏，交上层回退缩略图。"""
+        """像素层面检测 ffmpeg 从截断 HEVC 解出的「绿屏」帧——只认 HEVC 错误隐藏的**填充绿**，
+        不把白底卡片/纯色背景等合法图误判为花屏（关键：避免误杀白底文字卡）。
+        ① 底部约 1/4 近乎纯色**且偏绿**；② 整图大片纯绿。命中任一→判损坏。"""
         try:
             import io
             import numpy as np
@@ -688,12 +688,14 @@ class Engine:
             h, w, _ = a.shape
             if h < 16 or w < 16:
                 return False
-            # ① 底部 28% 近乎纯色（截断解码的典型特征）
-            bottom = a[int(h * 0.72):].reshape(-1, 3)
-            if float(bottom.std(axis=0).mean()) < 4.0:
-                return True
-            # ② 大片纯绿
             r, g, b = a[..., 0], a[..., 1], a[..., 2]
+            # ① 底部 28% 近乎纯色 且 该纯色偏绿（截断解码的填充绿；纯白/纯黑等合法纯色不算）
+            bottom = a[int(h * 0.72):].reshape(-1, 3)
+            bstd = float(bottom.std(axis=0).mean())
+            bmean = bottom.mean(axis=0)
+            if bstd < 6.0 and float(bmean[1] - max(bmean[0], bmean[2])) > 25.0:
+                return True
+            # ② 整图大片纯绿
             green = (g > 90) & (r < 120) & (b < 120) & ((g - np.maximum(r, b)) > 35)
             if float(green.mean()) > 0.15:
                 return True
@@ -701,32 +703,35 @@ class Engine:
         except Exception:
             return False
 
-    def _ffmpeg_hevc_to_jpg(self, ffmpeg, units):
-        """把一组 NALU 重建为 annexb 流并用 ffmpeg 取第一帧 jpg。多帧偏移做兜底尝试。
-        只接受**无解码错误**的一帧；若全部偏移都报错（截断流的花屏），返回 None 交上层回退缩略图。"""
-        if not units:
+    def _ffmpeg_hevc_to_jpg(self, ffmpeg, hevc_bytes):
+        """用 ffmpeg 把一段 HEVC 裸流取第一帧 jpg。仿 WeFlow：依次尝试 -f hevc / -f h265 /
+        自动探测，各配合 frame 0/1/5 偏移；只接受 stderr 无解码错误且像素层无花屏的一帧，
+        否则返回 None 交上层换下一候选/回退缩略图。"""
+        if not hevc_bytes or len(hevc_bytes) < 100:
             return None
-        annexb = b"".join(b"\x00\x00\x00\x01" + u for u in units)
         inp = tempfile.mktemp(suffix=".hevc")
         out = tempfile.mktemp(suffix=".jpg")
         try:
             with open(inp, "wb") as f:
-                f.write(annexb)
-            for extra in ([], ["-vf", "select=eq(n\\,1)"], ["-vf", "select=eq(n\\,5)"]):
-                try:
-                    if os.path.exists(out):
-                        os.remove(out)
-                except OSError:
-                    pass
-                cmd = [ffmpeg, "-y", "-loglevel", "error", "-f", "hevc", "-i", inp]
-                cmd += extra + ["-frames:v", "1", out]
-                try:
-                    r = subprocess.run(cmd, capture_output=True, timeout=30)
-                except Exception:
-                    continue
-                if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 1000:
+                f.write(hevc_bytes)
+            for fmt in (["-f", "hevc"], ["-f", "h265"], []):
+                for sel in ([], ["-vf", "select=eq(n\\,1)"], ["-vf", "select=eq(n\\,5)"]):
+                    try:
+                        if os.path.exists(out):
+                            os.remove(out)
+                    except OSError:
+                        pass
+                    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+                    cmd += fmt + ["-i", inp] + sel
+                    cmd += ["-frames:v", "1", "-q:v", "2", "-f", "image2", out]
+                    try:
+                        r = subprocess.run(cmd, capture_output=True, timeout=30)
+                    except Exception:
+                        continue
+                    if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) <= 1000:
+                        continue
                     # 流截断时 ffmpeg 照样输出一张花屏并返回 0：① stderr 报解码错误，或
-                    # ② 像素层面检测出绿屏/截断帧——任一命中都丢弃这张，回退到缩略图。
+                    # ② 像素层面检测出绿屏/截断帧——任一命中都丢弃这张，换下个候选。
                     stderr = r.stderr or b""
                     if any(mk in stderr for mk in self._HEVC_ERR_MARKERS):
                         continue
@@ -743,9 +748,53 @@ class Engine:
                 except OSError:
                     pass
 
+    @staticmethod
+    def _merge_nalus(units):
+        """把 NALU 列表重建成 annexb 裸流（每单元前加 00 00 00 01 起始码）。"""
+        parts = []
+        for u in units:
+            if u and len(u) >= 2:
+                parts.append(b"\x00\x00\x00\x01")
+                parts.append(bytes(u))
+        return b"".join(parts)
+
+    def _build_hevc_candidates(self, buf):
+        """构建 HEVC 候选裸流（仿 WeFlow）：
+        ① 按 VPS(32) 分组、只保留含 VCL(19/20/1) 的组，**按字节大小降序**——最大的整图帧优先；
+        ② 全量扫描提取的整条流；③ 兜底：直接跳过 wxgf 头的原始字节。
+        返回 [(name, bytes), ...]，已去重。"""
+        units = self._extract_nalus(buf)
+        candidates = []
+        seen = set()
+
+        def add(name, data):
+            if not data or len(data) < 100:
+                return
+            key = hash(bytes(data))
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append((name, bytes(data)))
+
+        vps_idx = [i for i, u in enumerate(units) if ((u[0] >> 1) & 0x3F) == 32]
+        groups = []
+        for gi in range(len(vps_idx)):
+            start = vps_idx[gi]
+            end = vps_idx[gi + 1] if gi + 1 < len(vps_idx) else len(units)
+            group = units[start:end]
+            if any(((u[0] >> 1) & 0x3F) in (19, 20, 1) for u in group):
+                groups.append(self._merge_nalus(group))
+        groups.sort(key=len, reverse=True)  # 最大 VCL 组优先（最可能是整图主帧）
+        for gi, gdata in enumerate(groups):
+            add("group_%d" % gi, gdata)
+
+        add("scan_all", self._merge_nalus(units))
+        add("raw_skip4", buf[4:])
+        return candidates
+
     def _wxgf_to_jpg(self, buf):
-        """wxgf 容器（内含 HEVC）→ jpg。先找内嵌 jpeg/png，否则提取 NALU、按 VPS 分组成多个
-        候选流分别交 ffmpeg（兼容实况/多帧），取第一个成功的。"""
+        """wxgf 容器（内含 HEVC）→ jpg。先找内嵌 jpeg/png，否则按 WeFlow 思路构建多候选裸流，
+        逐个交 ffmpeg（多格式+多帧偏移）解码，取第一个非花屏的结果。"""
         # 内嵌传统图片
         for i in range(4, min(len(buf) - 12, 4096)):
             if buf[i] == 0xFF and buf[i + 1] == 0xD8 and buf[i + 2] == 0xFF:
@@ -755,22 +804,8 @@ class Engine:
         ffmpeg = os.environ.get("WECHAT_FFMPEG")
         if not ffmpeg or not os.path.exists(ffmpeg):
             return None
-        units = self._extract_nalus(buf)
-        if not units:
-            return None
 
-        # 候选 1：整条流
-        candidates = [units]
-        # 候选 2..：按 VPS(type=32) 分组，取每个含 VCL 帧的组
-        vps_idx = [i for i, u in enumerate(units) if ((u[0] >> 1) & 0x3F) == 32]
-        for gi in range(len(vps_idx)):
-            start = vps_idx[gi]
-            end = vps_idx[gi + 1] if gi + 1 < len(vps_idx) else len(units)
-            group = units[start:end]
-            if any(((u[0] >> 1) & 0x3F) in (19, 20, 21, 1, 0) for u in group):
-                candidates.append(group)
-
-        for cand in candidates:
+        for _name, cand in self._build_hevc_candidates(buf):
             jpg = self._ffmpeg_hevc_to_jpg(ffmpeg, cand)
             if jpg:
                 return "image/jpeg", jpg
@@ -816,9 +851,11 @@ class Engine:
         if not want_full:
             return thumb
         ordered = []
-        for suffix in (".dat", "_h.dat"):
+        # _h.dat（高清缩略，~1500px，通常完整可解）优先于常被懒下载截断成花屏的原图 .dat：
+        # 既更快（省掉对截断 .dat 的多次 ffmpeg 尝试），又能直接给出清晰高清。
+        for suffix in ("_h.dat", ".dat"):
             ordered += find(suffix)
-        ordered += thumb  # 高清没下全时回退缩略图（完整、低清但不花屏）
+        ordered += thumb  # 都没有时回退小缩略图（完整、低清但不花屏）
         return ordered
 
     def get_image(self, session_username, local_id, want_full=False):
