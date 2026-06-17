@@ -666,8 +666,17 @@ class Engine:
                 units.append(pay)
         return units
 
+    # ffmpeg(error 级) 报这些就说明 HEVC 流截断/损坏——它仍会用错误隐藏吐一张「绿屏/花屏」
+    # 图并返回 0，必须丢弃，否则上层会把花屏当成功返回（而不是回退到干净缩略图）。
+    _HEVC_ERR_MARKERS = (
+        b"Could not find ref", b"error while decoding", b"Invalid NAL", b"non-existing",
+        b"concealing", b"Error parsing", b"decode_slice", b"out of range",
+        b"corrupt", b"Invalid data",
+    )
+
     def _ffmpeg_hevc_to_jpg(self, ffmpeg, units):
-        """把一组 NALU 重建为 annexb 流并用 ffmpeg 取第一帧 jpg。多帧偏移做兜底尝试。"""
+        """把一组 NALU 重建为 annexb 流并用 ffmpeg 取第一帧 jpg。多帧偏移做兜底尝试。
+        只接受**无解码错误**的一帧；若全部偏移都报错（截断流的花屏），返回 None 交上层回退缩略图。"""
         if not units:
             return None
         annexb = b"".join(b"\x00\x00\x00\x01" + u for u in units)
@@ -689,6 +698,10 @@ class Engine:
                 except Exception:
                     continue
                 if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 1000:
+                    # 流截断时 ffmpeg 照样输出一张花屏并返回 0；用 stderr 判断是否真解码干净。
+                    stderr = r.stderr or b""
+                    if any(mk in stderr for mk in self._HEVC_ERR_MARKERS):
+                        continue
                     with open(out, "rb") as f:
                         return f.read()
             return None
