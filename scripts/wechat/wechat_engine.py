@@ -674,6 +674,33 @@ class Engine:
         b"corrupt", b"Invalid data",
     )
 
+    @staticmethod
+    def _frame_looks_corrupt(jpg_bytes):
+        """像素层面检测 ffmpeg 从截断 HEVC 解出的「绿屏/花屏」帧：
+        ① 底部约 1/4 区域近乎纯色（解码器没写到的填充区，真实图几乎不会这样）；
+        ② 整图大片纯绿（YUV(0,0,0)→RGB 的填充绿）。命中任一→判损坏，交上层回退缩略图。"""
+        try:
+            import io
+            import numpy as np
+            from PIL import Image
+            im = Image.open(io.BytesIO(jpg_bytes)).convert("RGB")
+            a = np.asarray(im, dtype=np.int16)
+            h, w, _ = a.shape
+            if h < 16 or w < 16:
+                return False
+            # ① 底部 28% 近乎纯色（截断解码的典型特征）
+            bottom = a[int(h * 0.72):].reshape(-1, 3)
+            if float(bottom.std(axis=0).mean()) < 4.0:
+                return True
+            # ② 大片纯绿
+            r, g, b = a[..., 0], a[..., 1], a[..., 2]
+            green = (g > 90) & (r < 120) & (b < 120) & ((g - np.maximum(r, b)) > 35)
+            if float(green.mean()) > 0.15:
+                return True
+            return False
+        except Exception:
+            return False
+
     def _ffmpeg_hevc_to_jpg(self, ffmpeg, units):
         """把一组 NALU 重建为 annexb 流并用 ffmpeg 取第一帧 jpg。多帧偏移做兜底尝试。
         只接受**无解码错误**的一帧；若全部偏移都报错（截断流的花屏），返回 None 交上层回退缩略图。"""
@@ -698,12 +725,16 @@ class Engine:
                 except Exception:
                     continue
                 if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 1000:
-                    # 流截断时 ffmpeg 照样输出一张花屏并返回 0；用 stderr 判断是否真解码干净。
+                    # 流截断时 ffmpeg 照样输出一张花屏并返回 0：① stderr 报解码错误，或
+                    # ② 像素层面检测出绿屏/截断帧——任一命中都丢弃这张，回退到缩略图。
                     stderr = r.stderr or b""
                     if any(mk in stderr for mk in self._HEVC_ERR_MARKERS):
                         continue
                     with open(out, "rb") as f:
-                        return f.read()
+                        data = f.read()
+                    if self._frame_looks_corrupt(data):
+                        continue
+                    return data
             return None
         finally:
             for x in (inp, out):
