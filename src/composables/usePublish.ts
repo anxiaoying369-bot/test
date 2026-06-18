@@ -28,6 +28,8 @@ export interface PublishableVideo {
   name: string;
   size: number;
   modified: number;
+  /** true = 用户从磁盘自主上传的本地视频（非工作室成片） */
+  local?: boolean;
 }
 
 /** 发布账号（对应 Rust AccountView） */

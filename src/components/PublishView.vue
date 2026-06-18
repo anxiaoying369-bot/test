@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { Send, RefreshCw, Trash2, X, Calendar, Clock, CheckCircle2, AlertCircle, Loader2, Film, Users } from 'lucide-vue-next';
-import { usePublish, type PublishTask } from '../composables/usePublish';
+import { Send, RefreshCw, Trash2, X, Calendar, Clock, CheckCircle2, AlertCircle, Loader2, Film, Users, Upload } from 'lucide-vue-next';
+import { open } from '@tauri-apps/plugin-dialog';
+import { usePublish, type PublishTask, type PublishableVideo } from '../composables/usePublish';
 
 const {
   tasks, videos, accounts, lastError,
@@ -11,6 +12,24 @@ const {
 
 // ─── 表单状态 ───
 const selectedVideo = ref<string>('');
+/** 用户自主上传（从磁盘选）的本地视频，与工作室成片合并展示 */
+const localVideos = ref<PublishableVideo[]>([]);
+const allVideos = computed<PublishableVideo[]>(() => [...localVideos.value, ...videos.value]);
+
+async function pickLocalVideo() {
+  const picked = await open({
+    multiple: false,
+    filters: [{ name: 'Videos', extensions: ['mp4', 'mov', 'avi', 'mkv', 'webm'] }],
+  });
+  if (!picked || Array.isArray(picked)) return;
+  const path = picked as string;
+  // 去重：已在列表里（成片或之前选过的本地）就直接选中
+  if (!allVideos.value.some((v) => v.path === path)) {
+    const name = path.split(/[\\/]/).pop() || path;
+    localVideos.value.unshift({ path, name, size: 0, modified: Date.now() / 1000, local: true });
+  }
+  selectedVideo.value = path;
+}
 const selectedAccounts = ref<string[]>([]);
 const title = ref('');
 const tagsInput = ref('');
@@ -116,19 +135,26 @@ onMounted(init);
       <section class="overflow-y-auto p-6 border-r border-gray-800 space-y-5">
         <!-- 选视频 -->
         <div>
-          <label class="text-xs font-medium text-gray-400 flex items-center gap-1.5 mb-2">
-            <Film :size="14" /> 选择视频（来自视频工作室成片）
-          </label>
-          <div v-if="videos.length === 0" class="text-xs text-gray-600 py-3">
-            还没有可发布的成片，请先在「视频工作室」生成视频。
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-xs font-medium text-gray-400 flex items-center gap-1.5">
+              <Film :size="14" /> 选择视频
+            </label>
+            <button type="button" @click="pickLocalVideo"
+              class="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1">
+              <Upload :size="13" /> 上传本地视频
+            </button>
+          </div>
+          <div v-if="allVideos.length === 0" class="text-xs text-gray-600 py-3">
+            还没有视频。可点右上「上传本地视频」选一个，或在「视频工作室」生成成片。
           </div>
           <div v-else class="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-            <label v-for="v in videos" :key="v.path"
+            <label v-for="v in allVideos" :key="v.path"
               :class="['flex items-center gap-2.5 px-3 py-2 rounded-lg cursor-pointer text-sm border',
                 selectedVideo === v.path ? 'border-purple-500 bg-purple-500/10' : 'border-gray-800 hover:border-gray-700']">
               <input type="radio" name="video" :value="v.path" v-model="selectedVideo" class="accent-purple-500" />
               <span class="truncate flex-1">{{ v.name }}</span>
-              <span class="text-[10px] text-gray-500 shrink-0">{{ fmtSize(v.size) }}</span>
+              <span v-if="v.local" class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 shrink-0">本地</span>
+              <span v-else class="text-[10px] text-gray-500 shrink-0">{{ fmtSize(v.size) }}</span>
             </label>
           </div>
         </div>
