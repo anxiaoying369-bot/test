@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle } from 'lucide-vue-next';
+import { listen } from '@tauri-apps/api/event';
+import { RefreshCw, Trash2, CheckCircle, XCircle, HelpCircle, KeyRound, AlertTriangle } from 'lucide-vue-next';
 
 const accounts = ref<any[]>([]);
 const isLoginModalOpen = ref(false);
@@ -13,6 +14,8 @@ const accountNameInput = ref('抖音账号');
 const debugMsg = ref('系统就绪');
 const verifyingIds = ref<Set<string>>(new Set());
 const confirmDeleteKey = ref<string | null>(null); // "platform:name" 待确认删除
+const refreshingIds = ref<Set<string>>(new Set());
+const refreshStage = ref<Record<string, string>>({}); // key → 当前刷新阶段文案
 
 // ============ 账号列表 ============
 async function loadAccounts() {
@@ -211,7 +214,61 @@ function isVerifying(platform: string, name: string) {
   return verifyingIds.value.has(`${platform}:${name}`);
 }
 
-onMounted(loadAccounts);
+// ============ 刷新登录凭证（保活）============
+function isRefreshing(platform: string, name: string) {
+  return refreshingIds.value.has(`${platform}:${name}`);
+}
+
+function fmtLoginDate(secs: number | null): string {
+  if (!secs) return '未知';
+  return new Date(secs * 1000).toLocaleDateString('zh-CN');
+}
+
+async function refreshCredential(account: any) {
+  const key = `${account.platform}:${account.name}`;
+  if (refreshingIds.value.has(key)) return;
+  refreshingIds.value.add(key);
+  refreshStage.value[key] = '开始刷新…';
+  debugMsg.value = `刷新凭证: ${account.name}`;
+  try {
+    const updated: any = await invoke('refresh_account_credential', {
+      platform: account.platform,
+      name: account.name,
+    });
+    const idx = accounts.value.findIndex(
+      (a) => a.platform === account.platform && a.name === account.name
+    );
+    if (idx >= 0) {
+      // 保留验证态等前端附加字段，覆盖后端返回的新字段（needs_refresh/last_login_at/meta）
+      accounts.value[idx] = { ...accounts.value[idx], ...updated };
+    }
+    debugMsg.value = `凭证已刷新: ${account.name}`;
+  } catch (e) {
+    debugMsg.value = `刷新失败: ${e}`;
+    // 失败（如旧 cookie 已彻底失效）提示重新登录
+    alert(`「${account.name}」刷新失败：${e}`);
+  } finally {
+    refreshingIds.value.delete(key);
+    delete refreshStage.value[key];
+  }
+}
+
+let unlistenRefresh: (() => void) | null = null;
+
+onMounted(async () => {
+  await loadAccounts();
+  unlistenRefresh = await listen<{ platform: string; name: string; stage: string; progress: number }>(
+    'account-refresh-progress',
+    (event) => {
+      const { platform, name, stage, progress } = event.payload;
+      refreshStage.value[`${platform}:${name}`] = `${stage} ${progress}%`;
+    }
+  );
+});
+
+onUnmounted(() => {
+  if (unlistenRefresh) unlistenRefresh();
+});
 </script>
 
 <template>
@@ -250,6 +307,16 @@ onMounted(loadAccounts);
                   </span>
                 </div>
                 <div class="text-xs text-gray-500">{{ acc.meta?.nickname || acc.meta?.user_id || '—' }}</div>
+                <div class="flex items-center gap-2 mt-0.5">
+                  <span class="text-[10px] text-gray-600">登录于 {{ fmtLoginDate(acc.last_login_at) }}</span>
+                  <span v-if="acc.needs_refresh && !isRefreshing(acc.platform, acc.name)"
+                    class="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400">
+                    <AlertTriangle class="w-3 h-3" /> 需刷新凭证
+                  </span>
+                  <span v-if="isRefreshing(acc.platform, acc.name)" class="text-[10px] text-blue-400">
+                    {{ refreshStage[`${acc.platform}:${acc.name}`] || '刷新中…' }}
+                  </span>
+                </div>
               </div>
             </div>
             <div class="flex items-center gap-1">
@@ -259,6 +326,13 @@ onMounted(loadAccounts);
                 <button @click.stop="cancelDeleteAccount()" class="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition-colors">取消</button>
               </template>
               <template v-else>
+                <button @click="refreshCredential(acc)" :disabled="isRefreshing(acc.platform, acc.name)"
+                  :class="['text-xs px-2 py-1 rounded flex items-center gap-1 transition-colors disabled:opacity-50',
+                    acc.needs_refresh ? 'bg-amber-700 hover:bg-amber-600 text-white' : 'bg-gray-800 hover:bg-gray-700']"
+                  title="用旧 Cookie 走一圈抖音页面，抓回刷新后的凭证并更新登录时间">
+                  <KeyRound class="w-3 h-3" :class="isRefreshing(acc.platform, acc.name) ? 'animate-spin' : ''" />
+                  刷新凭证
+                </button>
                 <button @click="verifyAccount(acc)" :disabled="isVerifying(acc.platform, acc.name)" class="text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded flex items-center gap-1 transition-colors disabled:opacity-50">
                   <RefreshCw class="w-3 h-3" :class="isVerifying(acc.platform, acc.name) ? 'animate-spin' : ''" />
                   验证
@@ -285,6 +359,7 @@ onMounted(loadAccounts);
         <li>• 登录完成后回到本软件,点击「我已登录完成」</li>
         <li>• 输入账号名称(用于区分多账号)即可保存</li>
         <li>• 点击「验证」可检查 Cookie 是否有效</li>
+        <li>• 登录超过 3 天会提示「需刷新凭证」，点「刷新凭证」用旧 Cookie 走一圈抖音页面、抓回刷新后的凭证并续期（无需重新扫码；若旧凭证已彻底失效则需重新登录）</li>
       </ul>
     </div>
 

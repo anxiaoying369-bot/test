@@ -53,7 +53,8 @@ pub fn register_account_on_disk(platform: &str, name: &str) -> Result<Account, S
         cookie_file: name.to_string(),
         avatar,
         created_at: now.clone(),
-        updated_at: now,
+        updated_at: now.clone(),
+        last_login_at: Some(now),
     };
 
     let mut store = load_accounts();
@@ -216,6 +217,98 @@ pub async fn finish_login(
 
     let account = register_account_on_disk(&platform, &account_name)?;
     Ok(account_to_view(&account))
+}
+
+/// 刷新登录凭证（保活）：用旧 cookie 打开抖音、多页走一圈、抓回刷新后的 cookie 重存，
+/// 并更新 last_login_at。进度经 `account-refresh-progress` 事件推前端。
+#[tauri::command]
+pub async fn refresh_account_credential(
+    platform: String,
+    name: String,
+    app: tauri::AppHandle,
+) -> Result<AccountView, String> {
+    use tauri::Emitter;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    // 账号必须存在
+    {
+        let store = load_accounts();
+        store.accounts.iter().find(|a| a.platform == platform && a.name == name)
+            .ok_or_else(|| "账号不存在".to_string())?;
+    }
+
+    let account_dir = get_account_dir(&platform, &name);
+    if !account_dir.join("cookie.json").exists() {
+        return Err("该账号没有 cookie，请先扫码登录".to_string());
+    }
+
+    let script = get_scripts_dir().join("douyin_refresh.py");
+    let mut child = python_cmd()
+        .arg(&script)
+        .arg("--account-dir").arg(&account_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn().map_err(|e| format!("无法启动刷新进程：{e}"))?;
+
+    let stdout = child.stdout.take().ok_or("无法读取刷新进程输出")?;
+    let mut reader = BufReader::new(stdout).lines();
+
+    let mut success = false;
+    let mut error_msg = String::new();
+    let mut got_result = false;
+
+    while let Ok(Some(line)) = reader.next_line().await {
+        let val: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match val.get("type").and_then(|t| t.as_str()) {
+            Some("progress") => {
+                let _ = app.emit("account-refresh-progress", serde_json::json!({
+                    "platform": platform,
+                    "name": name,
+                    "stage": val.get("stage").and_then(|s| s.as_str()).unwrap_or(""),
+                    "progress": val.get("progress").and_then(|p| p.as_i64()).unwrap_or(0),
+                }));
+            }
+            Some("result") => {
+                got_result = true;
+                success = val.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
+                error_msg = val.get("error").and_then(|e| e.as_str()).unwrap_or("").to_string();
+            }
+            _ => {}
+        }
+    }
+    let _ = child.wait().await;
+
+    if !got_result {
+        return Err("刷新进程异常退出（未返回结果）".to_string());
+    }
+    if !success {
+        return Err(if error_msg.is_empty() { "刷新失败".to_string() } else { error_msg });
+    }
+
+    // 成功：用新 meta.json 刷新展示信息，并更新登录时间
+    let now = chrono_now();
+    {
+        let mut store = load_accounts();
+        if let Some(acc) = store.accounts.iter_mut().find(|a| a.platform == platform && a.name == name) {
+            if let Some(ui) = read_meta_json(&platform, &name) {
+                if !ui.user_id.is_empty() { acc.user_id = Some(ui.user_id); }
+                if !ui.name.is_empty() { acc.nickname = Some(ui.name); }
+                if ui.avatar.is_some() { acc.avatar = ui.avatar; }
+            }
+            acc.status = "active".to_string();
+            acc.updated_at = now.clone();
+            acc.last_login_at = Some(now);
+        }
+        save_accounts(&store)?;
+    }
+
+    let store = load_accounts();
+    let acc = store.accounts.iter().find(|a| a.platform == platform && a.name == name)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    Ok(account_to_view(acc))
 }
 
 #[tauri::command]

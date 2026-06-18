@@ -26,6 +26,8 @@ pub fn run() {
                 app.handle().clone(),
                 mobile_devices,
             ));
+            // 发布排期调度循环：常驻轮询到点的待发布任务
+            crate::commands::publisher::run_publish_scheduler(app.handle().clone());
             Ok(())
         })
         .manage(AppState {
@@ -64,6 +66,7 @@ pub fn run() {
             crate::commands::account::init_login_session,
             crate::commands::account::get_login_status,
             crate::commands::account::finish_login,
+            crate::commands::account::refresh_account_credential,
             crate::commands::account::cleanup_login_session,
 
             // Scraper
@@ -195,6 +198,14 @@ pub fn run() {
             crate::commands::mobile::mobile_request_screenshot,
             crate::commands::mobile::mobile_list_recordings,
             crate::commands::mobile::mobile_delete_recording,
+
+            // 发布排期 / 矩阵分发
+            crate::commands::publisher::list_publishable_videos,
+            crate::commands::publisher::create_publish_tasks,
+            crate::commands::publisher::list_publish_tasks,
+            crate::commands::publisher::delete_publish_task,
+            crate::commands::publisher::cancel_publish_task,
+            crate::commands::publisher::retry_publish_task,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

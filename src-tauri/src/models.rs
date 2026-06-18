@@ -240,6 +240,9 @@ pub struct Account {
     pub avatar: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// 上次登录/刷新凭证的时间（Unix 秒字符串）。旧库可能没有，缺省回退 created_at。
+    #[serde(default)]
+    pub last_login_at: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -256,9 +259,31 @@ pub struct AccountView {
     pub name: String,
     pub status: String,
     pub meta: AccountMeta,
+    /// 上次登录/刷新时间（Unix 秒）。
+    pub last_login_at: Option<i64>,
+    /// 距上次登录是否已超过 3 天，需要刷新登录凭证。
+    pub needs_refresh: bool,
 }
 
+/// 登录凭证保活阈值：超过 3 天提示刷新。
+pub const CREDENTIAL_REFRESH_THRESHOLD_SECS: i64 = 3 * 24 * 60 * 60;
+
 pub fn account_to_view(a: &Account) -> AccountView {
+    // last_login_at 缺省回退 created_at（旧账号没有该字段）
+    let last_login = a
+        .last_login_at
+        .as_ref()
+        .or(Some(&a.created_at))
+        .and_then(|s| s.parse::<i64>().ok());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let needs_refresh = match last_login {
+        Some(ts) => now - ts > CREDENTIAL_REFRESH_THRESHOLD_SECS,
+        None => true, // 没有任何时间记录 → 视为需要刷新
+    };
+
     AccountView {
         id: a.id.clone(),
         platform: a.platform.clone(),
@@ -269,6 +294,8 @@ pub fn account_to_view(a: &Account) -> AccountView {
             nickname: a.nickname.clone(),
             avatar: a.avatar.clone(),
         },
+        last_login_at: last_login,
+        needs_refresh,
     }
 }
 

@@ -94,9 +94,41 @@ def is_port_in_use(port: int) -> bool:
         return result == 0
 
 
-def launch_chrome() -> subprocess.Popen:
-    """启动 Chrome 并开启远程调试端口，返回子进程对象"""
-    print(f"[DY] Port {CDP_PORT} is free, launching Chrome...", flush=True)
+def cdp_endpoint_ok(port: int, timeout: float = 2.0) -> bool:
+    """端口上是否是一个**可用的** CDP/DevTools 端点。
+
+    只检查「端口被占用」不够：用户的普通 Chrome 可能持有一个**残留的 9222 监听 socket**
+    却不提供 DevTools（实测 /json/version 返回空），此时 DrissionPage 去 attach 会**永久卡死**。
+    这里实际 HTTP 拉一次 /json/version 并要求返回合法 JSON，才认为可 attach。
+    （Host 用 localhost：Chrome 111+ 对 IP Host 的 DevTools 请求会做 DNS-rebinding 拦截。）
+    """
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/json/version", headers={"Host": "localhost"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return False
+            body = resp.read().decode("utf-8", "ignore").strip()
+        if not body:
+            return False
+        data = json.loads(body)
+        return bool(data.get("webSocketDebuggerUrl") or data.get("Browser"))
+    except Exception:
+        return False
+
+
+def find_free_port(start: int = 9222, count: int = 50) -> int:
+    """从 start 起找第一个空闲端口（用于自启专用调试 Chrome，避开被占用的 9222）。"""
+    for p in range(start, start + count):
+        if not is_port_in_use(p):
+            return p
+    raise RuntimeError(f"在 {start}~{start + count} 内找不到空闲端口启动调试 Chrome")
+
+
+def launch_chrome(port: int) -> subprocess.Popen:
+    """启动专用调试 Chrome（独立 profile + 远程调试端口），返回子进程对象。"""
+    print(f"[DY] Launching Chrome with debug port {port}...", flush=True)
 
     # 检查 Chrome 是否存在（支持绝对路径和 PATH 中的命令名）
     import shutil
@@ -111,8 +143,13 @@ def launch_chrome() -> subprocess.Popen:
 
     cmd = [
         CHROME_PATH,
-        f"--remote-debugging-port={CDP_PORT}",
+        f"--remote-debugging-port={port}",
         f"--user-data-dir={CHROME_USER_DATA_DIR}",
+        # Chrome 111+ 必须显式放开调试来源，否则 DrissionPage 用 127.0.0.1 attach 会被
+        # DNS-rebinding 防护拦截 → 连接卡死（旧版本 Chrome 没这限制，所以以前能登录）。
+        "--remote-allow-origins=*",
+        "--no-first-run",
+        "--no-default-browser-check",
     ]
 
     proc = subprocess.Popen(
@@ -120,19 +157,18 @@ def launch_chrome() -> subprocess.Popen:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    print(f"[DY] Chrome launched (PID={proc.pid}), waiting for CDP port...", flush=True)
+    print(f"[DY] Chrome launched (PID={proc.pid}), waiting for CDP endpoint...", flush=True)
 
-    # 等待 Chrome 启动并监听端口（最多 15 秒）
-    for i in range(30):
+    # 等待 Chrome 真正提供 DevTools 端点（不只是端口监听），最多 15 秒
+    for _ in range(30):
         time.sleep(0.5)
-        if is_port_in_use(CDP_PORT):
-            print(f"[DY] Chrome CDP port {CDP_PORT} is ready", flush=True)
+        if cdp_endpoint_ok(port):
+            print(f"[DY] Chrome CDP endpoint on {port} is ready", flush=True)
             return proc
-        # 检查进程是否已退出
         if proc.poll() is not None:
             raise RuntimeError(f"Chrome exited unexpectedly (code={proc.returncode})")
 
-    raise TimeoutError(f"Chrome started but CDP port {CDP_PORT} not ready within 15s")
+    raise TimeoutError(f"Chrome started but CDP endpoint {port} not ready within 15s")
 
 
 def connect_to_chrome():
@@ -327,17 +363,26 @@ def _parent_watchdog(initial_ppid: int):
 # ============ 主流程 ============
 
 def open_browser_and_wait():
-    global _page_obj, _chrome_process, state
+    global _page_obj, _chrome_process, state, CDP_PORT
 
-    print(f"[DY] Checking CDP port {CDP_PORT}...", flush=True)
+    print(f"[DY] Checking CDP endpoint on {CDP_PORT}...", flush=True)
     try:
-        if is_port_in_use(CDP_PORT):
-            # 端口已被占用，直接连接
-            connect_to_chrome()
-        else:
-            # 端口空闲，启动 Chrome
+        if cdp_endpoint_ok(CDP_PORT):
+            # 9222 上确实是一个可用的调试 Chrome → 直接 attach（复用用户已开的会话）
+            print(f"[DY] Reusing existing debug Chrome on {CDP_PORT}", flush=True)
             try:
-                _chrome_process = launch_chrome()
+                connect_to_chrome()
+            except Exception as e:
+                state.status = "failed"
+                state.error_msg = str(e)
+                print(f"[DY] Attach to existing Chrome failed: {e}", flush=True)
+                return
+        else:
+            # 9222 不可用（空闲，或被普通 Chrome 的残留 socket 占着）→ 自己起一个专用调试 Chrome。
+            # 选一个真正空闲的端口，避开被占用的 9222，从而与用户的主 Chrome 互不干扰。
+            CDP_PORT = find_free_port(9222)
+            try:
+                _chrome_process = launch_chrome(CDP_PORT)
             except (FileNotFoundError, RuntimeError, TimeoutError) as e:
                 state.status = "failed"
                 state.error_msg = str(e)
@@ -347,7 +392,7 @@ def open_browser_and_wait():
             # 连接到刚启动的 Chrome
             try:
                 connect_to_chrome()
-            except ConnectionError as e:
+            except Exception as e:
                 state.status = "failed"
                 state.error_msg = str(e)
                 print(f"[DY] CDP connect failed: {e}", flush=True)

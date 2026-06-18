@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
-import { MessageSquare, Users, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, UserSearch, MessageCircle, Smartphone } from 'lucide-vue-next';
+import { MessageSquare, Users, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, UserSearch, MessageCircle, Smartphone, Send } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import UserInfoView from './components/UserInfoView.vue';
 import ResultsView from './components/ResultsView.vue';
@@ -14,9 +14,10 @@ import HermesGatewayView from './components/HermesGatewayView.vue';
 import AccountsView from './components/AccountsView.vue';
 import WeChatMonitorView from './components/WeChatMonitorView.vue';
 import MobileControlView from './components/MobileControlView.vue';
+import PublishView from './components/PublishView.vue';
 import { useLiveEvents } from './composables/useLiveEvents';
 
-type PageKey = 'chat' | 'accounts' | 'user_info' | 'scraper' | 'results' | 'live_monitor' | 'wechat_monitor' | 'mobile_control' | 'douyin_im' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
+type PageKey = 'chat' | 'accounts' | 'user_info' | 'scraper' | 'results' | 'live_monitor' | 'wechat_monitor' | 'mobile_control' | 'douyin_im' | 'publish' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
 const currentPage = ref<PageKey>('chat');
 const settingsInitialTab = ref<string>('llm');
 
@@ -90,6 +91,10 @@ onMounted(initLiveEventListener);
           <Smartphone class="w-5 h-5 text-emerald-400" />
           <span>手机控制</span>
         </a>
+        <a href="#" @click="currentPage = 'publish'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'publish' ? 'bg-gray-900' : 'text-gray-400']">
+          <Send class="w-5 h-5 text-purple-400" />
+          <span>发布排期</span>
+        </a>
         <div class="pt-4 mt-4 border-t border-gray-900 space-y-1">
           <a href="#" @click="currentPage = 'settings'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'settings' ? 'bg-gray-900' : 'text-gray-400']">
             <Settings class="w-5 h-5" />
@@ -159,6 +164,11 @@ onMounted(initLiveEventListener);
     <!-- 主内容：手机控制 -->
     <main v-if="currentPage === 'mobile_control'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <MobileControlView />
+    </main>
+
+    <!-- 主内容：发布排期 -->
+    <main v-if="currentPage === 'publish'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
+      <PublishView />
     </main>
 
     <!-- 主内容：系统设置 -->
