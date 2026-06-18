@@ -191,18 +191,25 @@ def check_drissionpage(platform: str, cookie_data: dict) -> dict:
 
     try:
         co = ChromiumOptions()
-        co.set_browser_path(CHROME_PATH)
+        if CHROME_PATH:
+            co.set_browser_path(CHROME_PATH)
 
-        if is_port_in_use(CDP_PORT):
-            co.set_address(f"127.0.0.1:{CDP_PORT}")
-        else:
-            co.headless()
-            co.set_argument("--no-sandbox")
-            co.set_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
-            co.set_argument(f"--remote-debugging-port={CDP_PORT}")
-
-        cdp_in_use = is_port_in_use(CDP_PORT)
-        _log(f"[L2] 连接方式: {'接管已有 Chrome (port ' + str(CDP_PORT) + ')' if cdp_in_use else '启动 headless Chrome'}")
+        # 用独立 user-data 目录 + 自动端口自起 headless Chrome（DrissionPage 自起会自动带
+        # --remote-allow-origins=*，Chrome 111+ 才能正常 attach）。**绝不接管用户的 9222**——
+        # 那上面常是普通 Chrome 残留的「死 socket」（监听但无 DevTools），attach 必失败
+        # （实测报"连接浏览器失败 / 9222"）。验证本就自注入 cookie，无需复用用户已开的 Chrome。
+        profile = os.path.join(
+            os.environ.get("AUTOCAST_DATA_DIR") or os.path.expanduser("~/.autocast"),
+            "verify", "chrome_profile",
+        )
+        os.makedirs(profile, exist_ok=True)
+        co.set_user_data_path(profile)
+        co.auto_port()
+        co.headless()
+        co.set_argument("--no-sandbox")
+        co.set_argument("--no-first-run")
+        co.set_argument("--no-default-browser-check")
+        _log("[L2] 连接方式: 自起 headless Chrome（独立 profile + auto_port，不接管 9222）")
 
         try:
             page = ChromiumPage(co)
