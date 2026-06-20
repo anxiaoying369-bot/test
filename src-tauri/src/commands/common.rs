@@ -84,6 +84,56 @@ pub async fn test_llm_connection(
     }
 }
 
+/// 从 New API 等中转站拉取可用模型列表（OpenAI 兼容 GET /v1/models）。
+/// 返回去重排序后的 model id 列表，供设置页各用途下拉选择。
+#[tauri::command]
+pub async fn list_relay_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+    if base_url.trim().is_empty() || api_key.trim().is_empty() {
+        return Err("请先填写中转站 URL 和 API Key".to_string());
+    }
+    let b = base_url.trim().trim_end_matches('/');
+    let url = if b.ends_with("/models") { b.to_string() } else { format!("{}/models", b) };
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| format!("连接失败：{}（请检查中转站 URL 与网络）", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let snippet: String = body.chars().take(200).collect();
+        let hint = match status.as_u16() {
+            401 | 403 => "（API Key 可能无效）",
+            404 => "（URL 可能不对，应填到 /v1 这一层）",
+            _ => "",
+        };
+        return Err(format!("获取模型列表失败 {} {}: {}", status.as_u16(), hint, snippet));
+    }
+
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| "返回内容不是合法 JSON，可能不是 OpenAI 兼容的 /models 接口".to_string())?;
+    let arr = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| v.as_array())
+        .ok_or("返回中没有 data 数组（可能不是 OpenAI 兼容 /models 接口）")?;
+    let mut ids: Vec<String> = arr
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return Err("模型列表为空（该中转站未返回任何模型）".to_string());
+    }
+    Ok(ids)
+}
+
 #[tauri::command]
 pub async fn get_config() -> Result<AppConfig, String> {
     let path = get_data_dir().join("config.json");

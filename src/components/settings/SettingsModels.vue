@@ -1,10 +1,69 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Wand2, Mic, Cpu, Image as ImageIcon, Globe, Plus, Trash2, XCircle, Film, Loader2, CheckCircle2, AlertCircle } from 'lucide-vue-next';
+import { MessageSquare, Wand2, Mic, Cpu, Image as ImageIcon, Globe, Plus, Trash2, XCircle, Film, Loader2, CheckCircle2, AlertCircle, Server, Download, Wand } from 'lucide-vue-next';
 import { useAppConfig } from '../../composables/useAppConfig';
 
 const { config, llmTestPassed } = useAppConfig();
+
+// ─── API 中转站 (New API)：一处填地址/密钥 → 拉模型列表 → 应用到下方所有用途 ───
+const relayUrl = ref(config.value.llm.base_url || 'https://api.openai.com/v1');
+const relayKey = ref(config.value.llm.api_key || '');
+const relayModels = ref<string[]>([]);
+const fetchingModels = ref(false);
+const relayMsg = ref('');
+const relayOk = ref(false);
+
+async function fetchRelayModels(silent = false) {
+  if (!relayUrl.value.trim() || !relayKey.value.trim()) {
+    if (!silent) { relayOk.value = false; relayMsg.value = '请先填写中转站 URL 和 API Key'; }
+    return;
+  }
+  fetchingModels.value = true;
+  if (!silent) relayMsg.value = '';
+  try {
+    relayModels.value = await invoke<string[]>('list_relay_models', {
+      baseUrl: relayUrl.value,
+      apiKey: relayKey.value,
+    });
+    relayOk.value = true;
+    relayMsg.value = `已获取 ${relayModels.value.length} 个模型，下方各「模型」框可下拉选择`;
+  } catch (e) {
+    if (!silent) { relayOk.value = false; relayMsg.value = String(e); }
+  } finally {
+    fetchingModels.value = false;
+  }
+}
+
+// 把中转站地址/密钥一键灌进下方所有用途（LLM/嵌入/图片/TTS/STT/GEO 节点）
+function applyRelayToAll() {
+  const u = relayUrl.value.trim();
+  const k = relayKey.value.trim();
+  if (!u || !k) { relayOk.value = false; relayMsg.value = '请先填写中转站 URL 和 API Key'; return; }
+  config.value.llm.base_url = u; config.value.llm.api_key = k;
+  config.value.llm.kb_base_url = u; config.value.llm.kb_api_key = k;
+  config.value.video.openai_base_url = u; config.value.video.openai_api_key = k;
+  config.value.video.tts_base_url = u; config.value.video.tts_api_key = k;
+  config.value.stt.base_url = u; config.value.stt.api_key = k;
+  (config.value.llm.geo_models || []).forEach((m) => { m.base_url = u; m.api_key = k; });
+  relayOk.value = true;
+  relayMsg.value = '已将中转站地址与密钥应用到下方所有模型（记得各处选好模型再保存）';
+}
+
+// 配置加载完成（api_key 出现）后，自动用已保存的 LLM 地址/密钥种入中转站并静默拉一次模型
+let relaySeeded = false;
+watch(
+  () => config.value.llm.api_key,
+  (k) => {
+    if (!relaySeeded && k) {
+      relaySeeded = true;
+      relayUrl.value = config.value.llm.base_url || relayUrl.value;
+      relayKey.value = k;
+      fetchRelayModels(true);
+    }
+  },
+  { immediate: true },
+);
 
 // --- LLM 连接测试：测试通过前不允许保存（gate 在 SettingsView 的保存按钮）---
 const testing = ref(false);
@@ -68,6 +127,52 @@ function removeTtsVoice(index: number) {
 
 <template>
   <div class="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
+    <!-- 共享：中转站拉到的模型列表，供下方各「模型」框下拉选择 -->
+    <datalist id="relay-models">
+      <option v-for="m in relayModels" :key="m" :value="m" />
+    </datalist>
+
+    <!-- 0. API 中转站 (New API) -->
+    <div class="bg-gradient-to-br from-blue-950/40 to-gray-900/50 border border-blue-800/40 rounded-2xl p-6 space-y-4 shadow-xl">
+      <h3 class="text-sm font-bold text-blue-300 uppercase tracking-widest flex items-center gap-2">
+        <Server class="w-4 h-4 text-blue-400" />
+        API 中转站 (New API)
+      </h3>
+      <p class="text-xs text-gray-400 leading-relaxed">
+        填中转站地址和密钥 → 点「获取模型列表」拉取可用模型 → 点「应用到所有模型」把地址/密钥一键填入下方全部用途，
+        再在各处「模型」框下拉选择对应模型即可。无需逐项重复填地址和密钥。
+      </p>
+      <div class="grid grid-cols-1 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-300 mb-2">中转站 URL（填到 /v1 这一层）</label>
+          <input v-model="relayUrl" type="text" placeholder="https://your-newapi.com/v1"
+            class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-all" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-300 mb-2">中转站 API Key</label>
+          <input v-model="relayKey" type="password" placeholder="sk-..."
+            class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-all font-mono" />
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 pt-1">
+        <button @click="fetchRelayModels()" :disabled="fetchingModels"
+          class="text-sm px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white flex items-center gap-2 transition-colors">
+          <Loader2 v-if="fetchingModels" class="w-4 h-4 animate-spin" />
+          <Download v-else class="w-4 h-4" />
+          {{ fetchingModels ? '获取中…' : '获取模型列表' }}
+        </button>
+        <button @click="applyRelayToAll"
+          class="text-sm px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center gap-2 transition-colors">
+          <Wand class="w-4 h-4" /> 应用到所有模型
+        </button>
+        <span v-if="relayMsg" :class="['text-xs flex items-center gap-1', relayOk ? 'text-green-400' : 'text-red-400']">
+          <CheckCircle2 v-if="relayOk" class="w-3.5 h-3.5 shrink-0" />
+          <AlertCircle v-else class="w-3.5 h-3.5 shrink-0" />
+          {{ relayMsg }}
+        </span>
+      </div>
+    </div>
+
     <!-- 1. LLM 对话模型 -->
     <div class="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-6 shadow-xl">
       <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2 mb-2">
@@ -100,6 +205,7 @@ function removeTtsVoice(index: number) {
             <label class="block text-sm font-medium text-gray-300 mb-2">Model ID</label>
             <input
               v-model="config.llm.model"
+              list="relay-models"
               type="text"
               placeholder="gpt-4o"
               class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-all"
@@ -170,6 +276,7 @@ function removeTtsVoice(index: number) {
                 <label class="block text-[11px] text-gray-500 uppercase mb-1.5">Model ID</label>
                 <input
                   v-model="config.video.openai_model"
+                  list="relay-models"
                   type="text"
                   placeholder="v0"
                   class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500 transition-all"
@@ -228,7 +335,7 @@ function removeTtsVoice(index: number) {
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-300 mb-2">Model ID</label>
-            <input v-model="config.video.tts_model" type="text"
+            <input v-model="config.video.tts_model" list="relay-models" type="text"
                    placeholder="tts-1"
                    class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
           </div>
@@ -331,7 +438,7 @@ function removeTtsVoice(index: number) {
             </div>
             <div>
               <label class="block text-[10px] text-gray-500 uppercase mb-1 font-bold">Model ID</label>
-              <input v-model="model.model_id" type="text" class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white font-mono" />
+              <input v-model="model.model_id" list="relay-models" type="text" class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white font-mono" />
             </div>
           </div>
 
@@ -373,7 +480,7 @@ function removeTtsVoice(index: number) {
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-300 mb-2">Model ID</label>
-            <input v-model="config.llm.embedding_model" type="text" placeholder="text-embedding-3-small" class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-500 transition-all" />
+            <input v-model="config.llm.embedding_model" list="relay-models" type="text" placeholder="text-embedding-3-small" class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-500 transition-all" />
           </div>
         </div>
       </div>
@@ -429,7 +536,7 @@ function removeTtsVoice(index: number) {
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-300 mb-2">Model ID</label>
-            <input v-model="config.stt.model" type="text" placeholder="whisper-1" class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-green-500 transition-all" />
+            <input v-model="config.stt.model" list="relay-models" type="text" placeholder="whisper-1" class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-green-500 transition-all" />
           </div>
         </div>
       </div>
