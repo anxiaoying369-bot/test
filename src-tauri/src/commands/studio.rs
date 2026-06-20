@@ -20,9 +20,7 @@ pub async fn studio_generate_internal(
     platform_prompt: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let config = get_config().await?;
-    if config.llm.api_key.is_empty() {
-        return Err("请先在设置中配置 LLM API Key".to_string());
-    }
+    crate::commands::common::ensure_llm_configured(&config.llm)?;
 
     let query = if topic.is_empty() { material.chars().take(50).collect::<String>() } else { topic.clone() };
     let kb_context = match search_kb_internal(query).await {
@@ -106,7 +104,7 @@ fn get_default_platform_instructions(platform: &str) -> &'static str {
 
 pub async fn audit_content_internal(content: String) -> Result<String, String> {
     let config = get_config().await?;
-    if config.llm.api_key.is_empty() { return Err("请先在设置中配置 LLM API Key".to_string()); }
+    crate::commands::common::ensure_llm_configured(&config.llm)?;
     let client = reqwest::Client::new();
     let url = if config.llm.base_url.ends_with("/chat/completions") { config.llm.base_url.clone() } else { format!("{}/chat/completions", config.llm.base_url.trim_end_matches('/')) };
     let system = "你是一位冷静的内容审计员和舆情分析师。\n\
@@ -131,7 +129,7 @@ pub async fn audit_content_internal(content: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn studio_analyze_video_comments(comments: Vec<serde_json::Value>) -> Result<String, String> {
     let config = get_config().await?;
-    if config.llm.api_key.is_empty() { return Err("请先在设置中配置 LLM API Key".to_string()); }
+    crate::commands::common::ensure_llm_configured(&config.llm)?;
     if comments.is_empty() { return Err("没有可分析的评论内容".to_string()); }
 
     let mut text_to_analyze = String::new();

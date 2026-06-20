@@ -154,9 +154,7 @@ pub async fn get_live_history(room_id: String) -> Result<Vec<serde_json::Value>,
 #[tauri::command]
 pub async fn generate_live_reply(user_name: String, content: String) -> Result<String, String> {
     let config = get_config().await?;
-    if config.llm.api_key.is_empty() {
-        return Err("请先在设置中配置 LLM API Key".to_string());
-    }
+    crate::commands::common::ensure_llm_configured(&config.llm)?;
 
     let system_prompt = if config.llm.live_reply_prompt.is_empty() {
         "你是一位正在直播的主播。请根据直播主题和直播内容，简短地回复用户的弹幕。回复必须非常简短（20字以内），语气亲切自然，像真人在直播间说话一样。".to_string()

@@ -53,10 +53,19 @@ function defaultConfig(): AppConfig {
 // 模块级单例 config：SettingsView 与各设置子组件共享同一份响应式配置
 const config = ref<AppConfig>(defaultConfig());
 
+// LLM 连接是否已测试通过——保存前必须为 true（设置页「测试连接」按钮置位）。
+// 已保存且配置完整的视为通过，仅当用户改动 LLM 字段后才需重新测试。
+const llmTestPassed = ref(false);
+
+function isLlmComplete(llm: AppConfig['llm']): boolean {
+  return !!(llm?.api_key?.trim() && llm?.base_url?.trim() && llm?.model?.trim());
+}
+
 export function useAppConfig() {
   const loadConfig = async () => {
     try {
       config.value = await invoke('get_config') as AppConfig;
+      llmTestPassed.value = isLlmComplete(config.value.llm);
     } catch (err) {
       console.error('Failed to load config:', err);
     }
@@ -68,7 +77,8 @@ export function useAppConfig() {
 
   const resetConfig = async () => {
     config.value = await invoke('get_default_config') as AppConfig;
+    llmTestPassed.value = false;
   };
 
-  return { config, loadConfig, saveConfig, resetConfig };
+  return { config, loadConfig, saveConfig, resetConfig, llmTestPassed };
 }

@@ -7,7 +7,7 @@ import SettingsGeoPlatforms from './settings/SettingsGeoPlatforms.vue';
 import SettingsPrompts from './settings/SettingsPrompts.vue';
 import SettingsHermes from './settings/SettingsHermes.vue';
 
-const { loadConfig, saveConfig, resetConfig } = useAppConfig();
+const { loadConfig, saveConfig, resetConfig, llmTestPassed } = useAppConfig();
 
 const TABS = [
   { id: 'models', name: '模型设置', icon: Cpu },
@@ -39,6 +39,13 @@ watch(() => settingsInitialTab?.value, (newTab) => {
 onMounted(loadConfig);
 
 const handleSave = async () => {
+  // LLM 必须先测试通过才能保存
+  if (!llmTestPassed.value) {
+    saveStatus.value = 'error';
+    statusMsg.value = '请先到「模型设置」点「测试连接」，LLM 测试通过后才能保存';
+    activeTab.value = 'models';
+    return;
+  }
   isSaving.value = true;
   saveStatus.value = 'idle';
   try {
@@ -123,12 +130,16 @@ const resetToDefault = async () => {
                 <XCircle class="w-4 h-4" />
                 {{ statusMsg }}
               </div>
+              <div v-else-if="!llmTestPassed" class="flex items-center gap-1.5 text-amber-400/90 text-sm">
+                <XCircle class="w-4 h-4" />
+                需先在「模型设置」通过 LLM 测试才能保存
+              </div>
             </transition>
           </div>
 
           <button
             @click="handleSave"
-            :disabled="isSaving"
+            :disabled="isSaving || !llmTestPassed"
             class="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-8 py-3 rounded-xl font-medium transition-all shadow-lg shadow-blue-900/20"
           >
             <RefreshCw v-if="isSaving" class="w-4 h-4 animate-spin" />

@@ -1,8 +1,45 @@
 <script setup lang="ts">
-import { MessageSquare, Wand2, Mic, Cpu, Image as ImageIcon, Globe, Plus, Trash2, XCircle, Film } from 'lucide-vue-next';
+import { ref, watch } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import { MessageSquare, Wand2, Mic, Cpu, Image as ImageIcon, Globe, Plus, Trash2, XCircle, Film, Loader2, CheckCircle2, AlertCircle } from 'lucide-vue-next';
 import { useAppConfig } from '../../composables/useAppConfig';
 
-const { config } = useAppConfig();
+const { config, llmTestPassed } = useAppConfig();
+
+// --- LLM 连接测试：测试通过前不允许保存（gate 在 SettingsView 的保存按钮）---
+const testing = ref(false);
+const testMsg = ref('');
+const testOk = ref(false);
+
+async function testLlm() {
+  testing.value = true;
+  testMsg.value = '';
+  try {
+    const msg = await invoke<string>('test_llm_connection', {
+      apiKey: config.value.llm.api_key,
+      baseUrl: config.value.llm.base_url,
+      model: config.value.llm.model,
+    });
+    testOk.value = true;
+    testMsg.value = msg;
+    llmTestPassed.value = true;
+  } catch (e) {
+    testOk.value = false;
+    testMsg.value = String(e);
+    llmTestPassed.value = false;
+  } finally {
+    testing.value = false;
+  }
+}
+
+// 改动任一 LLM 字段后，需重新测试才能保存
+watch(
+  () => [config.value.llm.api_key, config.value.llm.base_url, config.value.llm.model],
+  () => {
+    llmTestPassed.value = false;
+    testMsg.value = '';
+  },
+);
 
 // --- GEO 监控节点辅助 ---
 const addGeoModel = () => {
@@ -69,6 +106,30 @@ function removeTtsVoice(index: number) {
             />
           </div>
         </div>
+      </div>
+
+      <!-- 测试连接：通过后才能保存 -->
+      <div class="flex items-center gap-3 pt-1">
+        <button
+          @click="testLlm"
+          :disabled="testing"
+          class="text-sm px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white flex items-center gap-2 transition-colors"
+        >
+          <Loader2 v-if="testing" class="w-4 h-4 animate-spin" />
+          <Cpu v-else class="w-4 h-4" />
+          {{ testing ? '测试中…' : '测试连接' }}
+        </button>
+        <span
+          v-if="testMsg"
+          :class="['text-xs flex items-center gap-1', testOk ? 'text-green-400' : 'text-red-400']"
+        >
+          <CheckCircle2 v-if="testOk" class="w-3.5 h-3.5 shrink-0" />
+          <AlertCircle v-else class="w-3.5 h-3.5 shrink-0" />
+          {{ testMsg }}
+        </span>
+        <span v-else-if="!llmTestPassed" class="text-xs text-amber-400/90 flex items-center gap-1">
+          <AlertCircle class="w-3.5 h-3.5 shrink-0" /> 测试通过后才能保存设置
+        </span>
       </div>
     </div>
 

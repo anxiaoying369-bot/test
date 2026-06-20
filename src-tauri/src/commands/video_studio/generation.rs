@@ -51,9 +51,7 @@ pub async fn video_generate_script(
     feedback: Option<String>,
 ) -> Result<String, String> {
     let config = get_config().await?;
-    if config.llm.api_key.is_empty() {
-        return Err("请先在设置中配置 AI 助理的 LLM API Key".to_string());
-    }
+    crate::commands::common::ensure_llm_configured(&config.llm)?;
     if product.trim().is_empty() {
         return Err("请先填写要卖的产品信息".to_string());
     }

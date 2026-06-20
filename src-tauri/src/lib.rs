@@ -46,6 +46,7 @@ pub fn run() {
             crate::commands::common::get_config,
             crate::commands::common::save_config,
             crate::commands::common::get_default_config,
+            crate::commands::common::test_llm_connection,
 
             // Knowledge Base
             crate::commands::knowledge_base::list_kb_files,

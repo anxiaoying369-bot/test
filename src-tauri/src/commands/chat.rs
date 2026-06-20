@@ -139,9 +139,7 @@ pub async fn send_chat_message(
     _app: tauri::AppHandle,
 ) -> Result<ChatMessage, String> {
     let config = get_config().await?;
-    if config.llm.api_key.is_empty() {
-        return Err("请先在设置中配置 LLM API Key".to_string());
-    }
+    crate::commands::common::ensure_llm_configured(&config.llm)?;
 
     let dir = get_chats_dir();
     let path = dir.join(format!("{}.json", session_id));
