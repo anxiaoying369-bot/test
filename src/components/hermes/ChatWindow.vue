@@ -3,7 +3,7 @@ import { nextTick, ref, watch } from 'vue';
 import { 
   Send, User, Bot, Wrench, Loader2, Zap 
 } from 'lucide-vue-next';
-import { marked } from 'marked';
+import { renderSafeMarkdown } from '../../lib/markdown';
 import type { Session } from '../../types/hermes';
 
 const props = defineProps<{
@@ -40,7 +40,7 @@ const handleSend = () => {
   userInput.value = '';
 };
 
-const renderMarkdown = (content: string) => marked(content);
+const renderMarkdown = (content: string) => renderSafeMarkdown(content);
 </script>
 
 <template>

@@ -19,10 +19,14 @@ export function useLiveEvents() {
       const room = liveMonitorRooms.value[rid];
 
       if (data.type === 'status') {
-        if (data.status === 'starting') room.status = 'connecting';
-        if (data.status === 'running') room.status = 'running';
-        if (data.status === 'stopped') room.status = 'stopped';
-        if (data.anchor_name) room.anchor_name = data.anchor_name;
+      if (data.status === 'starting') room.status = 'connecting';
+      if (data.status === 'running') room.status = 'running';
+      if (data.status === 'stopped') room.status = 'stopped';
+      if (data.status === 'error') {
+        room.status = 'error';
+        room.error = data.message || '直播监控异常';
+      }
+      if (data.anchor_name) room.anchor_name = data.anchor_name;
       } else if (data.type === 'init') {
         room.status = 'running';
         if (data.anchor_name) room.anchor_name = data.anchor_name;

@@ -6,9 +6,11 @@ import type { AppConfig } from '../types/settings';
 function defaultConfig(): AppConfig {
   return {
     llm: {
+      model_source: 'custom',
       api_key: '',
       base_url: 'https://api.openai.com/v1',
       model: 'gpt-4o',
+      kb_model_source: 'custom',
       kb_api_key: '',
       kb_base_url: 'https://api.openai.com/v1',
       embedding_model: 'text-embedding-3-small',
@@ -28,11 +30,13 @@ function defaultConfig(): AppConfig {
     video: {
       fal_key: '',
       volc_key: '',
+      openai_model_source: 'custom',
       openai_api_key: '',
       openai_base_url: 'https://api.openai.com/v1',
       openai_model: 'v0',
       default_provider: 'fal',
       tts_provider: 'mock',
+      tts_model_source: 'custom',
       tts_api_key: '',
       tts_base_url: 'https://api.openai.com/v1',
       tts_model: 'tts-1',
@@ -43,6 +47,7 @@ function defaultConfig(): AppConfig {
       tts_prosody_tags: '',
     },
     stt: {
+      model_source: 'custom',
       api_key: '',
       base_url: 'https://api.openai.com/v1',
       model: 'whisper-1',

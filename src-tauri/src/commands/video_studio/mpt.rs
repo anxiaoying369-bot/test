@@ -111,6 +111,75 @@ fn stage_local_materials(paths: &[String]) -> Result<Vec<String>, String> {
     Ok(staged)
 }
 
+async fn synthesize_local_clone_voice(task_id: &str, voice_name: &str, text: &str) -> Result<String, String> {
+    if voice_name.trim().is_empty() {
+        return Err("请先选择音频实验室中的本地克隆音色".to_string());
+    }
+    if text.trim().is_empty() {
+        return Err("口播文案为空，无法合成本地配音".to_string());
+    }
+
+    let script = get_scripts_dir().join("audio_lab.py");
+    if !script.exists() {
+        return Err(format!("音频实验室脚本缺失: {}", script.display()));
+    }
+
+    let out_dir = mpt_storage_dir().join("local_voiceovers");
+    fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let out_path = out_dir.join(format!("{}.wav", task_id));
+
+    let mut cmd = python_cmd();
+    cmd.arg(&script)
+        .arg("clone-synthesize")
+        .arg("--voice")
+        .arg(voice_name)
+        .arg("--text")
+        .arg(text)
+        .arg("--output")
+        .arg(&out_path)
+        .env("IMAGEIO_FFMPEG_EXE", get_ffmpeg_path());
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("启动本地语音克隆失败：{}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let res = stdout
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<Value>(line.trim()).ok());
+
+    if !output.status.success() {
+        let msg = res
+            .as_ref()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                stderr
+                    .lines()
+                    .rev()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("本地语音克隆合成失败")
+                    .to_string()
+            });
+        return Err(format!("本地语音克隆合成失败：{}", msg));
+    }
+
+    if let Some(audio_path) = res
+        .as_ref()
+        .and_then(|v| v.get("audio_path").and_then(|p| p.as_str()))
+        .filter(|p| !p.trim().is_empty())
+    {
+        Ok(audio_path.to_string())
+    } else if out_path.exists() {
+        Ok(out_path.to_string_lossy().to_string())
+    } else {
+        Err(format!("本地语音克隆未返回音频路径。stdout: {}\nstderr: {}", stdout, stderr))
+    }
+}
+
 #[tauri::command]
 pub async fn video_mpt_generate(
     app: AppHandle,
@@ -152,6 +221,35 @@ pub async fn video_mpt_generate(
         }
         let staged = stage_local_materials(&local_paths)?;
         params["video_materials"] = json!(staged);
+    }
+
+    let voice_engine = params
+        .get("voice_engine")
+        .and_then(|v| v.as_str())
+        .unwrap_or("local_clone");
+    if voice_engine == "local_clone" {
+        let voice_name = params
+            .get("voice_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let video_script = params
+            .get("video_script")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let _ = app.emit(
+            "video-mpt-progress",
+            json!({
+                "task_id": task_id,
+                "progress": 20,
+                "stage": "本地语音克隆合成配音",
+            }),
+        );
+        let audio_path = synthesize_local_clone_voice(&task_id, &voice_name, &video_script).await?;
+        params["custom_audio_file"] = json!(audio_path);
+        params["voice_name"] = json!("");
+        params["voice_rate"] = json!(1.0);
     }
 
     // 写参数文件。

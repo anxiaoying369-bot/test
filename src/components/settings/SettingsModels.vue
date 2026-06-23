@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, watch, watchEffect } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { MessageSquare, Wand2, Mic, Cpu, Image as ImageIcon, Globe, Plus, Trash2, XCircle, Film, Loader2, CheckCircle2, AlertCircle, Server, Download, Wand } from 'lucide-vue-next';
 import { useAppConfig } from '../../composables/useAppConfig';
@@ -13,6 +13,52 @@ const relayModels = ref<string[]>([]);
 const fetchingModels = ref(false);
 const relayMsg = ref('');
 const relayOk = ref(false);
+
+type ModelSource = 'relay' | 'custom';
+const sourceOptions: Array<{ value: ModelSource; label: string; hint: string }> = [
+  { value: 'relay', label: '使用中转站', hint: '沿用上方中转站 URL / Key，不需要重复填写' },
+  { value: 'custom', label: '自定义模型', hint: '单独填写该模型的 Base URL 和 API Key' },
+];
+const modelInputClass = 'w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-slate-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-all [color-scheme:dark]';
+const compactModelInputClass = 'w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder-gray-500 focus:outline-none transition-all [color-scheme:dark]';
+const smallModelInputClass = 'w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono [color-scheme:dark]';
+
+function sourceOf(v?: string): ModelSource {
+  return v === 'relay' ? 'relay' : 'custom';
+}
+function relayReady() {
+  return !!(relayUrl.value.trim() && relayKey.value.trim());
+}
+function selectOptionClass(source: ModelSource, active: boolean) {
+  if (!active) return 'border-gray-800 bg-gray-950/70 text-gray-300 hover:border-gray-700';
+  return source === 'relay'
+    ? 'border-blue-500/60 bg-blue-500/10 text-blue-100 shadow-lg shadow-blue-950/20'
+    : 'border-amber-500/60 bg-amber-500/10 text-amber-100 shadow-lg shadow-amber-950/20';
+}
+function applyRelayCredentials(target: { base_url?: string; api_key?: string }) {
+  target.base_url = relayUrl.value.trim();
+  target.api_key = relayKey.value.trim();
+}
+function syncRelayToSelected() {
+  if (sourceOf(config.value.llm.model_source) === 'relay') applyRelayCredentials(config.value.llm);
+  if (sourceOf(config.value.llm.kb_model_source) === 'relay') {
+    config.value.llm.kb_base_url = relayUrl.value.trim();
+    config.value.llm.kb_api_key = relayKey.value.trim();
+  }
+  if (sourceOf(config.value.video.openai_model_source) === 'relay') {
+    config.value.video.openai_base_url = relayUrl.value.trim();
+    config.value.video.openai_api_key = relayKey.value.trim();
+  }
+  if (sourceOf(config.value.video.tts_model_source) === 'relay') {
+    config.value.video.tts_base_url = relayUrl.value.trim();
+    config.value.video.tts_api_key = relayKey.value.trim();
+  }
+  if (sourceOf(config.value.stt.model_source) === 'relay') applyRelayCredentials(config.value.stt);
+  (config.value.llm.geo_models || []).forEach((m) => {
+    if (sourceOf(m.model_source) === 'relay') applyRelayCredentials(m);
+  });
+}
+watchEffect(syncRelayToSelected);
 
 async function fetchRelayModels(silent = false) {
   if (!relayUrl.value.trim() || !relayKey.value.trim()) {
@@ -40,14 +86,19 @@ function applyRelayToAll() {
   const u = relayUrl.value.trim();
   const k = relayKey.value.trim();
   if (!u || !k) { relayOk.value = false; relayMsg.value = '请先填写中转站 URL 和 API Key'; return; }
+  config.value.llm.model_source = 'relay';
+  config.value.llm.kb_model_source = 'relay';
+  config.value.video.openai_model_source = 'relay';
+  config.value.video.tts_model_source = 'relay';
+  config.value.stt.model_source = 'relay';
   config.value.llm.base_url = u; config.value.llm.api_key = k;
   config.value.llm.kb_base_url = u; config.value.llm.kb_api_key = k;
   config.value.video.openai_base_url = u; config.value.video.openai_api_key = k;
   config.value.video.tts_base_url = u; config.value.video.tts_api_key = k;
   config.value.stt.base_url = u; config.value.stt.api_key = k;
-  (config.value.llm.geo_models || []).forEach((m) => { m.base_url = u; m.api_key = k; });
+  (config.value.llm.geo_models || []).forEach((m) => { m.model_source = 'relay'; m.base_url = u; m.api_key = k; });
   relayOk.value = true;
-  relayMsg.value = '已将中转站地址与密钥应用到下方所有模型（记得各处选好模型再保存）';
+  relayMsg.value = '已切换为使用中转站，并把地址与密钥应用到下方所有模型（记得各处选好模型再保存）';
 }
 
 // 配置加载完成（api_key 出现）后，自动用已保存的 LLM 地址/密钥种入中转站并静默拉一次模型
@@ -71,6 +122,13 @@ const testMsg = ref('');
 const testOk = ref(false);
 
 async function testLlm() {
+  syncRelayToSelected();
+  if (sourceOf(config.value.llm.model_source) === 'relay' && !relayReady()) {
+    testOk.value = false;
+    testMsg.value = '请先填写中转站 URL 和 API Key';
+    llmTestPassed.value = false;
+    return;
+  }
   testing.value = true;
   testMsg.value = '';
   try {
@@ -105,8 +163,9 @@ const addGeoModel = () => {
   if (!config.value.llm.geo_models) config.value.llm.geo_models = [];
   config.value.llm.geo_models.push({
     name: 'New Model',
-    base_url: 'https://api.openai.com/v1',
-    api_key: '',
+    model_source: 'relay',
+    base_url: relayUrl.value.trim() || 'https://api.openai.com/v1',
+    api_key: relayKey.value.trim(),
     model_id: '',
     enabled: true
   });
@@ -139,8 +198,8 @@ function removeTtsVoice(index: number) {
         API 中转站 (New API)
       </h3>
       <p class="text-xs text-gray-400 leading-relaxed">
-        填中转站地址和密钥 → 点「获取模型列表」拉取可用模型 → 点「应用到所有模型」把地址/密钥一键填入下方全部用途，
-        再在各处「模型」框下拉选择对应模型即可。无需逐项重复填地址和密钥。
+        填中转站地址和密钥 → 点「获取模型列表」拉取可用模型。下方每个模型都可以选择「使用中转站」或「自定义模型」：
+        使用中转站时只需要选 Model ID，不再重复填写 URL 和 Key；自定义模型才需要单独填写 URL 和 Key。
       </p>
       <div class="grid grid-cols-1 gap-4">
         <div>
@@ -182,6 +241,22 @@ function removeTtsVoice(index: number) {
 
       <div class="grid grid-cols-1 gap-6">
         <div>
+          <label class="block text-sm font-medium text-gray-300 mb-2">模型来源</label>
+          <div class="grid grid-cols-2 gap-3">
+            <button
+              v-for="opt in sourceOptions"
+              :key="opt.value"
+              type="button"
+              @click="config.llm.model_source = opt.value"
+              :class="['rounded-xl border p-3 text-left transition-all', selectOptionClass(opt.value, sourceOf(config.llm.model_source) === opt.value)]"
+            >
+              <div class="text-sm font-semibold">{{ opt.label }}</div>
+              <div class="mt-1 text-[11px] text-gray-500">{{ opt.hint }}</div>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="sourceOf(config.llm.model_source) === 'custom'">
           <label class="block text-sm font-medium text-gray-300 mb-2">API Key</label>
           <input
             v-model="config.llm.api_key"
@@ -192,7 +267,7 @@ function removeTtsVoice(index: number) {
         </div>
 
         <div class="grid grid-cols-2 gap-4">
-          <div>
+          <div v-if="sourceOf(config.llm.model_source) === 'custom'">
             <label class="block text-sm font-medium text-gray-300 mb-2">Base URL</label>
             <input
               v-model="config.llm.base_url"
@@ -201,15 +276,27 @@ function removeTtsVoice(index: number) {
               class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-all"
             />
           </div>
-          <div>
+          <div :class="sourceOf(config.llm.model_source) === 'custom' ? '' : 'col-span-2'">
             <label class="block text-sm font-medium text-gray-300 mb-2">Model ID</label>
-            <input
+            <select
+              v-if="sourceOf(config.llm.model_source) === 'relay' && relayModels.length"
               v-model="config.llm.model"
-              list="relay-models"
+              :class="modelInputClass"
+            >
+              <option class="bg-gray-950 text-slate-100" value="">请选择模型</option>
+              <option v-for="m in relayModels" :key="m" class="bg-gray-950 text-slate-100" :value="m">{{ m }}</option>
+            </select>
+            <input
+              v-else
+              v-model="config.llm.model"
+              :list="sourceOf(config.llm.model_source) === 'relay' ? 'relay-models' : undefined"
               type="text"
               placeholder="gpt-4o"
-              class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-all"
+              :class="modelInputClass"
             />
+            <p v-if="sourceOf(config.llm.model_source) === 'relay'" class="mt-1.5 text-[11px] text-blue-300/80">
+              使用上方中转站 URL / Key，无需在这里重复填写。
+            </p>
           </div>
         </div>
       </div>
@@ -254,6 +341,17 @@ function removeTtsVoice(index: number) {
           </label>
           <div class="space-y-4 bg-gray-950/50 p-4 rounded-xl border border-gray-800">
             <div>
+              <label class="block text-[11px] text-gray-500 uppercase mb-1.5">模型来源</label>
+              <div class="grid grid-cols-2 gap-2">
+                <button v-for="opt in sourceOptions" :key="opt.value" type="button"
+                        @click="config.video.openai_model_source = opt.value"
+                        :class="['rounded-lg border px-3 py-2 text-left transition-all', selectOptionClass(opt.value, sourceOf(config.video.openai_model_source) === opt.value)]">
+                  <div class="text-xs font-semibold">{{ opt.label }}</div>
+                  <div class="mt-0.5 text-[10px] text-gray-500">{{ opt.hint }}</div>
+                </button>
+              </div>
+            </div>
+            <div v-if="sourceOf(config.video.openai_model_source) === 'custom'">
               <label class="block text-[11px] text-gray-500 uppercase mb-1.5">API Key</label>
               <input
                 v-model="config.video.openai_api_key"
@@ -263,7 +361,7 @@ function removeTtsVoice(index: number) {
               />
             </div>
             <div class="grid grid-cols-2 gap-4">
-              <div>
+              <div v-if="sourceOf(config.video.openai_model_source) === 'custom'">
                 <label class="block text-[11px] text-gray-500 uppercase mb-1.5">Base URL</label>
                 <input
                   v-model="config.video.openai_base_url"
@@ -272,14 +370,20 @@ function removeTtsVoice(index: number) {
                   class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500 transition-all"
                 />
               </div>
-              <div>
+              <div :class="sourceOf(config.video.openai_model_source) === 'custom' ? '' : 'col-span-2'">
                 <label class="block text-[11px] text-gray-500 uppercase mb-1.5">Model ID</label>
+                <select v-if="sourceOf(config.video.openai_model_source) === 'relay' && relayModels.length"
+                        v-model="config.video.openai_model" :class="compactModelInputClass + ' focus:border-cyan-500'">
+                  <option class="bg-gray-950 text-slate-100" value="">请选择模型</option>
+                  <option v-for="m in relayModels" :key="m" class="bg-gray-950 text-slate-100" :value="m">{{ m }}</option>
+                </select>
                 <input
+                  v-else
                   v-model="config.video.openai_model"
-                  list="relay-models"
+                  :list="sourceOf(config.video.openai_model_source) === 'relay' ? 'relay-models' : undefined"
                   type="text"
                   placeholder="v0"
-                  class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500 transition-all"
+                  :class="compactModelInputClass + ' focus:border-cyan-500'"
                 />
               </div>
             </div>
@@ -319,7 +423,19 @@ function removeTtsVoice(index: number) {
           </select>
         </div>
 
-        <div>
+        <div v-if="config.video.tts_provider === 'openai' || config.video.tts_provider === 'minimax'">
+          <label class="block text-sm font-medium text-gray-300 mb-2">模型来源</label>
+          <div class="grid grid-cols-2 gap-3">
+            <button v-for="opt in sourceOptions" :key="opt.value" type="button"
+                    @click="config.video.tts_model_source = opt.value"
+                    :class="['rounded-xl border p-3 text-left transition-all', selectOptionClass(opt.value, sourceOf(config.video.tts_model_source) === opt.value)]">
+              <div class="text-sm font-semibold">{{ opt.label }}</div>
+              <div class="mt-1 text-[11px] text-gray-500">{{ opt.hint }}</div>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="config.video.tts_provider === 'volcengine' || sourceOf(config.video.tts_model_source) === 'custom'">
           <label class="block text-sm font-medium text-gray-300 mb-2">TTS API Key</label>
           <input v-model="config.video.tts_api_key" type="password"
                  :placeholder="config.video.tts_provider === 'volcengine' ? 'appid:access_token' : 'sk-...'"
@@ -327,17 +443,22 @@ function removeTtsVoice(index: number) {
         </div>
 
         <div v-if="config.video.tts_provider === 'openai' || config.video.tts_provider === 'minimax'" class="grid grid-cols-2 gap-4">
-          <div>
+          <div v-if="sourceOf(config.video.tts_model_source) === 'custom'">
             <label class="block text-sm font-medium text-gray-300 mb-2">Base URL</label>
             <input v-model="config.video.tts_base_url" type="text"
                    placeholder="https://api.openai.com/v1"
                    class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
           </div>
-          <div>
+          <div :class="sourceOf(config.video.tts_model_source) === 'custom' ? '' : 'col-span-2'">
             <label class="block text-sm font-medium text-gray-300 mb-2">Model ID</label>
-            <input v-model="config.video.tts_model" list="relay-models" type="text"
+            <select v-if="sourceOf(config.video.tts_model_source) === 'relay' && relayModels.length"
+                    v-model="config.video.tts_model" :class="modelInputClass + ' focus:border-purple-500'">
+              <option class="bg-gray-950 text-slate-100" value="">请选择模型</option>
+              <option v-for="m in relayModels" :key="m" class="bg-gray-950 text-slate-100" :value="m">{{ m }}</option>
+            </select>
+            <input v-else v-model="config.video.tts_model" :list="sourceOf(config.video.tts_model_source) === 'relay' ? 'relay-models' : undefined" type="text"
                    placeholder="tts-1"
-                   class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500" />
+                   :class="modelInputClass + ' focus:border-purple-500'" />
           </div>
         </div>
 
@@ -437,17 +558,28 @@ function removeTtsVoice(index: number) {
               <input v-model="model.name" type="text" class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white" />
             </div>
             <div>
-              <label class="block text-[10px] text-gray-500 uppercase mb-1 font-bold">Model ID</label>
-              <input v-model="model.model_id" list="relay-models" type="text" class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white font-mono" />
+              <label class="block text-[10px] text-gray-500 uppercase mb-1 font-bold">模型来源</label>
+              <select v-model="model.model_source" class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-slate-100 [color-scheme:dark]">
+                <option class="bg-gray-950 text-slate-100" value="relay">使用中转站</option>
+                <option class="bg-gray-950 text-slate-100" value="custom">自定义模型</option>
+              </select>
             </div>
           </div>
 
           <div class="grid grid-cols-1 gap-4 pt-2 border-t border-gray-900">
             <div>
+              <label class="block text-[10px] text-gray-500 uppercase mb-1 font-bold">Model ID</label>
+              <select v-if="sourceOf(model.model_source) === 'relay' && relayModels.length" v-model="model.model_id" :class="smallModelInputClass">
+                <option class="bg-gray-950 text-slate-100" value="">请选择模型</option>
+                <option v-for="m in relayModels" :key="m" class="bg-gray-950 text-slate-100" :value="m">{{ m }}</option>
+              </select>
+              <input v-else v-model="model.model_id" :list="sourceOf(model.model_source) === 'relay' ? 'relay-models' : undefined" type="text" :class="smallModelInputClass" />
+            </div>
+            <div v-if="sourceOf(model.model_source) === 'custom'">
               <label class="block text-[10px] text-gray-500 uppercase mb-1 font-bold">Base URL</label>
               <input v-model="model.base_url" type="text" class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300" />
             </div>
-            <div>
+            <div v-if="sourceOf(model.model_source) === 'custom'">
               <label class="block text-[10px] text-gray-500 uppercase mb-1 font-bold">API Key</label>
               <input v-model="model.api_key" type="password" class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white font-mono" />
             </div>
@@ -465,6 +597,17 @@ function removeTtsVoice(index: number) {
 
       <div class="grid grid-cols-1 gap-6">
         <div>
+          <label class="block text-sm font-medium text-gray-300 mb-2">模型来源</label>
+          <div class="grid grid-cols-2 gap-3">
+            <button v-for="opt in sourceOptions" :key="opt.value" type="button"
+                    @click="config.llm.kb_model_source = opt.value"
+                    :class="['rounded-xl border p-3 text-left transition-all', selectOptionClass(opt.value, sourceOf(config.llm.kb_model_source) === opt.value)]">
+              <div class="text-sm font-semibold">{{ opt.label }}</div>
+              <div class="mt-1 text-[11px] text-gray-500">{{ opt.hint }}</div>
+            </button>
+          </div>
+        </div>
+        <div v-if="sourceOf(config.llm.kb_model_source) === 'custom'">
           <label class="block text-sm font-medium text-gray-300 mb-2">Embedding API Key (可选)</label>
           <input
             v-model="config.llm.kb_api_key"
@@ -474,13 +617,17 @@ function removeTtsVoice(index: number) {
           />
         </div>
         <div class="grid grid-cols-2 gap-4">
-          <div>
+          <div v-if="sourceOf(config.llm.kb_model_source) === 'custom'">
             <label class="block text-sm font-medium text-gray-300 mb-2">Base URL</label>
             <input v-model="config.llm.kb_base_url" type="text" class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-500 transition-all" />
           </div>
-          <div>
+          <div :class="sourceOf(config.llm.kb_model_source) === 'custom' ? '' : 'col-span-2'">
             <label class="block text-sm font-medium text-gray-300 mb-2">Model ID</label>
-            <input v-model="config.llm.embedding_model" list="relay-models" type="text" placeholder="text-embedding-3-small" class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-500 transition-all" />
+            <select v-if="sourceOf(config.llm.kb_model_source) === 'relay' && relayModels.length" v-model="config.llm.embedding_model" :class="modelInputClass + ' focus:border-amber-500'">
+              <option class="bg-gray-950 text-slate-100" value="">请选择模型</option>
+              <option v-for="m in relayModels" :key="m" class="bg-gray-950 text-slate-100" :value="m">{{ m }}</option>
+            </select>
+            <input v-else v-model="config.llm.embedding_model" :list="sourceOf(config.llm.kb_model_source) === 'relay' ? 'relay-models' : undefined" type="text" placeholder="text-embedding-3-small" :class="modelInputClass + ' focus:border-amber-500'" />
           </div>
         </div>
       </div>
@@ -521,6 +668,17 @@ function removeTtsVoice(index: number) {
 
       <div class="grid grid-cols-1 gap-6">
         <div>
+          <label class="block text-sm font-medium text-gray-300 mb-2">模型来源</label>
+          <div class="grid grid-cols-2 gap-3">
+            <button v-for="opt in sourceOptions" :key="opt.value" type="button"
+                    @click="config.stt.model_source = opt.value"
+                    :class="['rounded-xl border p-3 text-left transition-all', selectOptionClass(opt.value, sourceOf(config.stt.model_source) === opt.value)]">
+              <div class="text-sm font-semibold">{{ opt.label }}</div>
+              <div class="mt-1 text-[11px] text-gray-500">{{ opt.hint }}</div>
+            </button>
+          </div>
+        </div>
+        <div v-if="sourceOf(config.stt.model_source) === 'custom'">
           <label class="block text-sm font-medium text-gray-300 mb-2">STT API Key</label>
           <input
             v-model="config.stt.api_key"
@@ -530,16 +688,25 @@ function removeTtsVoice(index: number) {
           />
         </div>
         <div class="grid grid-cols-2 gap-4">
-          <div>
+          <div v-if="sourceOf(config.stt.model_source) === 'custom'">
             <label class="block text-sm font-medium text-gray-300 mb-2">Base URL</label>
             <input v-model="config.stt.base_url" type="text" placeholder="https://api.openai.com/v1" class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-green-500 transition-all" />
           </div>
-          <div>
+          <div :class="sourceOf(config.stt.model_source) === 'custom' ? '' : 'col-span-2'">
             <label class="block text-sm font-medium text-gray-300 mb-2">Model ID</label>
-            <input v-model="config.stt.model" list="relay-models" type="text" placeholder="whisper-1" class="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-green-500 transition-all" />
+            <select v-if="sourceOf(config.stt.model_source) === 'relay' && relayModels.length" v-model="config.stt.model" :class="modelInputClass + ' focus:border-green-500'">
+              <option class="bg-gray-950 text-slate-100" value="">请选择模型</option>
+              <option v-for="m in relayModels" :key="m" class="bg-gray-950 text-slate-100" :value="m">{{ m }}</option>
+            </select>
+            <input v-else v-model="config.stt.model" :list="sourceOf(config.stt.model_source) === 'relay' ? 'relay-models' : undefined" type="text" placeholder="whisper-1" :class="modelInputClass + ' focus:border-green-500'" />
           </div>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+
+
+
+

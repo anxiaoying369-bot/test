@@ -360,7 +360,7 @@ def main():
                         help="采集类型（默认 all）")
     parser.add_argument("--limit", type=int, default=0, help="限制采集数量（0=不限制）")
     parser.add_argument("--skip-existing", action="store_true", help="跳过已采集数据")
-    parser.add_argument("--incremental", action="store_true", default=True, help="增量模式：遇到旧作品即停止")
+    parser.add_argument("--incremental", action="store_true", default=False, help="增量模式：遇到旧作品即停止")
     parser.add_argument("--output-dir", default="", help="输出目录（默认自动生成）")
     args = parser.parse_args()
 

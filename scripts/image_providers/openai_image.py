@@ -66,24 +66,7 @@ class OpenAICompatibleImageProvider(ImageProvider):
         """图生图。优先走 OpenAI 标准 /images/edits（multipart/form-data，必须 PNG）；
         若返回 4xx（部分国产兼容服务不支持 edits），降级到 /images/generations 把 base64 拼进 prompt。"""
         # 读出参考图字节
-        if image_path_or_url.startswith("data:"):
-            try:
-                comma = image_path_or_url.index(",")
-                img_bytes = base64.b64decode(image_path_or_url[comma + 1 :])
-            except Exception as e:
-                raise RuntimeError(f"data URL 解析失败: {e}")
-        elif image_path_or_url.startswith("http"):
-            try:
-                with urllib.request.urlopen(image_path_or_url, timeout=60) as r:
-                    img_bytes = r.read()
-            except Exception as e:
-                raise RuntimeError(f"下载参考图失败: {e}")
-        else:
-            try:
-                with open(image_path_or_url, "rb") as f:
-                    img_bytes = f.read()
-            except Exception as e:
-                raise RuntimeError(f"读取本地参考图失败: {e}")
+        img_bytes = self._read_image_bytes(image_path_or_url)
 
         # ── 主路径：multipart /images/edits ──
         try:
@@ -101,7 +84,32 @@ class OpenAICompatibleImageProvider(ImageProvider):
                 return self._extract_image(self._do_post("/images/generations", payload))
             raise
 
-    def _do_edits_multipart(self, image_bytes: bytes, prompt: str, size: str) -> dict:
+    def inpaint(self, image_path_or_url: str, mask_path: str, prompt: str, size: str = "1024x1024") -> str:
+        image_bytes = self._read_image_bytes(image_path_or_url)
+        mask_bytes = self._read_image_bytes(mask_path)
+        return self._extract_image(self._do_edits_multipart(image_bytes, prompt, size, mask_bytes=mask_bytes))
+
+    def _read_image_bytes(self, image_path_or_url: str) -> bytes:
+        if image_path_or_url.startswith("data:"):
+            try:
+                comma = image_path_or_url.index(",")
+                return base64.b64decode(image_path_or_url[comma + 1 :])
+            except Exception as e:
+                raise RuntimeError(f"data URL 解析失败: {e}")
+        elif image_path_or_url.startswith("http"):
+            try:
+                with urllib.request.urlopen(image_path_or_url, timeout=60) as r:
+                    return r.read()
+            except Exception as e:
+                raise RuntimeError(f"下载参考图失败: {e}")
+        else:
+            try:
+                with open(image_path_or_url, "rb") as f:
+                    return f.read()
+            except Exception as e:
+                raise RuntimeError(f"读取本地参考图失败: {e}")
+
+    def _do_edits_multipart(self, image_bytes: bytes, prompt: str, size: str, mask_bytes: Optional[bytes] = None) -> dict:
         """手写 multipart/form-data 调 /images/edits（避免引入额外依赖）。"""
         boundary = "----autocastFormBoundary" + base64.b64encode(os.urandom(9)).decode("ascii").replace("/", "_")
         crlf = b"\r\n"
@@ -122,6 +130,8 @@ class OpenAICompatibleImageProvider(ImageProvider):
         body += part("n", b"1")
         body += part("size", size.encode("utf-8"))
         body += part("image", image_bytes, filename="reference.png", ctype="image/png")
+        if mask_bytes:
+            body += part("mask", mask_bytes, filename="mask.png", ctype="image/png")
         body += f"--{boundary}--\r\n".encode("utf-8")
 
         url = f"{self.base_url}/images/edits"

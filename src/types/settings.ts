@@ -2,6 +2,8 @@
 
 export interface GeoModelConfig {
   name: string;
+  /** 模型来源：relay=使用 API 中转站凭证；custom=自定义 URL/Key */
+  model_source?: 'relay' | 'custom';
   base_url: string;
   api_key: string;
   model_id: string;
@@ -16,9 +18,13 @@ export interface GeoPublishPlatform {
 }
 
 export interface LLMConfig {
+  /** 主对话模型来源：relay=使用 API 中转站；custom=自定义 URL/Key */
+  model_source?: 'relay' | 'custom';
   api_key: string;
   base_url: string;
   model: string;
+  /** 知识库嵌入模型来源 */
+  kb_model_source?: 'relay' | 'custom';
   kb_api_key: string;
   kb_base_url: string;
   embedding_model: string;
@@ -44,6 +50,7 @@ export interface TtsVoice {
 }
 
 export interface SttConfig {
+  model_source?: 'relay' | 'custom';
   api_key: string;
   base_url: string;
   model: string;
@@ -52,12 +59,14 @@ export interface SttConfig {
 export interface VideoConfig {
   fal_key: string;
   volc_key: string;
+  openai_model_source?: 'relay' | 'custom';
   openai_api_key: string;
   openai_base_url: string;
   openai_model: string;
   default_provider: string;
   // TTS
   tts_provider?: string;
+  tts_model_source?: 'relay' | 'custom';
   tts_api_key?: string;
   tts_base_url?: string;
   tts_model?: string;

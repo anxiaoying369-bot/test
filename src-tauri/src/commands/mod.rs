@@ -14,3 +14,5 @@ pub mod video_studio;
 pub mod wechat;
 pub mod mobile;
 pub mod publisher;
+pub mod audio_lab;
+pub mod image_studio;

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
-import { MessageSquare, Users, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, UserSearch, MessageCircle, Smartphone, Send } from 'lucide-vue-next';
+import { MessageSquare, Users, FileText, Radio, Settings, Database, Sparkles, Terminal, Film, UserSearch, MessageCircle, Smartphone, Send, AudioLines, ImageIcon } from 'lucide-vue-next';
 import ScraperView from './components/ScraperView.vue';
 import UserInfoView from './components/UserInfoView.vue';
 import ResultsView from './components/ResultsView.vue';
@@ -15,9 +15,11 @@ import AccountsView from './components/AccountsView.vue';
 import WeChatMonitorView from './components/WeChatMonitorView.vue';
 import MobileControlView from './components/MobileControlView.vue';
 import PublishView from './components/PublishView.vue';
+import AudioLabView from './components/AudioLabView.vue';
+import ImageStudioView from './components/ImageStudioView.vue';
 import { useLiveEvents } from './composables/useLiveEvents';
 
-type PageKey = 'chat' | 'accounts' | 'user_info' | 'scraper' | 'results' | 'live_monitor' | 'wechat_monitor' | 'mobile_control' | 'douyin_im' | 'publish' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
+type PageKey = 'chat' | 'accounts' | 'user_info' | 'scraper' | 'results' | 'live_monitor' | 'wechat_monitor' | 'mobile_control' | 'audio_lab' | 'image_studio' | 'douyin_im' | 'publish' | 'settings' | 'kb' | 'studio' | 'video_studio' | 'hermes';
 const currentPage = ref<PageKey>('chat');
 const settingsInitialTab = ref<string>('llm');
 
@@ -45,7 +47,7 @@ onMounted(initLiveEventListener);
     <!-- 左侧导航（固定宽度，不随内容区压缩） -->
     <aside class="flex flex-col w-56 flex-shrink-0 h-full bg-gray-950 border-r border-gray-800">
       <div class="p-6 font-bold tracking-tight">AutoCast AI</div>
-      <nav class="flex-1 px-3 space-y-1">
+      <nav class="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-4 space-y-1">
         <a href="#" @click="currentPage = 'chat'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'chat' ? 'bg-gray-900' : 'text-gray-400']">
           <MessageSquare class="w-5 h-5 text-blue-500" />
           <span>AI 助理对话</span>
@@ -90,6 +92,14 @@ onMounted(initLiveEventListener);
         <a href="#" @click="currentPage = 'mobile_control'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'mobile_control' ? 'bg-gray-900' : 'text-gray-400']">
           <Smartphone class="w-5 h-5 text-emerald-400" />
           <span>手机控制</span>
+        </a>
+        <a href="#" @click="currentPage = 'audio_lab'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'audio_lab' ? 'bg-gray-900' : 'text-gray-400']">
+          <AudioLines class="w-5 h-5 text-blue-400" />
+          <span>音频实验室</span>
+        </a>
+        <a href="#" @click="currentPage = 'image_studio'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'image_studio' ? 'bg-gray-900' : 'text-gray-400']">
+          <ImageIcon class="w-5 h-5 text-cyan-400" />
+          <span>AI 图像工作台</span>
         </a>
         <a href="#" @click="currentPage = 'publish'" :class="['flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer', currentPage === 'publish' ? 'bg-gray-900' : 'text-gray-400']">
           <Send class="w-5 h-5 text-purple-400" />
@@ -164,6 +174,16 @@ onMounted(initLiveEventListener);
     <!-- 主内容：手机控制 -->
     <main v-if="currentPage === 'mobile_control'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
       <MobileControlView />
+    </main>
+
+    <!-- 主内容：音频实验室 -->
+    <main v-if="currentPage === 'audio_lab'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
+      <AudioLabView />
+    </main>
+
+    <!-- 主内容：AI 图像工作台 -->
+    <main v-if="currentPage === 'image_studio'" class="flex flex-col flex-1 min-w-0 h-full bg-gray-950">
+      <ImageStudioView />
     </main>
 
     <!-- 主内容：发布排期 -->

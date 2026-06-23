@@ -245,7 +245,46 @@ async fn handle_text_message(
             }
             emit_devices_changed(app, devices).await;
         }
+        "adb_info" => {
+            let target = json.get("target").and_then(|v| v.as_str()).unwrap_or("");
+            let code = json.get("code").and_then(|v| v.as_str()).unwrap_or("");
+            if !target.is_empty() {
+                println!("[mobile] Received ADB info from {}: target={}, code={}", device_id, target, code);
+                
+                // 1. 如果有配对码，先执行配对
+                if !code.is_empty() {
+                    let mut child = std::process::Command::new("adb")
+                        .arg("pair")
+                        .arg(target)
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .spawn()
+                        .expect("Failed to start adb pair");
+                    
+                    if let Some(mut stdin) = child.stdin.take() {
+                        use std::io::Write;
+                        let _ = stdin.write_all(format!("{}\n", code).as_bytes());
+                    }
+                    let _ = child.wait();
+                }
+
+                // 2. 对于配对和连接，通常端口是不同的（Android 11+ 中配对端口和连接端口随机分配且不同）
+                // 但是某些设备直接 connect 也能行。如果是 Android 11+，配对完成后，开发者选项界面会显示另一个“连接端口”。
+                // 这里我们尝试执行 connect
+                let _ = crate::utils::std_command("adb")
+                    .arg("connect")
+                    .arg(target)
+                    .output();
+                
+                // 触发前端提醒
+                let _ = app.emit(
+                    "mobile-adb-connected",
+                    serde_json::json!({ "device_id": device_id, "target": target }),
+                );
+            }
+        }
         "file_start" => {
+
             *incoming_file = Some(IncomingFile {
                 name: json.get("name").and_then(|v| v.as_str()).unwrap_or("unnamed").to_string(),
                 size: json.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
@@ -446,11 +485,30 @@ async fn send_to_device(
     device_id: &str,
     payload: serde_json::Value,
 ) -> Result<(), String> {
+    let log_msg = format!("[mobile] Sending to {}: {}\n", device_id, payload);
+    println!("{}", log_msg);
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(get_data_dir().join("mobile_debug.log"))
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(log_msg.as_bytes())
+        });
+
     let map = state.mobile.devices.read().await;
-    let conn = map.get(device_id).ok_or_else(|| format!("设备 {} 不在线", device_id))?;
+    let conn = map.get(device_id).ok_or_else(|| {
+        let err = format!("设备 {} 不在线", device_id);
+        println!("[mobile] Error: {}", err);
+        err
+    })?;
     conn.tx
         .send(Message::Text(payload.to_string()))
-        .map_err(|_| "发送失败：连接已断开".to_string())
+        .map_err(|_| {
+            let err = "发送失败：连接已断开".to_string();
+            println!("[mobile] Error: {}", err);
+            err
+        })
 }
 
 #[tauri::command]
@@ -502,6 +560,111 @@ pub async fn mobile_request_screenshot(
     device_id: String,
 ) -> Result<(), String> {
     send_to_device(&state, &device_id, serde_json::json!({ "type": "screenshot" })).await
+}
+
+/// 请求手机同步过去 24 小时的录音。
+#[tauri::command]
+pub async fn mobile_sync_recordings(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<(), String> {
+    send_to_device(&state, &device_id, serde_json::json!({ "type": "sync_recordings" })).await
+}
+
+/// 通过本机 ADB 直接拉取录音文件（作为底层兜底通道）。
+#[tauri::command]
+pub async fn mobile_adb_sync_recordings(device_id: String) -> Result<String, String> {
+    let target_dir = get_data_dir().join("mobile").join("recordings").join(&device_id);
+    std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
+
+    let expected_android_id = device_id.strip_prefix("phone_").unwrap_or(&device_id);
+
+    // 1. 获取所有通过 ADB 连接的设备 Serial
+    let adb_devices_out = crate::utils::std_command("adb")
+        .arg("devices")
+        .output()
+        .map_err(|e| format!("adb devices 失败: {}", e))?;
+    let devices_str = String::from_utf8_lossy(&adb_devices_out.stdout);
+    
+    let mut target_serial = None;
+    let mut available_serials = Vec::new();
+
+    for line in devices_str.lines().skip(1) { // Skip "List of devices attached"
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 && (parts[1] == "device" || parts[1] == "emulator") {
+            let serial = parts[0].to_string();
+            available_serials.push(serial.clone());
+            // 2. 查询这个 Serial 对应的 android_id
+            let id_out = crate::utils::std_command("adb")
+                .arg("-s")
+                .arg(&serial)
+                .arg("shell")
+                .arg("settings")
+                .arg("get")
+                .arg("secure")
+                .arg("android_id")
+                .output();
+            if let Ok(out) = id_out {
+                let current_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if current_id == expected_android_id {
+                    target_serial = Some(serial);
+                    break;
+                }
+            }
+        }
+    }
+
+    let serial_to_use = match target_serial {
+        Some(s) => s,
+        None => {
+            if available_serials.len() == 1 {
+                available_serials.pop().unwrap()
+            } else {
+                return Err(format!("未找到 ID 为 {} 的设备。已连接设备数量: {}。请确 保拔掉其他手机并已授权调试。", expected_android_id, available_serials.len()));
+            }
+        }
+    };
+
+
+    let dirs_to_pull = [
+        "/sdcard/Sounds/CallRecord",
+        "/sdcard/Music/Recordings/Call Recordings",
+        "/sdcard/Recordings/Call Recordings",
+        "/sdcard/MIUI/sound_recorder/call_rec",
+        "/sdcard/Recordings/Call",
+        "/sdcard/Recordings/CallRecord",
+    ];
+
+    let mut log = String::new();
+    let target_path = target_dir.to_string_lossy().to_string();
+
+    for dir in dirs_to_pull {
+        let output = crate::utils::std_command("adb")
+            .arg("-s")
+            .arg(&serial_to_use)
+            .arg("pull")
+            .arg("-a") // 保留时间戳
+            .arg(format!("{}/.", dir))
+            .arg(&target_path)
+            .output();
+
+        if let Ok(out) = output {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if !stdout.is_empty() || (!stderr.is_empty() && !stderr.contains("does not exist")) {
+                log.push_str(&format!(" pulled {}: {}\n", dir, stdout));
+                if !stderr.is_empty() && !stderr.contains("not found") && !stderr.contains("No such file") {
+                    log.push_str(&format!(" err: {}\n", stderr));
+                }
+            }
+        }
+    }
+    
+    if log.is_empty() {
+        Ok(format!("ADB 同步完成 (设备: {})，未发现新文件或拉取失败", serial_to_use))
+    } else {
+        Ok(format!("ADB 同步完成 (设备: {})：\n{}", serial_to_use, log))
+    }
 }
 
 // ============ 通话录音记录 ============

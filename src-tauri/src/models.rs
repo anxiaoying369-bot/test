@@ -41,6 +41,8 @@ pub struct LocalStorageEntry {
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct GeoModelConfig {
     pub name: String,
+    #[serde(default = "default_model_source_custom")]
+    pub model_source: String,
     pub base_url: String,
     pub api_key: String,
     pub model_id: String,
@@ -62,9 +64,13 @@ pub struct GeoPublishPlatform {
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct LLMConfig {
+    #[serde(default = "default_model_source_custom")]
+    pub model_source: String,
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    #[serde(default = "default_model_source_custom")]
+    pub kb_model_source: String,
     #[serde(default)]
     pub kb_api_key: String,
     #[serde(default)]
@@ -91,6 +97,10 @@ pub struct LLMConfig {
 
 fn default_embedding_model() -> String {
     "text-embedding-3-small".to_string()
+}
+
+fn default_model_source_custom() -> String {
+    "custom".to_string()
 }
 
 fn default_live_reply_prompt() -> String {
@@ -121,6 +131,8 @@ pub struct VideoConfig {
     pub fal_key: String,
     #[serde(default)]
     pub volc_key: String,
+    #[serde(default = "default_model_source_custom")]
+    pub openai_model_source: String,
     #[serde(default)]
     pub openai_api_key: String,
     #[serde(default)]
@@ -132,6 +144,8 @@ pub struct VideoConfig {
 
     #[serde(default)]
     pub tts_provider: String,
+    #[serde(default = "default_model_source_custom")]
+    pub tts_model_source: String,
     #[serde(default)]
     pub tts_api_key: String,
     #[serde(default)]
@@ -191,6 +205,8 @@ pub struct TtsVoice {
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct SttConfig {
+    #[serde(default = "default_model_source_custom")]
+    pub model_source: String,
     pub api_key: String,
     pub base_url: String,
     pub model: String,

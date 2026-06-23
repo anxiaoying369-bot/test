@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--size", default="1024x1024", help="如 1024x1024 / 720x1280")
     parser.add_argument("--reference-image", default="", help="参考图本地路径或 URL，可选")
+    parser.add_argument("--mask-image", default="", help="局部重绘 mask 图片路径，可选；白色区域会被修改")
     parser.add_argument("--base-url", default="", help="OpenAI 兼容 Provider 的 base url")
     parser.add_argument("--model", default="", help="OpenAI 兼容 Provider 的模型 id")
 
@@ -33,7 +34,9 @@ def main():
 
         provider = get_image_provider(args.provider, args.api_key, **kwargs)
 
-        if args.reference_image:
+        if args.reference_image and args.mask_image:
+            url = provider.inpaint(args.reference_image, args.mask_image, args.prompt, args.size)
+        elif args.reference_image:
             url = provider.image_to_image(args.reference_image, args.prompt, args.size)
         else:
             url = provider.text_to_image(args.prompt, args.size)

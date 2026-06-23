@@ -107,7 +107,7 @@ pub async fn dispatch_tool(name: &str, args: &Value) -> Value {
         },
 
         "geo_query" => match arg_str(args, "query") {
-            Some(q) => geo_monitor_query(q).await,
+            Some(q) => geo_monitor_query(None, Some(q)).await,
             None => Err("缺少必填参数 query".to_string()),
         },
 

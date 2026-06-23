@@ -110,6 +110,11 @@ export function useWeChat() {
           category: 'friend' | 'group'; summary: string; lastTimestamp: number;
           messages: WeChatMessage[];
         };
+        const category: 'friend' | 'group' = d.category || (d.isGroup ? 'group' : 'friend');
+        // 前端勾选项必须同时约束实时入库，否则用户关闭“群聊/联系人”后仍会继续弹入列表。
+        if ((category === 'friend' && !monitorContacts.value) || (category === 'group' && !monitorGroups.value)) {
+          return;
+        }
         // 后端默认按时间倒序返回，倒一下让最新在底部
         const msgs = (d.messages || []).slice().reverse();
         const idx = monitoredChats.value.findIndex(c => c.sessionId === d.sessionId);
@@ -128,7 +133,7 @@ export function useWeChat() {
             sessionId: d.sessionId,
             displayName: d.displayName || d.sessionId,
             isGroup: !!d.isGroup,
-            category: d.category || (d.isGroup ? 'group' : 'friend'),
+            category,
             summary: d.summary || '',
             lastTimestamp: d.lastTimestamp || 0,
             newCount: 1,

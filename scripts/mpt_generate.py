@@ -64,6 +64,7 @@ def _build_params(data: dict):
         video_source=video_source,
         video_materials=materials,
         video_language=data.get("video_language", "") or "",
+        custom_audio_file=data.get("custom_audio_file") or None,
         voice_name=data.get("voice_name", "") or "",
         voice_volume=float(data.get("voice_volume", 1.0) or 1.0),
         voice_rate=float(data.get("voice_rate", 1.0) or 1.0),

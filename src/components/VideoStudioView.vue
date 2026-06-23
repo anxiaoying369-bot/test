@@ -11,19 +11,19 @@ import { useVideoStudioView } from '../composables/useVideoStudioView';
 
 const vm = useVideoStudioView();
 const {
-  PLATFORM_OPTIONS, ASPECT_OPTIONS, EDGE_VOICES, BGM_OPTIONS, SUBTITLE_PROVIDER_OPTIONS,
+  PLATFORM_OPTIONS, ASPECT_OPTIONS, BGM_OPTIONS, SUBTITLE_PROVIDER_OPTIONS,
   projects, currentProject, createProject, selectProject, deleteProject,
   videoMaterials, isUploadingMaterial, deleteMaterial,
   step,
   productInfo, referenceScript, scriptText, scriptFeedback, isGeneratingScript, selectedPlatform, videoAspect,
   terms, newTerm, isGeneratingTerms,
-  videoSource, voiceName, voiceRate, subtitleEnabled, subtitleProvider, subtitlePosition,
+  videoSource, cloneVoices, voiceName, subtitleEnabled, subtitleProvider, subtitlePosition,
   textForeColor, strokeColor, fontSize, bgmType, bgmVolume, clipDuration, concatMode, videoCount,
   selectedLocalMaterialIds, isPreviewingVoice,
   isGenerating, progress, stageLabel, finalVideoPath, errorMsg,
   canProceedFromScript, canGenerate,
   generateScript, confirmScriptStep, generateTerms, addTerm, removeTerm,
-  uploadLocalMaterial, toggleLocalMaterial, previewVoice, startGenerate,
+  uploadLocalMaterial, toggleLocalMaterial, loadCloneVoices, previewVoice, startGenerate,
 } = vm;
 
 const STEPS = [
@@ -211,20 +211,25 @@ const openInFinder = async () => {
           <!-- 配音 -->
           <div class="grid grid-cols-2 gap-4">
             <div>
-              <label class="text-xs text-gray-400 font-medium">配音音色（Edge TTS · 免费）</label>
+              <label class="text-xs text-gray-400 font-medium">本地克隆音色（音频实验室）</label>
               <div class="mt-1.5 flex gap-2">
-                <select v-model="voiceName" class="flex-1 bg-gray-900 border border-gray-800 rounded-xl px-3 py-2.5 text-sm">
-                  <option v-for="v in EDGE_VOICES" :key="v.id" :value="v.id">{{ v.name }}</option>
+                <select v-model="voiceName" :disabled="cloneVoices.length === 0" class="flex-1 bg-gray-900 border border-gray-800 rounded-xl px-3 py-2.5 text-sm disabled:opacity-60">
+                  <option v-if="cloneVoices.length === 0" value="">请先在音频实验室注册音色</option>
+                  <option v-for="v in cloneVoices" :key="v.name" :value="v.name">{{ v.display_name || v.name }}</option>
                 </select>
-                <button @click="previewVoice" :disabled="isPreviewingVoice" title="试听该音色"
+                <button @click="loadCloneVoices" title="刷新音色列表"
+                  class="shrink-0 px-3 rounded-xl border border-gray-700 hover:border-blue-500 hover:text-blue-300 flex items-center gap-1.5 text-sm">
+                  <RefreshCw class="w-4 h-4" />
+                </button>
+                <button @click="previewVoice" :disabled="isPreviewingVoice || !voiceName" title="试听该音色"
                   class="shrink-0 px-3 rounded-xl border border-gray-700 hover:border-blue-500 hover:text-blue-300 disabled:opacity-50 flex items-center gap-1.5 text-sm">
                   <Loader2 v-if="isPreviewingVoice" class="w-4 h-4 animate-spin" /><Volume2 v-else class="w-4 h-4" />试听
                 </button>
               </div>
             </div>
-            <div>
-              <label class="text-xs text-gray-400 font-medium">语速 {{ voiceRate.toFixed(2) }}x</label>
-              <input type="range" min="0.5" max="1.5" step="0.05" v-model.number="voiceRate" class="mt-3 w-full accent-blue-500" />
+            <div class="rounded-xl border border-gray-800 bg-gray-900/50 px-4 py-3">
+              <div class="text-xs text-gray-500">配音来源</div>
+              <div class="mt-1 text-sm text-gray-200">本地 F5-TTS 克隆合成</div>
             </div>
           </div>
 
@@ -299,7 +304,7 @@ const openInFinder = async () => {
         <div v-else-if="step === 'generate'" class="max-w-2xl space-y-6">
           <div class="bg-gray-900/50 border border-gray-800 rounded-xl p-5 text-sm space-y-1.5">
             <div class="flex justify-between"><span class="text-gray-500">主题</span><span class="text-gray-200 truncate max-w-[70%]">{{ productInfo || '—' }}</span></div>
-            <div class="flex justify-between"><span class="text-gray-500">画幅 / 音色</span><span class="text-gray-200">{{ videoAspect }} · {{ EDGE_VOICES.find(v => v.id === voiceName)?.name }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-500">画幅 / 音色</span><span class="text-gray-200">{{ videoAspect }} · {{ cloneVoices.find(v => v.name === voiceName)?.display_name || voiceName || '未选择音色' }}</span></div>
             <div class="flex justify-between"><span class="text-gray-500">素材来源</span><span class="text-gray-200">{{ videoSource === 'pexels' ? `Pexels（${terms.length} 关键词）` : `本地（${selectedLocalMaterialIds.length} 个素材）` }}</span></div>
             <div class="flex justify-between"><span class="text-gray-500">字幕 / BGM</span><span class="text-gray-200">{{ subtitleEnabled ? subtitleProvider : '关闭' }} · {{ bgmType ? '随机BGM' : '无BGM' }}</span></div>
           </div>

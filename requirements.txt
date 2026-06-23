@@ -62,3 +62,10 @@ imageio-ffmpeg                 # moviepy 的 ffmpeg 后端解析
 # faster-whisper 可选：仅当字幕模式选 whisper 时需要，首次运行会下载模型（~250MB+）。
 # 默认字幕走 edge 模式，无需安装；如需更精准字幕再取消下一行注释并重跑 prepare:python。
 # faster-whisper==1.1.0
+
+# ── 本地语音克隆（可选，不进默认安装包）──────────────────────────────
+# 音频实验室的语音克隆优先接 F5-TTS。它会拉取较大的 PyTorch/模型依赖，
+# 不建议放进默认内置 Python 运行时；需要本地克隆能力时再手动安装：
+#   python -m pip install f5-tts
+# 或设置 AUTOCAST_F5_TTS_BIN 指向已有 f5-tts_infer-cli。
+# f5-tts

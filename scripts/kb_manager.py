@@ -4,6 +4,7 @@ import json
 import argparse
 import lancedb
 import pandas as pd
+import re
 from pathlib import Path
 from openai import OpenAI
 from pypdf import PdfReader
@@ -89,6 +90,11 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50):
         start += chunk_size - overlap
     return chunks
 
+def safe_source_name(file_path: str) -> str:
+    """Keep KB source names display-safe and query-safe."""
+    name = os.path.basename(file_path or "")
+    return re.sub(r"[^\w\-.()\u4e00-\u9fff ]+", "_", name, flags=re.UNICODE)[:180] or "document"
+
 def add_file_to_kb(file_path: str, config: dict):
     content = parse_file(file_path)
     if not content:
@@ -99,13 +105,14 @@ def add_file_to_kb(file_path: str, config: dict):
     
     table_name = "global_kb"
     
+    source_name = safe_source_name(file_path)
     data = []
     for i, chunk in enumerate(chunks):
         embedding = get_embedding(chunk, config)
         data.append({
             "vector": embedding,
             "text": chunk,
-            "source": os.path.basename(file_path),
+            "source": source_name,
             "chunk_id": i
         })
     
@@ -168,8 +175,9 @@ def delete_file(filename: str):
     if table_name not in db.table_names():
         return {"error": "知识库为空"}
     
+    safe_filename = safe_source_name(filename)
     table = db.open_table(table_name)
-    table.delete(f"source = '{filename}'")
+    table.delete(f"source = {json.dumps(safe_filename, ensure_ascii=False)}")
     return {"status": "success"}
 
 def get_file_details(filename: str):
@@ -184,7 +192,8 @@ def get_file_details(filename: str):
         if results.empty:
             return []
 
-        file_chunks = results[results['source'] == filename].sort_values('chunk_id')
+        safe_filename = safe_source_name(filename)
+        file_chunks = results[results['source'] == safe_filename].sort_values('chunk_id')
 
         details = []
         for _, row in file_chunks.iterrows():

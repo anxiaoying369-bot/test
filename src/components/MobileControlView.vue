@@ -9,15 +9,42 @@ import type { MobileDevice } from '../types/mobile';
 
 const {
   devices, serverInfo, frames, frameAt, recordings, streamingId, lastError,
-  init, refreshDevices, refreshRecordings, recordingUrl, deleteRecording,
+  init, refreshDevices, refreshRecordings, syncRecordings, adbSyncRecordings, recordingUrl, deleteRecording,
   startStream, stopStream, requestScreenshot,
   tap, swipe, pressKey, setRemark, deleteDevice,
 } = useMobileControl();
 
-onMounted(init);
+onMounted(async () => {
+  await init();
+  import('@tauri-apps/api/event').then(({ listen }) => {
+    listen<{ device_id: string; target: string }>('mobile-adb-connected', (event) => {
+      alert(`电脑已成功连接至无线 ADB: ${event.payload.target}\n现在您可以拔掉数据线，使用“ADB 强拉”功能了！`);
+    });
+  });
+});
 
 // ─── 右侧面板：实时控制 / 通话记录 ───
 const viewMode = ref<'control' | 'recordings'>('control');
+
+function onRefreshRecordings() {
+  refreshRecordings();
+  if (selectedId.value) {
+    syncRecordings(selectedId.value);
+  } else {
+    // 如果没选特定手机，尝试同步所有在线手机
+    devices.value.filter(d => d.online).forEach(d => {
+      syncRecordings(d.device_id);
+    });
+  }
+}
+
+function onAdbSync() {
+  if (selectedId.value) {
+    adbSyncRecordings(selectedId.value);
+  } else {
+    lastError.value = '请先在左侧选择要进行 ADB 同步的设备';
+  }
+}
 
 // ─── 设备选择 ───
 const selectedId = ref<string | null>(null);
@@ -227,7 +254,7 @@ function fmtSize(bytes: number) {
             <Smartphone class="w-3.5 h-3.5" /> 实时控制
           </button>
           <button
-            @click="viewMode = 'recordings'; refreshRecordings()"
+            @click="viewMode = 'recordings'; onRefreshRecordings()"
             :class="['flex items-center gap-1.5 text-xs px-3 py-2 rounded-t-lg border-b-2 -mb-px',
               viewMode === 'recordings' ? 'border-emerald-500 text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300']"
           >
@@ -328,9 +355,14 @@ function fmtSize(bytes: number) {
               <span v-if="selected" class="text-gray-500 text-xs">· {{ displayName(selected) }}</span>
               <span v-else class="text-gray-500 text-xs">· 全部设备</span>
             </span>
-            <button @click="refreshRecordings()" class="ml-auto flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200">
-              <RefreshCw class="w-3.5 h-3.5" /> 刷新
-            </button>
+            <div class="ml-auto flex items-center gap-2">
+              <button @click="onAdbSync()" class="flex items-center gap-1 text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors" title="使用 ADB 强行拉取文件（需手机连接数据线或同一 WiFi）">
+                <Smartphone class="w-3.5 h-3.5" /> ADB 强拉
+              </button>
+              <button @click="onRefreshRecordings()" class="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200">
+                <RefreshCw class="w-3.5 h-3.5" /> 刷新
+              </button>
+            </div>
           </div>
 
           <div class="flex-1 overflow-y-auto p-4 space-y-2">

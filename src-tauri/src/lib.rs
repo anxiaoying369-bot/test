@@ -198,6 +198,8 @@ pub fn run() {
             crate::commands::mobile::mobile_swipe,
             crate::commands::mobile::mobile_key,
             crate::commands::mobile::mobile_request_screenshot,
+            crate::commands::mobile::mobile_sync_recordings,
+            crate::commands::mobile::mobile_adb_sync_recordings,
             crate::commands::mobile::mobile_list_recordings,
             crate::commands::mobile::mobile_delete_recording,
 
@@ -208,6 +210,21 @@ pub fn run() {
             crate::commands::publisher::delete_publish_task,
             crate::commands::publisher::cancel_publish_task,
             crate::commands::publisher::retry_publish_task,
+
+            // 本地音频能力（ASR / 语音克隆）
+            crate::commands::audio_lab::audio_asr_check_model,
+            crate::commands::audio_lab::audio_asr_download_model,
+            crate::commands::audio_lab::audio_transcribe_file,
+            crate::commands::audio_lab::audio_polish_speech_text,
+            crate::commands::audio_lab::voice_clone_check,
+            crate::commands::audio_lab::voice_clone_install,
+            crate::commands::audio_lab::voice_clone_install_status,
+            crate::commands::audio_lab::voice_clone_register,
+            crate::commands::audio_lab::voice_clone_list,
+            crate::commands::audio_lab::voice_clone_synthesize,
+
+            // AI 图像工作台
+            crate::commands::image_studio::image_inpaint,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

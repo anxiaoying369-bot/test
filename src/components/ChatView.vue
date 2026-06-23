@@ -3,7 +3,7 @@ import {
   MessageSquare, Plus, Trash2, Send,
   Bot, User, Sparkles, Copy, ChevronDown, BarChart3
 } from 'lucide-vue-next';
-import { marked } from 'marked';
+import { renderSafeMarkdown } from '../lib/markdown';
 import { inject } from 'vue';
 import { useChat } from '../composables/useChat';
 
@@ -92,7 +92,7 @@ const navigateTo = inject('navigateTo') as (page: string, tab?: string) => void;
                           msg.role === 'system' ? 'bg-amber-950/20 border-amber-900/50 text-amber-200/80' :
                           'bg-gray-900 border-gray-800 text-gray-200']"
               >
-                <div class="markdown-content break-words [word-break:break-word]" v-html="marked(msg.content)"></div>
+                <div class="markdown-content break-words [word-break:break-word]" v-html="renderSafeMarkdown(msg.content)"></div>
                 
                 <!-- 引导配置按钮 -->
                 <div v-if="msg.role === 'system' && msg.content.includes('未配置 LLM API Key')" class="mt-3">
@@ -134,7 +134,7 @@ const navigateTo = inject('navigateTo') as (page: string, tab?: string) => void;
                   <!-- 兼容旧的审计报告内容 -->
                   <div v-else-if="expandedAudits.has(msg.timestamp) && msg.tool_data?.audit"
                        class="mt-2 p-3 bg-gray-950 rounded-xl border border-gray-800 text-[11px] text-gray-400 font-mono leading-relaxed animate-in fade-in slide-in-from-top-1">
-                    <div class="markdown-content break-words [word-break:break-word]" v-html="marked(msg.tool_data.audit)"></div>
+                    <div class="markdown-content break-words [word-break:break-word]" v-html="renderSafeMarkdown(msg.tool_data.audit)"></div>
                   </div>
                 </div>
               </div>

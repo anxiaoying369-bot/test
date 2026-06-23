@@ -104,7 +104,7 @@ def main():
 
     cookie_str = load_cookie_string(args.account_name)
     if not cookie_str:
-        safe_print({"type": "error", "message": f"账号 {args.account_name} 的 Cookie 不存在"})
+        safe_print({"type": "error", "live_id": args.room_id, "message": f"账号 {args.account_name} 的 Cookie 不存在"})
         sys.exit(1)
 
     # 预检查：DouyinBarrage 需要 Node.js 执行 sign.js 算 X-Bogus 签名
@@ -138,7 +138,7 @@ def main():
                 break
 
     if not node_bin:
-        safe_print({"type": "error", "message": "未检测到 Node.js（直播监控必需）。请到 https://nodejs.org 下载安装 LTS 版本后重启应用。"})
+        safe_print({"type": "error", "live_id": args.room_id, "message": "未检测到 Node.js（直播监控必需）。请到 https://nodejs.org 下载安装 LTS 版本后重启应用。"})
         sys.exit(1)
 
     # 准备 cookie 文件供 DouyinBarrage 读取
@@ -204,7 +204,7 @@ def main():
         
         instance.start()
     except Exception as e:
-        safe_print({"type": "error", "message": str(e)})
+        safe_print({"type": "error", "live_id": args.room_id, "message": str(e)})
     finally:
         if os.path.exists(tmp_cookie_path):
             try:

@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { marked } from 'marked';
+import { renderSafeMarkdown } from '../lib/markdown';
 
 export interface GeoResult {
   model_name: string;
@@ -54,8 +54,8 @@ const geoMentionRate = computed(() => {
   const total = geoResults.value.filter(r => !r.error).length;
   return total > 0 ? Math.round((mentioned / total) * 100) : 0;
 });
-const renderedContent = computed(() => marked(generatedContent.value));
-const renderedAudit = computed(() => marked(auditReport.value));
+const renderedContent = computed(() => renderSafeMarkdown(generatedContent.value));
+const renderedAudit = computed(() => renderSafeMarkdown(auditReport.value));
 
 // ============ 方法 ============
 async function loadStudioPlatforms() {

@@ -1,6 +1,6 @@
 import { ref, computed, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { marked } from 'marked';
+import { renderSafeMarkdown } from '../lib/markdown';
 import type { ScrapedUser, ScrapedVideo, ScrapedComment, Account } from '../types/scraped';
 
 export function useScrapedResults() {
@@ -24,7 +24,7 @@ export function useScrapedResults() {
   const analysisReport = ref('');
   const analyzingVideo = ref<ScrapedVideo | null>(null);
 
-  const renderedReport = computed(() => marked(analysisReport.value) as string);
+  const renderedReport = computed(() => renderSafeMarkdown(analysisReport.value));
   const douyinAccounts = computed(() => accounts.value.filter(a => a.platform === 'douyin'));
 
   async function loadAccounts() {

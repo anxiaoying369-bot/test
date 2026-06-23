@@ -19,23 +19,6 @@ export const ASPECT_OPTIONS = [
   { id: '1:1', label: '方形 1:1', hint: '朋友圈/部分信息流' },
 ];
 
-// edge-tts 常用音色（免费，无需 API Key）。命名格式与 MPT 引擎一致：<voice>-<Gender>
-export const EDGE_VOICES = [
-  { id: 'zh-CN-XiaoxiaoNeural-Female', name: '晓晓（女·温柔）' },
-  { id: 'zh-CN-XiaoyiNeural-Female', name: '晓伊（女·亲和）' },
-  { id: 'zh-CN-YunxiNeural-Male', name: '云希（男·阳光）' },
-  { id: 'zh-CN-YunjianNeural-Male', name: '云健（男·浑厚）' },
-  { id: 'zh-CN-YunyangNeural-Male', name: '云扬（男·专业）' },
-  { id: 'zh-CN-YunxiaNeural-Male', name: '云夏（男·少年）' },
-  { id: 'zh-CN-liaoning-XiaobeiNeural-Female', name: '晓北（东北女声）' },
-  { id: 'zh-HK-HiuGaaiNeural-Female', name: '曉佳（粤语女）' },
-  { id: 'zh-TW-HsiaoChenNeural-Female', name: '曉臻（台湾女）' },
-  { id: 'en-US-AvaNeural-Female', name: 'Ava（英·女）' },
-  { id: 'en-US-AndrewNeural-Male', name: 'Andrew（英·男）' },
-  { id: 'en-US-EmmaNeural-Female', name: 'Emma（英·女）' },
-  { id: 'en-US-BrianNeural-Male', name: 'Brian（英·男）' },
-];
-
 export const BGM_OPTIONS = [
   { id: 'random', label: '随机背景音乐' },
   { id: '', label: '不加背景音乐' },
@@ -47,6 +30,12 @@ export const SUBTITLE_PROVIDER_OPTIONS = [
 ];
 
 export type StudioStep = 'script' | 'keywords' | 'options' | 'generate';
+
+type CloneVoice = {
+  name: string;
+  display_name?: string;
+  engine?: string;
+};
 
 export function useVideoStudioView() {
   const step = ref<StudioStep>('script');
@@ -73,7 +62,8 @@ export function useVideoStudioView() {
 
   // ── 步骤 3：参数 ──
   const videoSource = ref<'pexels' | 'local'>('pexels');
-  const voiceName = ref('zh-CN-XiaoxiaoNeural-Female');
+  const cloneVoices = ref<CloneVoice[]>([]);
+  const voiceName = ref('');
   const voiceRate = ref(1.0);
   const subtitleEnabled = ref(true);
   const subtitleProvider = ref('edge');
@@ -101,11 +91,12 @@ export function useVideoStudioView() {
   let unlistenProgress: UnlistenFn | null = null;
 
   onMounted(async () => {
-    await loadProjects();
     await loadSettings();
+    await loadCloneVoices();
+    await loadProjects();
     // 用设置页的默认值初始化参数
     const v = appConfig.value?.video || {};
-    if (v.mpt_voice_name) voiceName.value = v.mpt_voice_name;
+    if (!voiceName.value && v.mpt_voice_name) voiceName.value = v.mpt_voice_name;
     if (v.mpt_subtitle_provider) subtitleProvider.value = v.mpt_subtitle_provider;
     unlistenProgress = await listen<any>('video-mpt-progress', (event) => {
       const p = event.payload || {};
@@ -135,7 +126,7 @@ export function useVideoStudioView() {
       videoAspect.value = cfg.videoAspect || '9:16';
       terms.value = Array.isArray(cfg.terms) ? cfg.terms : [];
       videoSource.value = cfg.videoSource || 'pexels';
-      voiceName.value = cfg.voiceName || appConfig.value?.video?.mpt_voice_name || 'zh-CN-XiaoxiaoNeural-Female';
+      voiceName.value = resolveCloneVoice(cfg.voiceName || appConfig.value?.video?.mpt_voice_name || voiceName.value);
       voiceRate.value = cfg.voiceRate ?? 1.0;
       subtitleEnabled.value = cfg.subtitleEnabled ?? true;
       subtitleProvider.value = cfg.subtitleProvider || appConfig.value?.video?.mpt_subtitle_provider || 'edge';
@@ -169,6 +160,23 @@ export function useVideoStudioView() {
     };
     currentProject.value.config = { ...currentProject.value.config, mpt };
     await invoke('video_upsert_project', { project: currentProject.value });
+  };
+
+  const resolveCloneVoice = (preferred?: string) => {
+    if (preferred && cloneVoices.value.some(v => v.name === preferred)) return preferred;
+    return cloneVoices.value[0]?.name || '';
+  };
+
+  const loadCloneVoices = async () => {
+    try {
+      const res = await invoke<{ voices?: CloneVoice[] }>('voice_clone_list');
+      cloneVoices.value = Array.isArray(res.voices) ? res.voices : [];
+      voiceName.value = resolveCloneVoice(voiceName.value);
+    } catch (e) {
+      console.warn('读取本地克隆音色失败', e);
+      cloneVoices.value = [];
+      voiceName.value = '';
+    }
   };
 
   // ── 步骤 1：脚本 ──
@@ -264,12 +272,22 @@ export function useVideoStudioView() {
     else selectedLocalMaterialIds.value.push(id);
   };
 
-  // 音色试听：用 Edge TTS 合成一小段示例音频并播放（首个音色合成后会缓存）。
+  // 音色试听：使用音频实验室的本地克隆音色合成一小段示例音频。
   const previewVoice = async () => {
     if (isPreviewingVoice.value) return;
+    if (!voiceName.value) {
+      alert('请先在音频实验室注册一个本地克隆音色');
+      return;
+    }
     isPreviewingVoice.value = true;
     try {
-      const path = await invoke<string>('video_mpt_preview_voice', { voiceName: voiceName.value });
+      const res = await invoke<{ audio_path?: string }>('voice_clone_synthesize', {
+        voice: voiceName.value,
+        text: '你好，这是视频创作中心的本地克隆配音试听。',
+        output: null,
+      });
+      const path = res.audio_path;
+      if (!path) throw new Error('未返回试听音频路径');
       if (previewAudio) { previewAudio.pause(); previewAudio = null; }
       previewAudio = new Audio(convertFileSrc(path));
       await previewAudio.play();
@@ -287,6 +305,10 @@ export function useVideoStudioView() {
       alert('缺少口播文案，请回到第一步生成脚本');
       return;
     }
+    if (!voiceName.value) {
+      alert('请先在音频实验室注册并选择一个本地克隆音色');
+      return;
+    }
 
     // 组装参数
     const params: Record<string, any> = {
@@ -294,8 +316,9 @@ export function useVideoStudioView() {
       video_script: scriptText.value,
       video_aspect: videoAspect.value,
       video_source: videoSource.value,
+      voice_engine: 'local_clone',
       voice_name: voiceName.value,
-      voice_rate: voiceRate.value,
+      voice_rate: 1.0,
       subtitle_enabled: subtitleEnabled.value,
       subtitle_provider: subtitleProvider.value,
       font_name: fontName.value,
@@ -356,13 +379,14 @@ export function useVideoStudioView() {
   const canProceedFromScript = computed(() => !!scriptText.value.trim());
   const canGenerate = computed(() => {
     if (!scriptText.value.trim()) return false;
+    if (!voiceName.value) return false;
     if (videoSource.value === 'local') return selectedLocalMaterialIds.value.length > 0;
     return terms.value.length > 0;
   });
 
   return {
     // constants
-    PLATFORM_OPTIONS, ASPECT_OPTIONS, EDGE_VOICES, BGM_OPTIONS, SUBTITLE_PROVIDER_OPTIONS,
+    PLATFORM_OPTIONS, ASPECT_OPTIONS, BGM_OPTIONS, SUBTITLE_PROVIDER_OPTIONS,
     // projects / materials
     projects, currentProject, createProject, selectProject, deleteProject,
     materials, videoMaterials, isUploadingMaterial, deleteMaterial,
@@ -374,7 +398,7 @@ export function useVideoStudioView() {
     // keywords
     terms, newTerm, isGeneratingTerms,
     // options
-    videoSource, voiceName, voiceRate, subtitleEnabled, subtitleProvider, fontName,
+    videoSource, cloneVoices, voiceName, voiceRate, subtitleEnabled, subtitleProvider, fontName,
     subtitlePosition, textForeColor, strokeColor, fontSize, bgmType, bgmVolume,
     clipDuration, concatMode, videoCount, selectedLocalMaterialIds, isPreviewingVoice,
     // generate
@@ -383,6 +407,6 @@ export function useVideoStudioView() {
     canProceedFromScript, canGenerate,
     // methods
     generateScript, confirmScriptStep, generateTerms, addTerm, removeTerm,
-    uploadLocalMaterial, toggleLocalMaterial, previewVoice, startGenerate, saveProjectConfig,
+    uploadLocalMaterial, toggleLocalMaterial, loadCloneVoices, previewVoice, startGenerate, saveProjectConfig,
   };
 }

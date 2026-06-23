@@ -17,3 +17,8 @@ class ImageProvider(ABC):
     def image_to_image(self, image_path_or_url: str, prompt: str, size: str = "1024x1024") -> str:
         """图生图。image_path_or_url 可以是本地文件路径或 URL，由实现自行处理。"""
         raise NotImplementedError
+
+    def inpaint(self, image_path_or_url: str, mask_path: str, prompt: str, size: str = "1024x1024") -> str:
+        """局部重绘。默认退化为图生图；支持 mask 的 Provider 应覆盖此方法。"""
+        _ = mask_path
+        return self.image_to_image(image_path_or_url, prompt, size)

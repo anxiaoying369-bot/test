@@ -63,6 +63,26 @@ export function useMobileControl() {
 
   // ─── 通话录音记录 ───
 
+  async function syncRecordings(deviceId: string) {
+    try {
+      await invoke('mobile_sync_recordings', { deviceId });
+      lastError.value = '';
+    } catch (e) {
+      lastError.value = String(e);
+    }
+  }
+
+  async function adbSyncRecordings(deviceId: string) {
+    try {
+      const result = await invoke<string>('mobile_adb_sync_recordings', { deviceId });
+      console.log('ADB Sync Result:', result);
+      lastError.value = '';
+      await refreshRecordings(deviceId);
+    } catch (e) {
+      lastError.value = `ADB 同步失败: ${e}`;
+    }
+  }
+
   async function refreshRecordings(deviceId?: string) {
     try {
       recordings.value = await invoke<RecordingItem[]>('mobile_list_recordings', {
@@ -185,6 +205,8 @@ export function useMobileControl() {
     init,
     refreshDevices,
     refreshRecordings,
+    syncRecordings,
+    adbSyncRecordings,
     recordingUrl,
     deleteRecording,
     startStream,
