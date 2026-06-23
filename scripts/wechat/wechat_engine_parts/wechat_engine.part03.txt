@@ -1,0 +1,306 @@
+        if not md5:
+            return {"ok": False, "error": "无视频 md5"}
+        # 原视频可能在 video 下，也可能其它命名；放宽到整个 msg 目录搜 <md5>*.mp4
+        for pat in (os.path.join(self.account_dir, "msg", "video", "**", md5 + ".mp4"),
+                    os.path.join(self.account_dir, "msg", "**", md5 + "*.mp4")):
+            hits = glob.glob(pat, recursive=True)
+            if hits:
+                return {"ok": True, "path": hits[0]}
+        return {"ok": False, "error": "原视频尚未下载到本地，请先在微信里播放一次该视频后再试"}
+
+    def resolve_session(self, keyword):
+        kw = (keyword or "").strip()
+        for s in self.get_sessions()["sessions"]:
+            if kw and kw in (s["displayName"] or ""):
+                return {"found": True, "sessionId": s["username"], "displayName": s["displayName"]}
+        return {"found": False}
+
+
+# ---------------------------------------------------------------------------
+# 账号目录自动发现
+# ---------------------------------------------------------------------------
+def discover_accounts():
+    home = os.path.expanduser("~")
+    roots = []
+    if sys.platform == "darwin":
+        roots.append(os.path.join(home, "Library", "Containers", "com.tencent.xinWeChat",
+                                  "Data", "Documents", "xwechat_files"))
+        roots.append(os.path.join(home, "Documents", "xwechat_files"))
+    elif sys.platform == "win32":
+        roots.append(os.path.join(home, "Documents", "xwechat_files"))
+        if os.environ.get("USERPROFILE"):
+            roots.append(os.path.join(os.environ["USERPROFILE"], "Documents", "xwechat_files"))
+    else:
+        roots.append(os.path.join(home, "Documents", "xwechat_files"))
+
+    seen, accounts = set(), []
+    for root in roots:
+        if root in seen or not os.path.isdir(root):
+            continue
+        seen.add(root)
+        for entry in os.listdir(root):
+            full = os.path.join(root, entry)
+            if not os.path.isdir(full):
+                continue
+            has_db = os.path.isdir(os.path.join(full, "db_storage"))
+            if not has_db:
+                continue
+            has_session = (
+                os.path.exists(os.path.join(full, "db_storage", "session", "session.db"))
+                or os.path.exists(os.path.join(full, "db_storage", "session.db"))
+            )
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                mtime = 0
+            accounts.append({"accountDir": full, "wxid": entry, "hasSession": has_session, "mtime": mtime})
+    accounts.sort(key=lambda a: (not a["hasSession"], -a["mtime"]))
+    return accounts
+
+
+# ---------------------------------------------------------------------------
+# 密钥自动提取
+# ---------------------------------------------------------------------------
+def _resources_root():
+    return os.environ.get("WCDB_RESOURCES_PATH") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "src-tauri", "resources", "wechat")
+
+
+def get_key_mac(timeout_ms=180000):
+    root = _resources_root()
+    base = os.path.join(root, "key", "macos", "universal")
+    helper = os.path.join(base, "xkey_helper")
+    if not os.path.exists(helper):
+        return {"success": False, "error": "xkey_helper 未找到: " + helper}
+    # SIP 检查
+    try:
+        sip = subprocess.run(["/usr/bin/csrutil", "status"], capture_output=True, text=True, timeout=10)
+        if "enabled" in sip.stdout.lower():
+            return {"success": False, "error": "SIP（系统完整性保护）已开启，需进入恢复模式执行 csrutil disable 后重试。"}
+    except Exception:
+        pass
+    # 找微信 pid
+    pid = 0
+    for args in (["/usr/bin/pgrep", "-x", "WeChat"],
+                 ["/usr/bin/pgrep", "-f", "WeChat.app/Contents/MacOS/WeChat"]):
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=10)
+            ids = [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+            if ids:
+                pid = max(ids)
+                break
+        except Exception:
+            pass
+    if not pid:
+        return {"success": False, "error": "未找到微信进程，请先启动并登录微信（4.0+）"}
+
+    wait_ms = max(timeout_ms, 30000)
+    timeout_sec = wait_ms // 1000 + 30
+    artifacts = [os.path.join(base, n) for n in
+                 ("xkey_helper", "image_scan_helper", "xkey_helper_macos", "libwx_key.dylib")
+                 if os.path.exists(os.path.join(base, n))]
+
+    def sq(p):
+        return "'" + p.replace("'", "'\\''") + "'"
+
+    chmod = ("/bin/chmod +x " + " ".join(sq(a) for a in artifacts)) if artifacts else ""
+    run = "%s %d %d" % (sq(helper), pid, wait_ms)
+    priv = (chmod + " && " + run) if chmod else run
+    script_lines = [
+        "set cmd to " + json.dumps(priv),
+        "set timeoutSec to %d" % timeout_sec,
+        "try",
+        "with timeout of timeoutSec seconds",
+        'set outText to do shell script (cmd & " 2>&1") with administrator privileges',
+        "end timeout",
+        'return "WF_OK::" & outText',
+        "on error errMsg number errNum",
+        'return "WF_ERR::" & errNum & "::" & errMsg',
+        "end try",
+    ]
+    cmd = ["/usr/bin/osascript"]
+    for l in script_lines:
+        cmd += ["-e", l]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=wait_ms / 1000 + 20)
+        out = r.stdout
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "提取超时，请保持微信前台并操作一次会话后重试。"}
+    joined = "\n".join(l.strip() for l in out.splitlines() if l.strip())
+    if joined.startswith("WF_ERR::"):
+        parts = joined.split("::")
+        if parts[1] == "-128" or "User canceled" in (parts[2] if len(parts) > 2 else ""):
+            return {"success": False, "error": "已取消管理员授权"}
+        return {"success": False, "error": "helper 执行失败：" + (parts[2] if len(parts) > 2 else "unknown")}
+    body = joined[len("WF_OK::"):] if joined.startswith("WF_OK::") else joined
+    # 解析 JSON {success,key} 或裸 64 位 hex
+    key = None
+    for m in re.finditer(r"\{[^{}]*\}", body):
+        try:
+            obj = json.loads(m.group(0))
+        except Exception:
+            continue
+        if obj.get("success") and isinstance(obj.get("key"), str):
+            key = obj["key"]
+            break
+        if isinstance(obj.get("result"), str):
+            key = obj["result"]
+    if not key:
+        m = re.search(r"\b[0-9a-fA-F]{64}\b", body)
+        key = m.group(0) if m else None
+    if key and len(key) == 64:
+        return {"success": True, "key": key}
+    return {"success": False, "error": "未能从 helper 输出解析出密钥。"}
+
+
+def get_key_win(timeout_ms=120000):
+    import ctypes
+    root = _resources_root()
+    arch = "arm64" if "arm" in (os.environ.get("PROCESSOR_ARCHITECTURE", "").lower()) else "x64"
+    for cand in (os.path.join(root, "key", "win32", arch, "wx_key.dll"),
+                 os.path.join(root, "key", "win32", "x64", "wx_key.dll")):
+        if os.path.exists(cand):
+            dll_path = cand
+            break
+    else:
+        return {"success": False, "error": "wx_key.dll 未找到"}
+    # 找微信 pid
+    pid = 0
+    for name in ("Weixin.exe", "WeChat.exe"):
+        try:
+            r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq " + name, "/FO", "CSV", "/NH"],
+                               capture_output=True, text=True, timeout=10)
+            for line in r.stdout.splitlines():
+                m = re.match(r'^"[^"]+","(\d+)"', line)
+                if m:
+                    pid = max(pid, int(m.group(1)))
+        except Exception:
+            pass
+    if not pid:
+        return {"success": False, "error": "未找到微信进程，请先启动并登录微信（4.0+）"}
+    try:
+        lib = ctypes.WinDLL(dll_path)
+        lib.InitializeHook.restype = ctypes.c_bool
+        lib.InitializeHook.argtypes = [ctypes.c_uint32]
+        lib.PollKeyData.restype = ctypes.c_bool
+        lib.PollKeyData.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        lib.CleanupHook.restype = ctypes.c_bool
+        if not lib.InitializeHook(pid):
+            return {"success": False, "error": "InitializeHook 失败：请以管理员身份运行并关闭安全软件拦截。"}
+        try:
+            deadline = time.time() + max(timeout_ms, 30000) / 1000
+            buf = ctypes.create_string_buffer(128)
+            while time.time() < deadline:
+                if lib.PollKeyData(buf, 128):
+                    key = buf.value.decode("utf-8", "ignore").strip()
+                    if len(key) == 64:
+                        return {"success": True, "key": key}
+                time.sleep(0.12)
+            return {"success": False, "error": "获取密钥超时。"}
+        finally:
+            lib.CleanupHook()
+    except Exception as e:
+        return {"success": False, "error": "加载 wx_key.dll 失败：%s" % e}
+
+
+def get_key(timeout_ms=180000):
+    account = discover_accounts()
+    best = account[0] if account else None
+    if sys.platform == "darwin":
+        res = get_key_mac(timeout_ms)
+    elif sys.platform == "win32":
+        res = get_key_win(timeout_ms)
+    else:
+        res = {"success": False, "error": "当前平台暂不支持自动提取密钥，请手动填写。"}
+    res["accountDir"] = best["accountDir"] if best else None
+    res["wxid"] = best["wxid"] if best else None
+    if res.get("success"):
+        res["hexKey"] = res.pop("key", None)
+    return res
+
+
+# ---------------------------------------------------------------------------
+# 主循环
+# ---------------------------------------------------------------------------
+def main():
+    engine = Engine()
+    log("ready; resources=" + _resources_root())
+    send({"id": 0, "result": {"ready": True}})
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except Exception as e:
+            log("invalid json:", str(e))
+            continue
+        rid = req.get("id")
+        typ = req.get("type")
+        try:
+            if typ == "open":
+                result = engine.open(req["accountDir"], req["hexKey"])
+            elif typ == "get_sessions":
+                result = engine.get_sessions()
+            elif typ == "get_contacts":
+                result = engine.get_contacts()
+            elif typ == "get_messages":
+                result = engine.get_messages(req["sessionId"], req.get("limit", 100), req.get("offset", 0))
+            elif typ == "get_new_messages":
+                result = engine.get_new_messages(req["sessionId"], req.get("minTime", 0), req.get("limit", 50))
+            elif typ == "resolve_session":
+                result = engine.resolve_session(req.get("keyword", ""))
+            elif typ == "get_voice":
+                result = engine.get_voice(req["sessionId"], req.get("svrId", 0),
+                                          req.get("localId", 0), req.get("createTime", 0))
+            elif typ == "get_voice_text":
+                result = engine.get_voice_text(req["sessionId"], req.get("svrId", 0),
+                                               req.get("localId", 0), req.get("createTime", 0))
+            elif typ == "check_stt_model":
+                stt = get_stt_helper()
+                result = {"ready": stt.is_model_ready() if stt else False}
+            elif typ == "download_stt_model":
+                stt = get_stt_helper()
+                if not stt:
+                    send({"id": rid, "result": {"ok": False, "error": "STT 模块加载失败"}})
+                    continue
+                
+                def _do_download(rid_inner):
+                    try:
+                        ok = stt.download_model()
+                        send({"id": rid_inner, "result": {"ok": ok}})
+                    except Exception as e:
+                        send({"id": rid_inner, "error": str(e)})
+                
+                threading.Thread(target=_do_download, args=(rid,), daemon=True).start()
+                continue
+            elif typ == "get_media":
+                result = engine.get_media(req["sessionId"], req.get("localId", 0),
+                                          req.get("localType", 0), req.get("svrId", 0),
+                                          req.get("createTime", 0))
+            elif typ == "get_image":
+                result = engine.get_image(req["sessionId"], req.get("localId", 0),
+                                          req.get("wantFull", False))
+            elif typ == "get_video":
+                result = engine.get_video_path(req["sessionId"], req.get("localId", 0))
+            elif typ == "get_key":
+                result = get_key(req.get("timeoutMs", 180000))
+            elif typ == "account_list":
+                result = {"accounts": discover_accounts()}
+            elif typ == "get_status":
+                result = {"connected": engine.dec is not None, "ownWxid": engine.own_wxid,
+                          "accountDir": engine.account_dir}
+            else:
+                send({"id": rid, "error": "unknown type: %s" % typ})
+                continue
+            send({"id": rid, "result": result})
+        except Exception as e:
+            import traceback
+            log("handle error:", traceback.format_exc())
+            send({"id": rid, "error": str(e)})
+
+
+if __name__ == "__main__":
+    main()

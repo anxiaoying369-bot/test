@@ -1,0 +1,450 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+微信 4.0+ 聊天读取引擎（完全独立，不依赖 WeFlow 的任何原生库）。
+
+为什么自己实现：WeFlow 的 libwcdb_api 带反盗版保护（InitProtection / api.weflow.top
+token / bundle id 校验），脱离其正版 App 加载会返回 -1006 拒绝工作。读取用户**自己**机器上
+**自己**的微信库是正当需求，所以这里用公开的 SQLCipher-v4 参数自行解密，不碰那套锁库。
+
+解密参数（已用 HMAC 实测确认，微信 4.0 mac）：
+  PBKDF2-HMAC-SHA512 / 256000 轮 / AES-256-CBC / 页 4096 / reserve 80
+  salt = 文件前 16 字节；mac_salt = salt 每字节 XOR 0x3a
+
+数据布局（<accountDir>/db_storage/）：
+  session/session.db   -> SessionTable（会话列表）
+  message/message_N.db -> Msg_<md5(username)>（每会话一张消息表），Name2Id（发送者映射）
+  contact/contact.db   -> contact（联系人：remark/nick_name/...）
+
+协议：stdin 每行一个 JSON 请求 {id,type,...}，stdout 每行一个 JSON 响应
+{id,result|error}；日志一律走 stderr。常驻进程，由 Rust commands/wechat.rs 拉起。
+
+支持的 type：
+  open / get_sessions / get_messages / get_new_messages / resolve_session /
+  get_key / get_status
+"""
+import sys
+import os
+import re
+import io
+import json
+import glob
+import time
+import wave
+import base64
+import hashlib
+import sqlite3
+import tempfile
+import threading
+import subprocess
+
+try:
+    from Crypto.Cipher import AES
+except Exception as e:  # pragma: no cover
+    sys.stderr.write("[wechat-engine] 缺少 pycryptodome: %s\n" % e)
+    raise
+
+# 动态加载 STT 助手
+STT_HELPER = None
+
+def get_stt_helper():
+    global STT_HELPER
+    if STT_HELPER is None:
+        try:
+            # 确保 scripts/wechat 目录在 sys.path 中，以便 import stt_helper
+            cur_dir = os.path.dirname(os.path.abspath(__file__))
+            if cur_dir not in sys.path:
+                sys.path.append(cur_dir)
+            import stt_helper
+            STT_HELPER = stt_helper.STTHelper.get_instance()
+        except ImportError as e:
+            log(f"stt_helper import failed: {e}")
+    return STT_HELPER
+
+
+PAGE = 4096
+ITER = 256000
+RESERVE = 80  # IV(16) + HMAC-SHA512(64)
+SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+def log(*args):
+    sys.stderr.write("[wechat-engine] " + " ".join(str(a) for a in args) + "\n")
+    sys.stderr.flush()
+
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+# ---------------------------------------------------------------------------
+# 消息类型 → 文本占位
+# ---------------------------------------------------------------------------
+TYPE_PLACEHOLDER = {
+    3: "[图片]",
+    34: "[语音]",
+    42: "[名片]",
+    43: "[视频]",
+    47: "[表情]",
+    48: "[位置]",
+    49: "[链接/文件]",
+    50: "[音视频通话]",
+    10000: "[系统消息]",
+    10002: "[系统消息]",
+}
+
+
+# 微信 4.0 图片加密 .dat 的 V2 头（magic）。
+V2_MAGIC = bytes([0x07, 0x08, 0x56, 0x32, 0x08, 0x07])
+
+
+def _img_magic_kind(b: bytes):
+    if b[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if b[:4] == b"\x89PNG":
+        return "image/png"
+    if b[:3] == b"GIF":
+        return "image/gif"
+    if b[:4] == b"RIFF":
+        return "image/webp"
+    if b[:4] == b"wxgf":
+        return "wxgf"
+    return None
+
+
+def clean_own_wxid(account_basename: str) -> str:
+    """从账号目录名推断自己的 wxid（wxid_xxx_yyyy -> wxid_xxx）。"""
+    name = account_basename.strip()
+    m = re.match(r"^(wxid_[^_]+)", name, re.I)
+    if m:
+        return m.group(1)
+    m = re.match(r"^(.+)_([a-zA-Z0-9]{4})$", name)
+    return m.group(1) if m else name
+
+
+class Decryptor:
+    """按 mtime 缓存的逐页解密器：把加密 db 解成明文 SQLite 临时文件后复用。"""
+
+    def __init__(self, key_hex: str, cache_dir: str):
+        self.key = bytes.fromhex(key_hex)
+        self.cache_dir = cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
+        # src_path -> (mtime, size, plain_path)
+        self._cache = {}
+
+    def verify(self, src: str) -> bool:
+        """用第 1 页 HMAC 校验 key 是否正确。"""
+        with open(src, "rb") as f:
+            page = f.read(PAGE)
+        if len(page) < PAGE:
+            return False
+        salt = page[:16]
+        enc_key = hashlib.pbkdf2_hmac("sha512", self.key, salt, ITER, 32)
+        mac_salt = bytes(b ^ 0x3A for b in salt)
+        mac_key = hashlib.pbkdf2_hmac("sha512", enc_key, mac_salt, 2, 32)
+        end = PAGE - RESERVE
+        body_iv = page[16:end + 16]
+        stored = page[end + 16:end + 16 + 64]
+        import hmac as _hmac
+        calc = _hmac.new(mac_key, body_iv + (1).to_bytes(4, "little"), hashlib.sha512).digest()
+        return calc == stored
+
+    def decrypt(self, src: str) -> str:
+        """返回 src 对应的明文 SQLite 文件路径（带 mtime 缓存）。"""
+        st = os.stat(src)
+        cached = self._cache.get(src)
+        if cached and cached[0] == st.st_mtime and cached[1] == st.st_size and os.path.exists(cached[2]):
+            return cached[2]
+
+        with open(src, "rb") as f:
+            data = f.read()
+        salt = data[:16]
+        enc_key = hashlib.pbkdf2_hmac("sha512", self.key, salt, ITER, 32)
+        out = bytearray()
+        n = len(data) // PAGE
+        for i in range(n):
+            pg = data[i * PAGE:(i + 1) * PAGE]
+            off = 16 if i == 0 else 0
+            iv = pg[PAGE - RESERVE:PAGE - RESERVE + 16]
+            try:
+                dec = AES.new(enc_key, AES.MODE_CBC, iv).decrypt(pg[off:PAGE - RESERVE])
+            except Exception:
+                dec = b"\x00" * (PAGE - RESERVE - off)
+            out += (SQLITE_HEADER + dec if i == 0 else dec)
+            out += pg[PAGE - RESERVE:]  # reserve 尾部原样保留
+
+        digest = hashlib.md5(src.encode("utf-8")).hexdigest()
+        plain = os.path.join(self.cache_dir, digest + ".db")
+        with open(plain, "wb") as f:
+            f.write(out)
+        self._cache[src] = (st.st_mtime, st.st_size, plain)
+        return plain
+
+    def open_ro(self, src: str) -> sqlite3.Connection:
+        plain = self.decrypt(src)
+        con = sqlite3.connect(plain)
+        con.text_factory = lambda b: b.decode("utf-8", "replace") if isinstance(b, bytes) else b
+        return con
+
+
+class Engine:
+    def __init__(self):
+        self.account_dir = None
+        self.key_hex = None
+        self.own_wxid = None
+        self.dec = None
+        self.cache_dir = os.path.join(
+            os.environ.get("WECHAT_USER_DATA", os.path.join(tempfile.gettempdir(), "autocast_wechat")),
+            "plain",
+        )
+        # username -> (message_db_path, table_name)
+        self._msg_loc = {}
+        self._contact_cache = None  # (mtime, dict)
+        self._lock = threading.Lock()
+
+    # ---- 路径 ----
+    @property
+    def storage(self):
+        return os.path.join(self.account_dir, "db_storage")
+
+    def session_db(self):
+        return os.path.join(self.storage, "session", "session.db")
+
+    def contact_db(self):
+        return os.path.join(self.storage, "contact", "contact.db")
+
+    def message_dbs(self):
+        return sorted(glob.glob(os.path.join(self.storage, "message", "message_*.db")))
+
+    # ---- 连接 ----
+    def open(self, account_dir, hex_key):
+        self.account_dir = account_dir.rstrip("/\\")
+        self.key_hex = hex_key.strip()
+        self.own_wxid = clean_own_wxid(os.path.basename(self.account_dir))
+        self.dec = Decryptor(self.key_hex, self.cache_dir)
+        self._msg_loc.clear()
+        self._contact_cache = None
+        sdb = self.session_db()
+        if not os.path.exists(sdb):
+            return {"success": False, "error": "未找到 session.db: " + sdb}
+        if not self.dec.verify(sdb):
+            return {"success": False, "error": "密钥校验失败（HMAC 不匹配），密钥或账号目录不正确"}
+        return {"success": True, "ownWxid": self.own_wxid}
+
+    # ---- 联系人显示名 ----
+    def contact_map(self):
+        cdb = self.contact_db()
+        st = os.stat(cdb)
+        if self._contact_cache and self._contact_cache[0] == st.st_mtime:
+            return self._contact_cache[1]
+        m = {}
+        con = self.dec.open_ro(cdb)
+        try:
+            for username, remark, nick in con.execute(
+                "SELECT username, remark, nick_name FROM contact"
+            ):
+                name = (remark or "").strip() or (nick or "").strip() or username
+                m[username] = name
+        finally:
+            con.close()
+        self._contact_cache = (st.st_mtime, m)
+        return m
+
+    def display_name(self, username, cmap=None):
+        cmap = cmap if cmap is not None else self.contact_map()
+        return cmap.get(username, username)
+
+    # ---- 会话列表 ----
+    def get_sessions(self):
+        con = self.dec.open_ro(self.session_db())
+        cmap = self.contact_map()
+        out = []
+        try:
+            rows = con.execute(
+                "SELECT username, summary, last_timestamp, sort_timestamp, unread_count, "
+                "last_sender_display_name FROM SessionTable ORDER BY sort_timestamp DESC"
+            ).fetchall()
+        finally:
+            con.close()
+        for username, summary, last_ts, sort_ts, unread, last_sender in rows:
+            if not username:
+                continue
+            is_group = username.endswith("@chatroom")
+            out.append({
+                "username": username,
+                "displayName": self.display_name(username, cmap),
+                "summary": summary or "",
+                "lastTimestamp": last_ts or sort_ts or 0,
+                "unreadCount": unread or 0,
+                "isGroup": is_group,
+            })
+        return {"sessions": out}
+
+    # ---- 通讯录（好友 + 群聊） ----
+    def get_contacts(self):
+        """从 contact.db 读好友与群聊（不是最近会话）。
+        分类依据（已实测）：local_type=1 且非 gh_/非群 = 好友；username 以 @chatroom 结尾 = 群聊；
+        local_type=3 是群成员/陌生人，排除；gh_ 公众号排除。"""
+        con = self.dec.open_ro(self.contact_db())
+        friends, groups = [], []
+        try:
+            rows = con.execute(
+                "SELECT username, local_type, remark, nick_name, alias FROM contact"
+            ).fetchall()
+        finally:
+            con.close()
+        for username, ltype, remark, nick, alias in rows:
+            if not username:
+                continue
+            if username.endswith("@chatroom"):
+                name = (nick or "").strip() or "群聊"
+                groups.append({
+                    "username": username, "displayName": name,
+                    "isGroup": True, "category": "group",
+                })
+            elif ltype == 1 and not username.startswith("gh_"):
+                name = ((remark or "").strip() or (nick or "").strip()
+                        or (alias or "").strip() or username)
+                friends.append({
+                    "username": username, "displayName": name,
+                    "isGroup": False, "category": "friend",
+                })
+        friends.sort(key=lambda c: c["displayName"])
+        groups.sort(key=lambda c: c["displayName"])
+        return {
+            "contacts": friends + groups,
+            "friendCount": len(friends),
+            "groupCount": len(groups),
+        }
+
+    # ---- 定位某会话的消息表 ----
+    def locate_message_table(self, username):
+        if username in self._msg_loc:
+            loc = self._msg_loc[username]
+            if loc and os.path.exists(loc[0]):
+                return loc
+        table = "Msg_" + hashlib.md5(username.encode("utf-8")).hexdigest()
+        for mdb in self.message_dbs():
+            con = self.dec.open_ro(mdb)
+            try:
+                hit = con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone()
+            finally:
+                con.close()
+            if hit:
+                self._msg_loc[username] = (mdb, table)
+                return mdb, table
+        self._msg_loc[username] = None
+        return None
+
+    def _name2id(self, con):
+        return {rid: uname for rid, uname in con.execute("SELECT rowid, user_name FROM Name2Id")}
+
+    @staticmethod
+    def _content_text(content):
+        """message_content 可能是明文 str，也可能是 WCDB zstd 压缩的 BLOB（魔数 28 b5 2f fd）。"""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (bytes, bytearray)):
+            b = bytes(content)
+            if b[:4] == b"\x28\xb5\x2f\xfd":  # zstd magic
+                try:
+                    import zstandard as zstd
+                    b = zstd.ZstdDecompressor().decompress(b, max_output_size=16 << 20)
+                except Exception:
+                    pass
+            return b.decode("utf-8", "replace")
+        return ""
+
+    def _row_to_msg(self, row, n2i, is_group, cmap):
+        local_id, server_id, ltype, sort_seq, sender_id, create_time, content = row
+        sender = n2i.get(sender_id, "")
+        text = self._content_text(content)
+        # 群聊文本前缀 "wxid:\n正文"
+        if is_group and ltype == 1 and text:
+            idx = text.find(":\n")
+            if 0 < idx < 64:
+                sender = sender or text[:idx]
+                text = text[idx + 2:]
+        if ltype != 1:
+            text = TYPE_PLACEHOLDER.get(ltype, "[消息]")
+        return {
+            "localId": local_id,
+            "svrId": server_id,
+            "localType": ltype,
+            "createTime": create_time,
+            "senderUsername": sender,
+            "senderName": self.display_name(sender, cmap) if sender else "",
+            "content": text,
+            "isSender": 1 if sender and sender == self.own_wxid else 0,
+        }
+
+    def get_messages(self, username, limit=100, offset=0):
+        loc = self.locate_message_table(username)
+        if not loc:
+            return {"messages": []}
+        mdb, table = loc
+        is_group = username.endswith("@chatroom")
+        cmap = self.contact_map()
+        con = self.dec.open_ro(mdb)
+        try:
+            n2i = self._name2id(con)
+            rows = con.execute(
+                f"SELECT local_id, server_id, local_type, sort_seq, real_sender_id, "
+                f"create_time, message_content FROM '{table}' "
+                f"ORDER BY sort_seq DESC LIMIT ? OFFSET ?", (limit, offset)
+            ).fetchall()
+        finally:
+            con.close()
+        msgs = [self._row_to_msg(r, n2i, is_group, cmap) for r in rows]
+        return {"messages": msgs}
+
+    def get_new_messages(self, username, min_time, limit=50):
+        loc = self.locate_message_table(username)
+        if not loc:
+            return {"messages": []}
+        mdb, table = loc
+        is_group = username.endswith("@chatroom")
+        cmap = self.contact_map()
+        con = self.dec.open_ro(mdb)
+        try:
+            n2i = self._name2id(con)
+            rows = con.execute(
+                f"SELECT local_id, server_id, local_type, sort_seq, real_sender_id, "
+                f"create_time, message_content FROM '{table}' "
+                f"WHERE create_time > ? ORDER BY create_time ASC LIMIT ?", (min_time, limit)
+            ).fetchall()
+        finally:
+            con.close()
+        msgs = [self._row_to_msg(r, n2i, is_group, cmap) for r in rows]
+        return {"messages": msgs}
+
+    # ---- 语音（SILK_V3 → WAV）----
+    def media_dbs(self):
+        return sorted(glob.glob(os.path.join(self.storage, "message", "media_*.db")))
+
+    @staticmethod
+    def _silk_to_wav(silk: bytes) -> bytes:
+        import pilk
+        # 微信 voice_data 常带 1 字节前缀（\x02），定位到 #!SILK_V3 头
+        idx = silk.find(b"#!SILK_V3")
+        if idx > 0:
+            silk = silk[idx:]
+        sp = tempfile.mktemp(suffix=".silk")
+        pcmp = tempfile.mktemp(suffix=".pcm")
+        try:
+            with open(sp, "wb") as f:
+                f.write(silk)
+            pilk.decode(sp, pcmp, pcm_rate=24000)
+            with open(pcmp, "rb") as f:
+                pcm = f.read()
+        finally:
+            for x in (sp, pcmp):
+                try:
+                    os.remove(x)
+                except OSError:
+                    pass
+        buf = io.BytesIO()
+        w = wave.open(buf, "wb")

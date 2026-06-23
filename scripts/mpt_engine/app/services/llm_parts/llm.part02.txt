@@ -1,0 +1,450 @@
+                    )
+
+                response = litellm.completion(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    drop_params=True,
+                )
+
+                if not response:
+                    raise ValueError(f"[{llm_provider}] returned empty response")
+                if not getattr(response, "choices", None):
+                    raise ValueError(f"[{llm_provider}] returned empty response")
+
+                return _extract_chat_completion_text(response, llm_provider)
+
+            if llm_provider == "azure":
+                # Azure OpenAI SDK 使用 `azure_endpoint` 和 `api_version` 生成专用请求地址，
+                # 不能继续复用下面普通 OpenAI-compatible 的 `base_url` 初始化逻辑。
+                # 这里在 Azure 分支内完成请求并立即返回，避免客户端被后续 fallback
+                # 覆盖，导致用户配置的 Azure 凭证通过校验但实际请求没有被使用。
+                logger.info(f"requesting azure chat completion, model: {model_name}")
+                client = AzureOpenAI(
+                    api_key=api_key,
+                    api_version=api_version,
+                    azure_endpoint=base_url,
+                )
+                response = client.chat.completions.create(
+                    model=model_name, messages=[{"role": "user", "content": prompt}]
+                )
+                if response:
+                    if isinstance(response, ChatCompletion):
+                        return _extract_chat_completion_text(response, llm_provider)
+                    else:
+                        raise Exception(
+                            f'[{llm_provider}] returned an invalid response: "{response}", please check your network '
+                            f"connection and try again."
+                        )
+                else:
+                    raise Exception(
+                        f"[{llm_provider}] returned an empty response, please check your network connection and try again."
+                    )
+
+            if llm_provider == "modelscope":
+                content = ''
+                client = OpenAI(
+                    api_key=api_key,
+                    base_url=base_url,
+                )
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    extra_body={"enable_thinking": False},
+                    stream=True
+                )
+                if response:
+                    for chunk in response:
+                        if not chunk.choices:
+                            continue
+                        delta = chunk.choices[0].delta
+                        if delta and delta.content:
+                            content += delta.content
+                    
+                    if not content.strip():
+                        raise ValueError("Empty content in stream response")
+                    
+                    return _normalize_text_response(content, llm_provider)
+                else:
+                    raise Exception(f"[{llm_provider}] returned an empty response")
+
+            else:
+                client = OpenAI(
+                    api_key=api_key,
+                    base_url=base_url,
+                )
+
+            response = client.chat.completions.create(
+                model=model_name, messages=[{"role": "user", "content": prompt}]
+            )
+            if response:
+                if isinstance(response, ChatCompletion):
+                    return _extract_chat_completion_text(response, llm_provider)
+                else:
+                    raise Exception(
+                        f'[{llm_provider}] returned an invalid response: "{response}", please check your network '
+                        f"connection and try again."
+                    )
+            else:
+                raise Exception(
+                    f"[{llm_provider}] returned an empty response, please check your network connection and try again."
+                )
+
+        return _normalize_text_response(content, llm_provider)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+def _limit_script_text(text: str | None, max_length: int, field_name: str) -> str:
+    value = (text or "").strip()
+    if len(value) <= max_length:
+        return value
+
+    # API 层已经用 Pydantic 做长度校验；这里继续兜底，是为了保护
+    # WebUI 或内部服务直接调用 generate_script 时不会把超长提示词发送给模型，
+    # 避免 token 成本异常和请求失败。
+    logger.warning(
+        f"{field_name} is too long and will be truncated to {max_length} characters."
+    )
+    return value[:max_length]
+
+
+def _normalize_script_paragraph_number(paragraph_number: int | None) -> int:
+    try:
+        value = int(paragraph_number or MIN_SCRIPT_PARAGRAPH_NUMBER)
+    except (TypeError, ValueError):
+        value = MIN_SCRIPT_PARAGRAPH_NUMBER
+
+    if value < MIN_SCRIPT_PARAGRAPH_NUMBER or value > MAX_SCRIPT_PARAGRAPH_NUMBER:
+        # WebUI 和 API 都会限制范围；这里兜底处理内部调用，避免异常参数直接扩大
+        # LLM 生成成本或生成空结果。
+        logger.warning(
+            "script paragraph_number is out of range and will be clamped: "
+            f"{value}"
+        )
+        return max(MIN_SCRIPT_PARAGRAPH_NUMBER, min(value, MAX_SCRIPT_PARAGRAPH_NUMBER))
+
+    return value
+
+
+def build_script_prompt(
+    video_subject: str,
+    language: str = "",
+    paragraph_number: int = 1,
+    video_script_prompt: str = "",
+    custom_system_prompt: str = "",
+) -> str:
+    paragraph_number = _normalize_script_paragraph_number(paragraph_number)
+    video_script_prompt = _limit_script_text(
+        video_script_prompt, MAX_SCRIPT_PROMPT_LENGTH, "video_script_prompt"
+    )
+    custom_system_prompt = _limit_script_text(
+        custom_system_prompt, MAX_SCRIPT_SYSTEM_PROMPT_LENGTH, "custom_system_prompt"
+    )
+
+    # 将“脚本生成规则”和“运行时上下文”分开拼接。这样高级用户即使覆盖默认
+    # system prompt，也不会漏掉视频主题、语言、段落数这些每次生成都必须带上的参数。
+    prompt = custom_system_prompt or DEFAULT_SCRIPT_SYSTEM_PROMPT
+    prompt += f"""
+
+# Initialization:
+- video subject: {video_subject}
+- number of paragraphs: {paragraph_number}
+""".rstrip()
+    if language:
+        prompt += f"\n- language: {language}"
+    if video_script_prompt:
+        prompt += f"""
+
+# Additional User Requirements:
+{video_script_prompt}
+""".rstrip()
+
+    return prompt
+
+
+def generate_script(
+    video_subject: str,
+    language: str = "",
+    paragraph_number: int = 1,
+    video_script_prompt: str = "",
+    custom_system_prompt: str = "",
+) -> str:
+    paragraph_number = _normalize_script_paragraph_number(paragraph_number)
+    video_script_prompt = _limit_script_text(
+        video_script_prompt, MAX_SCRIPT_PROMPT_LENGTH, "video_script_prompt"
+    )
+    custom_system_prompt = _limit_script_text(
+        custom_system_prompt, MAX_SCRIPT_SYSTEM_PROMPT_LENGTH, "custom_system_prompt"
+    )
+    prompt = build_script_prompt(
+        video_subject=video_subject,
+        language=language,
+        paragraph_number=paragraph_number,
+        video_script_prompt=video_script_prompt,
+        custom_system_prompt=custom_system_prompt,
+    )
+    final_script = ""
+    logger.info(
+        "generating video script: "
+        f"subject={video_subject}, paragraph_number={paragraph_number}, "
+        f"has_custom_prompt={bool(video_script_prompt.strip())}, "
+        f"has_custom_system_prompt={bool(custom_system_prompt.strip())}"
+    )
+
+    def format_response(response):
+        # Clean the script
+        # Remove asterisks, hashes
+        response = response.replace("*", "")
+        response = response.replace("#", "")
+
+        # Remove markdown syntax
+        response = re.sub(r"\[.*\]", "", response)
+        response = re.sub(r"\(.*\)", "", response)
+
+        # Split the script into paragraphs
+        paragraphs = response.split("\n\n")
+
+        # Select the specified number of paragraphs
+        # selected_paragraphs = paragraphs[:paragraph_number]
+
+        # Join the selected paragraphs into a single string
+        return "\n\n".join(paragraphs)
+
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt)
+            if response:
+                final_script = format_response(response)
+            else:
+                logging.error("gpt returned an empty response")
+
+            # g4f may return an error message
+            if final_script and "当日额度已消耗完" in final_script:
+                raise ValueError(final_script)
+
+            if final_script:
+                break
+        except Exception as e:
+            logger.error(f"failed to generate script: {e}")
+
+        if i < _max_retries:
+            logger.warning(f"failed to generate video script, trying again... {i + 1}")
+    if "Error: " in final_script:
+        logger.error(f"failed to generate video script: {final_script}")
+    else:
+        logger.success(f"completed: \n{final_script}")
+    return final_script.strip()
+
+
+def generate_terms(video_subject: str, video_script: str, amount: int = 5) -> List[str]:
+    prompt = f"""
+# Role: Video Search Terms Generator
+
+## Goals:
+Generate {amount} search terms for stock videos, depending on the subject of a video.
+
+## Constrains:
+1. the search terms are to be returned as a json-array of strings.
+2. each search term should consist of 1-3 words, always add the main subject of the video.
+3. you must only return the json-array of strings. you must not return anything else. you must not return the script.
+4. the search terms must be related to the subject of the video.
+5. reply with english search terms only.
+
+## Output Example:
+["search term 1", "search term 2", "search term 3","search term 4","search term 5"]
+
+## Context:
+### Video Subject
+{video_subject}
+
+### Video Script
+{video_script}
+
+Please note that you must use English for generating video search terms; Chinese is not accepted.
+""".strip()
+
+    logger.info(f"subject: {video_subject}")
+
+    search_terms = []
+    response = ""
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt)
+            if "Error: " in response:
+                logger.error(f"failed to generate video script: {response}")
+                return response
+            search_terms = json.loads(response)
+            if not isinstance(search_terms, list) or not all(
+                isinstance(term, str) for term in search_terms
+            ):
+                logger.error("response is not a list of strings.")
+                continue
+
+        except Exception as e:
+            logger.warning(f"failed to generate video terms: {str(e)}")
+            if response:
+                match = re.search(r"\[.*]", response)
+                if match:
+                    try:
+                        search_terms = json.loads(match.group())
+                    except Exception as e:
+                        # 这里保留重试流程，但必须记录 LLM 返回的非标准 JSON，
+                        # 否则后续排查搜索词为空时无法定位
+                        # 是模型格式问题还是解析逻辑问题。
+                        logger.warning(f"failed to generate video terms: {str(e)}")
+
+        if search_terms and len(search_terms) > 0:
+            break
+        if i < _max_retries:
+            logger.warning(f"failed to generate video terms, trying again... {i + 1}")
+
+    logger.success(f"completed: \n{search_terms}")
+    return search_terms
+
+
+# =============================================================================
+# Social publishing metadata
+#
+# 根据视频主题和脚本生成发布到短视频平台时常用的 title、caption 和 hashtags。
+# 这块能力只复用现有 LLM provider，不接入任何外部发布服务，也不影响视频生成主链路。
+# =============================================================================
+
+# 不同平台的文案长度和 hashtag 数量偏好不同。这里使用保守上限，避免模型返回
+# 过长内容后调用方还需要二次裁剪。
+SOCIAL_PLATFORMS = {
+    "tiktok": {"title_max": 100, "caption_max": 2200, "hashtag_count": 5},
+    "youtube_shorts": {"title_max": 100, "caption_max": 5000, "hashtag_count": 3},
+    "instagram_reels": {"title_max": 125, "caption_max": 2200, "hashtag_count": 8},
+    "facebook_reels": {"title_max": 125, "caption_max": 2200, "hashtag_count": 5},
+}
+DEFAULT_SOCIAL_PLATFORM = "tiktok"
+DEFAULT_SOCIAL_LANGUAGE = "auto"
+MAX_SOCIAL_SUBJECT_LENGTH = 500
+MAX_SOCIAL_SCRIPT_LENGTH = 8000
+MAX_SOCIAL_LANGUAGE_LENGTH = 64
+
+SOCIAL_PLATFORM_LABELS = {
+    "tiktok": "TikTok",
+    "youtube_shorts": "YouTube Shorts",
+    "instagram_reels": "Instagram Reels",
+    "facebook_reels": "Facebook Reels",
+}
+
+# LLM 不可用时的通用兜底标签。这里故意不绑定某个国家或语种，保证 API
+# 对中文、英文、越南语等不同场景都能返回可用结构。
+DEFAULT_SOCIAL_HASHTAGS = [
+    "#shorts",
+    "#viral",
+    "#trending",
+    "#fyp",
+    "#video",
+    "#reels",
+    "#creator",
+    "#content",
+]
+
+
+def _resolve_social_platform(platform: str | None) -> str:
+    value = (platform or "").strip().lower()
+    return value if value in SOCIAL_PLATFORMS else DEFAULT_SOCIAL_PLATFORM
+
+
+def _normalize_social_language(language: str | None) -> str:
+    value = (language or DEFAULT_SOCIAL_LANGUAGE).strip()
+    if len(value) > MAX_SOCIAL_LANGUAGE_LENGTH:
+        logger.warning(
+            "social metadata language is too long and will be truncated to "
+            f"{MAX_SOCIAL_LANGUAGE_LENGTH} characters."
+        )
+        value = value[:MAX_SOCIAL_LANGUAGE_LENGTH]
+    return value or DEFAULT_SOCIAL_LANGUAGE
+
+
+def _limit_social_text(text: str | None, max_length: int, field_name: str) -> str:
+    value = (text or "").strip()
+    if len(value) <= max_length:
+        return value
+
+    # API 层会限制长度；这里继续兜底，是为了保护内部调用或未来 WebUI
+    # 直接调用时不会把超长内容发送给模型，避免 token 成本异常。
+    logger.warning(
+        f"{field_name} is too long and will be truncated to {max_length} characters."
+    )
+    return value[:max_length]
+
+
+def _social_language_instruction(language: str | None) -> str:
+    language = _normalize_social_language(language)
+    if language.lower() == DEFAULT_SOCIAL_LANGUAGE:
+        return (
+            "Use the same language as the video subject and script. If the subject "
+            "and script use different languages, prefer the script language."
+        )
+
+    return f'Write "title" and "caption" in this language: {language}.'
+
+
+def _clamp_text(text, max_length: int) -> str:
+    value = ("" if text is None else str(text)).strip()
+    if max_length and len(value) > max_length:
+        return value[:max_length].rstrip()
+    return value
+
+
+def _normalize_hashtags(raw, count: int) -> List[str]:
+    """
+    将 LLM 返回的 hashtag 统一整理成 `#tag` 格式。
+
+    LLM 可能返回字符串、数组、带空格的词组、重复标签或包含标点的内容。
+    这里集中清洗，可以让接口响应结构稳定，也避免平台发布时出现空标签、
+    重复标签或不符合常见格式的 hashtag。
+    """
+    if isinstance(raw, str):
+        candidates = re.split(r"[\s,]+", raw)
+    elif isinstance(raw, (list, tuple)):
+        # 数组里的每一项视为一个完整标签，因此 "du lich" 会变成
+        # "#dulich"，而不是拆成两个标签。
+        candidates = [str(entry) for entry in raw]
+    else:
+        candidates = []
+
+    seen = set()
+    result: List[str] = []
+    for item in candidates:
+        tag = re.sub(r"[^\w]", "", item, flags=re.UNICODE)
+        if not tag:
+            continue
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(f"#{tag}")
+        if count and len(result) >= count:
+            break
+    return result
+
+
+def build_social_metadata_prompt(
+    video_subject: str,
+    video_script: str = "",
+    language: str = DEFAULT_SOCIAL_LANGUAGE,
+    platform: str = DEFAULT_SOCIAL_PLATFORM,
+) -> str:
+    video_subject = _limit_social_text(
+        video_subject, MAX_SOCIAL_SUBJECT_LENGTH, "video_subject"
+    )
+    video_script = _limit_social_text(
+        video_script, MAX_SOCIAL_SCRIPT_LENGTH, "video_script"
+    )
+    platform = _resolve_social_platform(platform)
+    spec = SOCIAL_PLATFORMS[platform]
+    label = SOCIAL_PLATFORM_LABELS.get(platform, platform)
+    language_instruction = _social_language_instruction(language)
+
+    prompt = f"""
+# Role: Short-Video Social Media Copywriter
+
+## Goal
+Write engaging publishing metadata for a short video that will be posted on {label}.
+
+## Constraints

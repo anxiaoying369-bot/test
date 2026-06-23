@@ -1,0 +1,450 @@
+            )
+            speech_synthesizer.synthesis_word_boundary.connect(
+                speech_synthesizer_word_boundary_cb
+            )
+
+            result = speech_synthesizer.speak_text_async(text).get()
+            if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                logger.success(f"azure v2 speech synthesis succeeded: {voice_file}")
+                return sub_maker
+            elif result.reason == speechsdk.ResultReason.Canceled:
+                cancellation_details = result.cancellation_details
+                logger.error(
+                    f"azure v2 speech synthesis canceled: {cancellation_details.reason}"
+                )
+                if cancellation_details.reason == speechsdk.CancellationReason.Error:
+                    logger.error(
+                        f"azure v2 speech synthesis error: {cancellation_details.error_details}"
+                    )
+            logger.info(f"completed, output file: {voice_file}")
+        except Exception as e:
+            logger.error(f"failed, error: {str(e)}")
+    return None
+
+
+def gemini_tts(
+    text: str,
+    voice_name: str,
+    voice_rate: float,
+    voice_file: str,
+    voice_volume: float = 1.0,
+) -> Union[SubMaker, None]:
+    """
+    使用Google Gemini TTS生成语音
+    
+    Args:
+        text: 要转换的文本
+        voice_name: 语音名称，如 "Zephyr", "Puck" 等
+        voice_rate: 语音速率（当前未使用）
+        voice_file: 输出音频文件路径
+        voice_volume: 音频音量（当前未使用）
+        
+    Returns:
+        SubMaker对象或None
+    """
+    import base64
+    import io
+    from pydub import AudioSegment
+    import google.generativeai as genai
+    _configure_pydub_ffmpeg(AudioSegment)
+    
+    try:
+        # 配置Gemini API
+        api_key = config.app.get("gemini_api_key", "")
+        if not api_key:
+            logger.error("Gemini API key is not set")
+            return None
+            
+        genai.configure(api_key=api_key)
+        
+        logger.info(f"start, voice name: {voice_name}, try: 1")
+        
+        # 使用Gemini TTS API
+        model = genai.GenerativeModel("gemini-2.5-flash-preview-tts")
+        
+        generation_config = {
+            "response_modalities": ["AUDIO"],
+            "speech_config": {
+                "voice_config": {
+                    "prebuilt_voice_config": {
+                        "voice_name": voice_name
+                    }
+                }
+            }
+        }
+        
+        response = model.generate_content(
+            contents=text,
+            generation_config=generation_config
+        )
+        
+        # 检查响应
+        if not response.candidates or not response.candidates[0].content:
+            logger.error("No audio content received from Gemini TTS")
+            return None
+            
+        # 获取音频数据
+        audio_data = None
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, 'inline_data') and part.inline_data:
+                audio_data = part.inline_data.data
+                break
+                
+        if not audio_data:
+            logger.error("No audio data found in response")
+            return None
+            
+        # 音频数据已经是原始字节，不需要base64解码
+        if isinstance(audio_data, str):
+            # 如果是字符串，则需要base64解码
+            audio_bytes = base64.b64decode(audio_data)
+        else:
+            # 如果已经是字节，直接使用
+            audio_bytes = audio_data
+        
+        # 尝试不同的音频格式 - Gemini可能返回不同的格式
+        audio_segment = None
+        
+        # Gemini返回Linear PCM格式，按照文档参数解析
+        try:
+            audio_segment = AudioSegment.from_file(
+                io.BytesIO(audio_bytes), 
+                format="raw",
+                frame_rate=24000,  # Gemini TTS默认采样率
+                channels=1,        # 单声道
+                sample_width=2     # 16-bit
+            )
+        except Exception as e:
+            logger.error(f"Failed to load PCM audio: {e}")
+            return None
+        
+        # 导出为MP3格式
+        audio_segment.export(voice_file, format="mp3")
+        
+        logger.info(f"completed, output file: {voice_file}")
+        
+        # Gemini 拿不到 edge_tts 那种逐词边界事件，因此这里退回到
+        # 项目原有的 `subs/offset` 兼容结构，至少保证后续字幕与时长
+        # 计算链路可继续工作。
+        sub_maker = ensure_legacy_submaker_fields(SubMaker())
+        audio_duration = len(audio_segment) / 1000.0  # 转换为秒
+        return populate_legacy_submaker_with_full_text(
+            sub_maker=sub_maker,
+            text=text,
+            audio_duration_seconds=audio_duration,
+        )
+        
+    except ImportError as e:
+        logger.error(f"Missing required package for Gemini TTS: {str(e)}. Please install: pip install pydub")
+        return None
+    except Exception as e:
+        logger.error(f"Gemini TTS failed, error: {str(e)}")
+        return None
+
+
+def mimo_tts(
+    text: str,
+    voice_name: str,
+    voice_rate: float,
+    voice_file: str,
+    voice_volume: float = 1.0,
+) -> Union[SubMaker, None]:
+    """
+    使用 Xiaomi MiMo V2.5 TTS 生成语音。
+
+    官方接口兼容 OpenAI Chat Completions，但 TTS 有两个关键差异：
+    1. 待合成文本必须放在 `assistant` 消息里；
+    2. 音频以 `message.audio.data` 的 base64 字符串返回。
+
+    MiMo 当前没有返回逐词时间轴，因此这里复用项目已有的 legacy
+    SubMaker 兜底方案：根据最终音频时长和脚本文本断句生成字幕时间轴。
+    """
+    from pydub import AudioSegment
+
+    text = (text or "").strip()
+    if not text:
+        logger.error("MiMo TTS text is empty")
+        return None
+
+    api_key = config.app.get("mimo_api_key", "")
+    if not api_key:
+        logger.error("MiMo API key is not set")
+        return None
+
+    base_url = config.app.get("mimo_base_url", "") or _MIMO_DEFAULT_BASE_URL
+    model_name = config.app.get("mimo_tts_model_name", "") or _MIMO_DEFAULT_TTS_MODEL
+    style_prompt = config.app.get(
+        "mimo_tts_style_prompt",
+        "请用自然、清晰、适合短视频旁白的语气朗读。",
+    )
+
+    _configure_pydub_ffmpeg(AudioSegment)
+
+    for i in range(3):
+        try:
+            logger.info(
+                f"start mimo tts, model: {model_name}, voice: {voice_name}, try: {i + 1}"
+            )
+            ensure_file_path_exists(voice_file)
+
+            client = OpenAI(api_key=api_key, base_url=base_url)
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "user", "content": style_prompt},
+                    {"role": "assistant", "content": text},
+                ],
+                audio={
+                    "format": "wav",
+                    "voice": voice_name,
+                },
+            )
+
+            if not completion or not getattr(completion, "choices", None):
+                raise ValueError("MiMo TTS returned empty response")
+
+            message = completion.choices[0].message
+            audio = getattr(message, "audio", None)
+            audio_data = None
+            if isinstance(audio, dict):
+                audio_data = audio.get("data")
+            elif audio is not None:
+                audio_data = getattr(audio, "data", None)
+
+            if not audio_data:
+                raise ValueError("MiMo TTS returned empty audio data")
+
+            audio_bytes = base64.b64decode(audio_data)
+            audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="wav")
+
+            output_format = utils.parse_extension(voice_file) or "mp3"
+            if output_format == "wav":
+                with open(voice_file, "wb") as f:
+                    f.write(audio_bytes)
+            else:
+                audio_segment.export(voice_file, format=output_format)
+
+            audio_duration = len(audio_segment) / 1000.0
+            sub_maker = ensure_legacy_submaker_fields(SubMaker())
+            logger.success(f"mimo tts succeeded: {voice_file}")
+            logger.debug(
+                "mimo subtitle timeline generated, "
+                f"duration: {audio_duration:.3f}s, output_format: {output_format}"
+            )
+            return populate_legacy_submaker_with_full_text(
+                sub_maker=sub_maker,
+                text=text,
+                audio_duration_seconds=audio_duration,
+            )
+        except Exception as e:
+            logger.error(f"mimo tts failed: {str(e)}")
+
+    return None
+
+
+def _format_text(text: str) -> str:
+    """
+    清理字幕对齐前的脚本文本。
+
+    这里不能只在 LLM 生成阶段处理，因为用户也可能手动粘贴脚本，或通过
+    API 直接传入包含 Markdown 标记的文本。TTS 通常不会朗读 `---`、
+    `___`、`***` 这类分隔符行，也不会朗读 `_` 这种强调标记；如果字幕
+    对齐仍保留这些字符，`create_subtitle()` 会一直等待不存在的 cue，
+    最终导致字幕文件缺失并在 Whisper fallback 校正时补出全 0 时间轴。
+    """
+    text = text.replace("[", " ")
+    text = text.replace("]", " ")
+    text = text.replace("(", " ")
+    text = text.replace(")", " ")
+    text = text.replace("{", " ")
+    text = text.replace("}", " ")
+    return utils.normalize_script_for_subtitle_matching(text)
+
+
+def _build_subtitle_formatter():
+    """
+    返回统一的 SRT 行格式化函数。
+
+    这里单独拆成一个小工具，是为了让 edge_tts 7.x 的 cues 路径
+    和项目原有的 legacy `subs/offset` 路径共用同一套字幕落盘格式，
+    避免两套逻辑各自产生细微格式差异。
+    """
+
+    def formatter(idx: int, start_time: float, end_time: float, sub_text: str) -> str:
+        start_t = mktimestamp(start_time).replace(".", ",")
+        end_t = mktimestamp(end_time).replace(".", ",")
+        return f"{idx}\n{start_t} --> {end_t}\n{sub_text}\n"
+
+    return formatter
+
+
+# 阿拉伯语变音符号和 Tatweel 拉长符在 edge-tts 返回文本中可能出现，
+# 这些字符不影响语义，但会导致脚本文本和字幕 cue 字符串精确匹配失败。
+_ARABIC_DIACRITICS = re.compile("[\u0610-\u061A\u064B-\u065F\u0670\u0640\u06D6-\u06ED]")
+
+
+def _normalize_arabic(text: str) -> str:
+    """统一阿拉伯语常见字母变体，提升字幕 cue 与脚本行的匹配容错率。
+
+    edge-tts 对阿拉伯语可能返回与原脚本不同的字母形态，例如把 أ/إ/آ
+    归一成 ا，或者携带变音符号。这里仅在最后一层匹配兜底中使用，
+    不改变原始字幕文本，避免影响最终展示内容。
+    """
+    text = _ARABIC_DIACRITICS.sub("", text)
+    for src, dst in (
+        ("أإآٱ", "ا"),
+        ("ىئ", "ي"),
+        ("ة", "ه"),
+        ("ؤ", "و"),
+    ):
+        for ch in src:
+            text = text.replace(ch, dst)
+    return text
+
+
+def _match_script_line(script_lines: list[str], current_text: str, sub_index: int) -> str:
+    """
+    尝试把当前累计的字幕文本，与脚本中的某一条标准断句匹配起来。
+
+    这里复用了项目原有的“按标点拆脚本，再逐段比对”的思路：
+    1. 优先精确匹配；
+    2. 再做一次去标点和 Markdown `_` 格式符后的匹配；
+    3. 最后做一次阿拉伯语字符形态归一化匹配。
+
+    这样可以兼容：
+    - TTS 返回里可能缺失或单独拆分的标点；
+    - 中文场景下词边界和脚本文本不完全一一对应的情况。
+    """
+    if len(script_lines) <= sub_index:
+        return ""
+
+    target_line = script_lines[sub_index]
+    if current_text == target_line:
+        return target_line.strip()
+
+    current_text_normalized = re.sub(r"[_\W]+", "", current_text)
+    target_line_normalized = re.sub(r"[_\W]+", "", target_line)
+    if current_text_normalized == target_line_normalized:
+        return target_line.strip()
+
+    # 最后一层阿拉伯语容错：edge-tts 返回的字母形态、变音符号或 Tatweel
+    # 可能和脚本不同。只在常规匹配失败后归一化比较，非阿拉伯语文本不会受影响。
+    current_ar = re.sub(r"[_\W]+", "", _normalize_arabic(current_text))
+    target_ar = re.sub(r"[_\W]+", "", _normalize_arabic(target_line))
+    if current_ar and current_ar == target_ar:
+        return target_line.strip()
+
+    return ""
+
+
+def _write_subtitle_items(sub_items: list[str], subtitle_file: str) -> bool:
+    """
+    将已经聚合好的字幕段写入到 SRT 文件，并做一次基本可读性验证。
+
+    返回值：
+    - `True`：字幕文件成功落盘且可被 moviepy 解析；
+    - `False`：字幕文件写入或解析失败。
+    """
+    try:
+        ensure_file_path_exists(subtitle_file)
+        with open(subtitle_file, "w", encoding="utf-8") as file:
+            file.write("\n".join(sub_items) + "\n")
+
+        sbs = subtitles.file_to_subtitles(subtitle_file, encoding="utf-8")
+        duration = max([tb for ((ta, tb), txt) in sbs]) if sbs else 0
+        logger.info(
+            f"completed, subtitle file created: {subtitle_file}, duration: {duration}"
+        )
+        return True
+    except Exception as e:
+        logger.error(f"failed, error: {str(e)}")
+        if os.path.exists(subtitle_file):
+            os.remove(subtitle_file)
+        return False
+
+
+def _build_subtitle_items_from_edge_cues(
+    sub_maker: SubMaker, script_lines: list[str]
+) -> list[str]:
+    """
+    将 edge_tts 7.x 的细粒度 `cues` 聚合为按脚本断句的 SRT 片段。
+
+    背景：
+    edge_tts 7.x 的 `SubMaker.get_srt()` 更偏向逐词/逐短语的时间轴。
+    对英文做逐词高亮尚可，但中文短视频字幕如果直接照搬，会出现
+    “金钱 / 是 / 一种 / 社会 / 工具” 这种阅读体验很差的效果。
+
+    实现策略：
+    1. 逐个消费 cues 中的 `content`；
+    2. 累积成一段候选文本；
+    3. 当候选文本与脚本里当前目标断句匹配时，收敛为一个完整字幕段；
+    4. 使用第一条 cue 的开始时间和最后一条 cue 的结束时间，保证时间轴连续。
+    """
+    formatter = _build_subtitle_formatter()
+    sub_items = []
+    sub_index = 0
+    current_text = ""
+    current_start_time = None
+
+    for cue in sub_maker.cues:
+        cue_text = unescape(cue.content)
+        if current_start_time is None:
+            current_start_time = int(cue.start.total_seconds() * 10000000)
+
+        current_end_time = int(cue.end.total_seconds() * 10000000)
+        current_text += cue_text
+
+        matched_text = _match_script_line(script_lines, current_text, sub_index)
+        if not matched_text:
+            continue
+
+        sub_index += 1
+        sub_items.append(
+            formatter(
+                idx=sub_index,
+                start_time=current_start_time,
+                end_time=current_end_time,
+                sub_text=matched_text,
+            )
+        )
+        current_text = ""
+        current_start_time = None
+
+    if current_text.strip():
+        logger.warning(
+            f"edge cues still have unmatched text after aggregation: {current_text}"
+        )
+
+    return sub_items
+
+
+def _build_subtitle_items_from_legacy_submaker(
+    sub_maker: SubMaker, script_lines: list[str]
+) -> list[str]:
+    """
+    将项目原有 `subs/offset` 结构聚合为按脚本断句的 SRT 片段。
+
+    这部分保留了原来的核心思路，只是拆成独立函数，便于与 edge_tts 7.x
+    的 cues 聚合逻辑共享同一套断句匹配与落盘流程。
+    """
+    formatter = _build_subtitle_formatter()
+    start_time = -1.0
+    sub_items = []
+    sub_index = 0
+    sub_line = ""
+
+    legacy_offsets = getattr(sub_maker, "offset", [])
+    legacy_subs = getattr(sub_maker, "subs", [])
+    for _, (offset, sub) in enumerate(zip(legacy_offsets, legacy_subs)):
+        current_start_time, current_end_time = offset
+        if start_time < 0:
+            start_time = current_start_time
+
+        sub_line += unescape(sub)
+        matched_text = _match_script_line(script_lines, sub_line, sub_index)
+        if not matched_text:
+            continue
+
+        sub_index += 1
+        sub_items.append(
+            formatter(

@@ -1,0 +1,450 @@
+
+    current_offset = 0
+    for index, sentence in enumerate(sentences):
+        cleaned_sentence = sentence.strip()
+        if not cleaned_sentence:
+            continue
+
+        # 前面的句子按字符数比例分配时长，最后一句兜底吃掉剩余时长，
+        # 避免整数取整导致总时长丢失或字幕结束时间短于音频。
+        if index == len(sentences) - 1:
+            sentence_end = audio_duration_100ns
+        else:
+            sentence_chars = len(cleaned_sentence)
+            sentence_duration = max(
+                int(audio_duration_100ns * (sentence_chars / total_chars)),
+                1,
+            )
+            sentence_end = min(current_offset + sentence_duration, audio_duration_100ns)
+
+        sub_maker.subs.append(cleaned_sentence)
+        sub_maker.offset.append((current_offset, sentence_end))
+        current_offset = sentence_end
+
+    return sub_maker
+
+
+def create_edge_tts_communicate(
+    text: str, voice_name: str, rate_str: str
+) -> edge_tts.Communicate:
+    """
+    按当前已安装的 edge_tts 版本构造 Communicate 对象。
+
+    背景：
+    1. 主线代码已经升级到 edge_tts 7.x，并使用 `boundary` 参数拿到更细的边界事件；
+    2. 但 Windows 便携包如果更新失败，现场环境可能仍然停留在旧版 edge_tts；
+    3. 旧版 `Communicate.__init__()` 不接受 `boundary`，会直接抛出
+       `unexpected keyword argument 'boundary'`，导致整个 TTS 链路失败。
+
+    因此这里先根据构造函数签名探测当前版本支持的参数，再决定是否传入
+    `boundary`，让同一份代码同时兼容旧版和新版依赖。
+    """
+    communicate_kwargs = {"rate": rate_str}
+    communicate_signature = inspect.signature(edge_tts.Communicate)
+
+    if "boundary" in communicate_signature.parameters:
+        communicate_kwargs["boundary"] = "WordBoundary"
+
+    return edge_tts.Communicate(text, voice_name, **communicate_kwargs)
+
+
+def get_edge_tts_timeout_seconds() -> Union[float, None]:
+    """
+    获取 Azure TTS V1 单次流式请求的超时时间。
+
+    背景：
+    Edge consumer TTS 在网络不通、服务端限流、voice 与文本语言不匹配等场景下，
+    可能长时间卡在 `stream_sync()` 内部，日志只停留在 `start`。这里提供一个
+    默认超时，避免 WebUI 任务长期无反馈。
+
+    使用方式：
+    - 默认 30 秒，覆盖常见短视频脚本的首包等待时间；
+    - 如用户处于慢网络或代理环境，可在 `config.toml` 里设置
+      `edge_tts_timeout = 60`；
+    - 设置为 0 或负数表示显式禁用超时，保留完全向后兼容。
+    """
+    raw_timeout = config.app.get(
+        "edge_tts_timeout", _DEFAULT_EDGE_TTS_TIMEOUT_SECONDS
+    )
+    try:
+        timeout_seconds = float(raw_timeout)
+    except (TypeError, ValueError):
+        logger.warning(
+            "invalid edge_tts_timeout: "
+            f"{raw_timeout}, fallback to {_DEFAULT_EDGE_TTS_TIMEOUT_SECONDS}s"
+        )
+        timeout_seconds = _DEFAULT_EDGE_TTS_TIMEOUT_SECONDS
+
+    if timeout_seconds <= 0:
+        return None
+
+    return timeout_seconds
+
+
+def _stream_edge_tts_sync_with_timeout(
+    communicate, on_chunk, timeout_seconds: float
+) -> None:
+    """
+    带总超时地消费 edge_tts 7.x 的同步流。
+
+    实现原因：
+    `stream_sync()` 本身是阻塞迭代器，网络层卡住时主线程无法及时恢复。
+    这里把阻塞迭代放到 daemon 线程中，主线程通过 Queue 获取 chunk，
+    到达超时时间后直接抛出 TimeoutError，让外层重试和错误日志继续工作。
+
+    注意：
+    daemon 线程只作为兜底保护使用，最多随 Azure TTS V1 的 3 次重试产生
+    少量残留线程；进程退出时会自动回收。相比 WebUI 任务永久卡住，这是
+    更可控的失败模式。
+    """
+    stream_queue = queue.Queue()
+    done_marker = object()
+
+    def _produce_chunks():
+        try:
+            for chunk in communicate.stream_sync():
+                stream_queue.put(("chunk", chunk))
+            stream_queue.put(("done", done_marker))
+        except Exception as e:
+            stream_queue.put(("error", e))
+
+    thread = threading.Thread(target=_produce_chunks, daemon=True)
+    thread.start()
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise TimeoutError(
+                f"edge_tts stream timed out after {timeout_seconds:g}s"
+            )
+
+        try:
+            item_type, payload = stream_queue.get(
+                timeout=min(0.5, remaining_seconds)
+            )
+        except queue.Empty:
+            continue
+
+        if item_type == "chunk":
+            on_chunk(payload)
+        elif item_type == "error":
+            raise payload
+        elif item_type == "done":
+            return
+
+
+def stream_edge_tts_chunks(
+    communicate, on_chunk, timeout_seconds: Union[float, None] = None
+) -> None:
+    """
+    统一消费 edge_tts 的同步流和旧版异步流。
+
+    edge_tts 7.x 提供 `stream_sync()`，可以在同步函数里直接迭代；
+    更早的版本通常只有异步 `stream()`。为了让 `azure_tts_v1()` 在
+    旧依赖残留场景下仍能继续工作，这里统一做一层流式兼容。
+
+    Args:
+        communicate: edge_tts.Communicate 实例
+        on_chunk: 每拿到一个事件块时执行的回调
+        timeout_seconds: 单次流式请求总超时；为 None 时不启用超时。
+    """
+    if hasattr(communicate, "stream_sync"):
+        if timeout_seconds:
+            _stream_edge_tts_sync_with_timeout(
+                communicate, on_chunk, timeout_seconds
+            )
+            return
+
+        for chunk in communicate.stream_sync():
+            on_chunk(chunk)
+        return
+
+    if not hasattr(communicate, "stream"):
+        raise AttributeError("edge_tts communicate object has no stream method")
+
+    async def _consume_async_stream():
+        async for chunk in communicate.stream():
+            on_chunk(chunk)
+
+    # 这里显式创建独立事件循环，而不是复用外部上下文，目的是避免
+    # 在同步调用栈里遇到“当前线程没有事件循环”或跨线程复用循环的问题。
+    loop = asyncio.new_event_loop()
+    try:
+        if timeout_seconds:
+            loop.run_until_complete(
+                asyncio.wait_for(_consume_async_stream(), timeout=timeout_seconds)
+            )
+        else:
+            loop.run_until_complete(_consume_async_stream())
+    finally:
+        loop.close()
+
+
+def azure_tts_v1(
+    text: str, voice_name: str, voice_rate: float, voice_file: str
+) -> Union[SubMaker, None]:
+    voice_name = parse_voice_name(voice_name)
+    text = text.strip()
+    rate_str = convert_rate_to_percent(voice_rate)
+    for i in range(3):
+        try:
+            logger.info(f"start, voice name: {voice_name}, try: {i + 1}")
+
+            # 这里同时兼容 edge_tts 7.x 和旧版便携包里可能残留的老依赖：
+            # 1. 新版支持 `boundary` + `stream_sync()`
+            # 2. 旧版不支持 `boundary`，且通常只暴露异步 `stream()`
+            ensure_file_path_exists(voice_file)
+            communicate = create_edge_tts_communicate(text, voice_name, rate_str)
+            sub_maker = edge_tts.SubMaker()
+            timeout_seconds = get_edge_tts_timeout_seconds()
+
+            with open(voice_file, "wb") as file:
+                def _handle_chunk(chunk):
+                    chunk_type = chunk["type"]
+                    if chunk_type == "audio":
+                        file.write(chunk["data"])
+                    elif chunk_type in ["WordBoundary", "SentenceBoundary"]:
+                        # 无论来自 7.x 的同步流，还是旧版异步流，只要事件结构
+                        # 里仍有边界信息，就统一喂给 SubMaker，保证后续字幕链路
+                        # 仍然走项目现有逻辑。
+                        sub_maker.feed(chunk)
+
+                stream_edge_tts_chunks(
+                    communicate, _handle_chunk, timeout_seconds=timeout_seconds
+                )
+
+            if not sub_maker.get_srt():
+                logger.warning("failed, sub_maker.get_srt() is empty")
+                continue
+
+            logger.info(f"completed, output file: {voice_file}")
+            return sub_maker
+        except Exception as e:
+            logger.error(f"failed, error: {str(e)}")
+            # TTS 流式写入如果在首包前超时或网络异常，会留下 0 字节音频文件。
+            # 这种文件既不可播放，也可能误导后续排查，因此失败后只清理空文件；
+            # 如果已经写入了部分数据，则保留现场文件，便于分析服务端返回内容。
+            if os.path.exists(voice_file) and os.path.getsize(voice_file) == 0:
+                try:
+                    os.remove(voice_file)
+                except Exception as remove_error:
+                    logger.warning(
+                        "failed to remove empty tts file: "
+                        f"{voice_file}, error: {str(remove_error)}"
+                    )
+    return None
+
+
+def siliconflow_tts(
+    text: str,
+    model: str,
+    voice: str,
+    voice_rate: float,
+    voice_file: str,
+    voice_volume: float = 1.0,
+) -> Union[SubMaker, None]:
+    """
+    使用硅基流动的API生成语音
+
+    Args:
+        text: 要转换为语音的文本
+        model: 模型名称，如 "FunAudioLLM/CosyVoice2-0.5B"
+        voice: 声音名称，如 "FunAudioLLM/CosyVoice2-0.5B:alex"
+        voice_rate: 语音速度，范围[0.25, 4.0]
+        voice_file: 输出的音频文件路径
+        voice_volume: 语音音量，范围[0.6, 5.0]，需要转换为硅基流动的增益范围[-10, 10]
+
+    Returns:
+        SubMaker对象或None
+    """
+    text = text.strip()
+    api_key = config.siliconflow.get("api_key", "")
+
+    if not api_key:
+        logger.error("SiliconFlow API key is not set")
+        return None
+
+    # 将voice_volume转换为硅基流动的增益范围
+    # 默认voice_volume为1.0，对应gain为0
+    gain = voice_volume - 1.0
+    # 确保gain在[-10, 10]范围内
+    gain = max(-10, min(10, gain))
+
+    url = "https://api.siliconflow.cn/v1/audio/speech"
+
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "response_format": "mp3",
+        "sample_rate": 32000,
+        "stream": False,
+        "speed": voice_rate,
+        "gain": gain,
+    }
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    for i in range(3):  # 尝试3次
+        try:
+            logger.info(
+                f"start siliconflow tts, model: {model}, voice: {voice}, try: {i + 1}"
+            )
+
+            response = requests.post(url, json=payload, headers=headers)
+
+            if response.status_code == 200:
+                # 保存音频文件
+                with open(voice_file, "wb") as f:
+                    f.write(response.content)
+
+                # 这里仍然沿用项目原有的字幕结构，因此需要补齐旧字段。
+                sub_maker = ensure_legacy_submaker_fields(SubMaker())
+
+                # 获取音频文件的实际长度
+                try:
+                    # 尝试使用moviepy获取音频长度
+                    from moviepy import AudioFileClip
+
+                    audio_clip = AudioFileClip(voice_file)
+                    audio_duration = audio_clip.duration
+                    audio_clip.close()
+
+                    # 将音频长度转换为100纳秒单位（与edge_tts兼容）
+                    audio_duration_100ns = int(audio_duration * 10000000)
+
+                    # 使用文本分割来创建更准确的字幕
+                    # 将文本按标点符号分割成句子
+                    sentences = utils.split_string_by_punctuations(text)
+
+                    if sentences:
+                        # 计算每个句子的大致时长（按字符数比例分配）
+                        total_chars = sum(len(s) for s in sentences)
+                        char_duration = (
+                            audio_duration_100ns / total_chars if total_chars > 0 else 0
+                        )
+
+                        current_offset = 0
+                        for sentence in sentences:
+                            if not sentence.strip():
+                                continue
+
+                            # 计算当前句子的时长
+                            sentence_chars = len(sentence)
+                            sentence_duration = int(sentence_chars * char_duration)
+
+                            # 添加到SubMaker
+                            sub_maker.subs.append(sentence)
+                            sub_maker.offset.append(
+                                (current_offset, current_offset + sentence_duration)
+                            )
+
+                            # 更新偏移量
+                            current_offset += sentence_duration
+                    else:
+                        # 如果无法分割，则使用整个文本作为一个字幕
+                        sub_maker.subs = [text]
+                        sub_maker.offset = [(0, audio_duration_100ns)]
+
+                except Exception as e:
+                    logger.warning(f"Failed to create accurate subtitles: {str(e)}")
+                    # 回退到简单的字幕
+                    sub_maker.subs = [text]
+                    # 使用音频文件的实际长度，如果无法获取，则假设为10秒
+                    sub_maker.offset = [
+                        (
+                            0,
+                            audio_duration_100ns
+                            if "audio_duration_100ns" in locals()
+                            else 10000000,
+                        )
+                    ]
+
+                logger.success(f"siliconflow tts succeeded: {voice_file}")
+                logger.debug(
+                    "siliconflow subtitle timeline generated, "
+                    f"subs: {len(sub_maker.subs)}, offsets: {len(sub_maker.offset)}"
+                )
+                return sub_maker
+            else:
+                logger.error(
+                    f"siliconflow tts failed with status code {response.status_code}: {response.text}"
+                )
+        except Exception as e:
+            logger.error(f"siliconflow tts failed: {str(e)}")
+
+    return None
+
+
+def azure_tts_v2(text: str, voice_name: str, voice_file: str) -> Union[SubMaker, None]:
+    voice_name = is_azure_v2_voice(voice_name)
+    if not voice_name:
+        logger.error(f"invalid voice name: {voice_name}")
+        raise ValueError(f"invalid voice name: {voice_name}")
+    text = text.strip()
+
+    def _format_duration_to_offset(duration) -> int:
+        if isinstance(duration, str):
+            time_obj = datetime.strptime(duration, "%H:%M:%S.%f")
+            milliseconds = (
+                (time_obj.hour * 3600000)
+                + (time_obj.minute * 60000)
+                + (time_obj.second * 1000)
+                + (time_obj.microsecond // 1000)
+            )
+            return milliseconds * 10000
+
+        if isinstance(duration, int):
+            return duration
+
+        return 0
+
+    for i in range(3):
+        try:
+            logger.info(f"start, voice name: {voice_name}, try: {i + 1}")
+
+            import azure.cognitiveservices.speech as speechsdk
+
+            sub_maker = ensure_legacy_submaker_fields(SubMaker())
+
+            def speech_synthesizer_word_boundary_cb(evt: speechsdk.SessionEventArgs):
+                # print('WordBoundary event:')
+                # print('\tBoundaryType: {}'.format(evt.boundary_type))
+                # print('\tAudioOffset: {}ms'.format((evt.audio_offset + 5000)))
+                # print('\tDuration: {}'.format(evt.duration))
+                # print('\tText: {}'.format(evt.text))
+                # print('\tTextOffset: {}'.format(evt.text_offset))
+                # print('\tWordLength: {}'.format(evt.word_length))
+
+                duration = _format_duration_to_offset(str(evt.duration))
+                offset = _format_duration_to_offset(evt.audio_offset)
+                sub_maker.subs.append(evt.text)
+                sub_maker.offset.append((offset, offset + duration))
+
+            # Creates an instance of a speech config with specified subscription key and service region.
+            speech_key = config.azure.get("speech_key", "")
+            service_region = config.azure.get("speech_region", "")
+            if not speech_key or not service_region:
+                logger.error("Azure speech key or region is not set")
+                return None
+
+            audio_config = speechsdk.audio.AudioOutputConfig(
+                filename=voice_file, use_default_speaker=True
+            )
+            speech_config = speechsdk.SpeechConfig(
+                subscription=speech_key, region=service_region
+            )
+            speech_config.speech_synthesis_voice_name = voice_name
+            # speech_config.set_property(property_id=speechsdk.PropertyId.SpeechServiceResponse_RequestSentenceBoundary,
+            #                            value='true')
+            speech_config.set_property(
+                property_id=speechsdk.PropertyId.SpeechServiceResponse_RequestWordBoundary,
+                value="true",
+            )
+
+            speech_config.set_speech_synthesis_output_format(
+                speechsdk.SpeechSynthesisOutputFormat.Audio48Khz192KBitRateMonoMp3
+            )
+            speech_synthesizer = speechsdk.SpeechSynthesizer(
+                audio_config=audio_config, speech_config=speech_config

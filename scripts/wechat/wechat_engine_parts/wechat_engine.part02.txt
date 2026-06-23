@@ -1,0 +1,450 @@
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(pcm)
+        w.close()
+        return buf.getvalue()
+
+    def get_voice(self, session_username, svr_id=0, local_id=0, create_time=0):
+        """从 media_*.db 的 VoiceInfo 取 SILK 语音并解码成 base64 WAV。
+        关联：chat_name_id=Name2Id(session)，再用 svr_id（优先）或 create_time 命中具体消息。"""
+        for mdb in self.media_dbs():
+            con = self.dec.open_ro(mdb)
+            try:
+                if not con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='VoiceInfo'"
+                ).fetchone():
+                    continue
+                n2i = {u: r for r, u in con.execute("SELECT rowid, user_name FROM Name2Id")}
+                cid = n2i.get(session_username)
+                if cid is None:
+                    continue
+                row = None
+                if svr_id:
+                    row = con.execute(
+                        "SELECT voice_data FROM VoiceInfo WHERE chat_name_id=? AND svr_id=?",
+                        (cid, svr_id)).fetchone()
+                if not row and create_time:
+                    row = con.execute(
+                        "SELECT voice_data FROM VoiceInfo WHERE chat_name_id=? AND create_time=?",
+                        (cid, create_time)).fetchone()
+                if not row and local_id:
+                    row = con.execute(
+                        "SELECT voice_data FROM VoiceInfo WHERE chat_name_id=? AND local_id=?",
+                        (cid, local_id)).fetchone()
+                if row and row[0]:
+                    wav = self._silk_to_wav(bytes(row[0]))
+                    return {"ok": True, "mime": "audio/wav",
+                            "base64": base64.b64encode(wav).decode("ascii")}
+            finally:
+                con.close()
+        return {"ok": False, "error": "未找到语音数据"}
+
+    def get_voice_text(self, session_username, svr_id=0, local_id=0, create_time=0):
+        """语音转文字：先取 WAV，再调用 STT 引擎。"""
+        res = self.get_voice(session_username, svr_id, local_id, create_time)
+        if not res.get("ok"):
+            return res
+        
+        stt = get_stt_helper()
+        if not stt:
+            return {"ok": False, "error": "STT 引擎未就绪（sherpa-onnx 未安装）"}
+        
+        # 将 base64 转回临时文件供 STT 读取
+        import tempfile
+        wav_data = base64.b64decode(res["base64"])
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(wav_data)
+            tmp_path = tmp.name
+        
+        try:
+            text = stt.transcribe(tmp_path)
+            return {"ok": True, "text": text}
+        except Exception as e:
+            return {"ok": False, "error": f"转文字失败: {e}"}
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    # ---- 媒体（视频缩略图 = 明文 jpg；图片原图留待 phase 2）----
+    @staticmethod
+    def _md5_from_packed(packed: bytes):
+        m = re.search(rb"[0-9a-f]{32}", packed or b"")
+        return m.group(0).decode("ascii") if m else None
+
+    def get_media(self, session_username, local_id, local_type, svr_id=0, create_time=0):
+        loc = self.locate_message_table(session_username)
+        if not loc:
+            return {"ok": False, "error": "未定位到消息表"}
+        mdb, table = loc
+        con = self.dec.open_ro(mdb)
+        try:
+            row = con.execute(
+                f"SELECT packed_info_data FROM '{table}' WHERE local_id=?", (local_id,)
+            ).fetchone()
+        finally:
+            con.close()
+        md5 = self._md5_from_packed(bytes(row[0])) if (row and row[0]) else None
+        if not md5:
+            return {"ok": False, "error": "无媒体 md5"}
+        if local_type == 43:  # 视频缩略图：磁盘明文 jpg
+            hits = glob.glob(
+                os.path.join(self.account_dir, "msg", "video", "**", md5 + "_thumb.jpg"),
+                recursive=True)
+            if hits:
+                with open(hits[0], "rb") as f:
+                    data = f.read()
+                return {"ok": True, "mime": "image/jpeg",
+                        "base64": base64.b64encode(data).decode("ascii")}
+            return {"ok": False, "error": "未找到视频缩略图"}
+        if local_type == 3:  # 图片：默认返回缩略图（内联）
+            return self.get_image(session_username, local_id, want_full=False)
+        return {"ok": False, "error": "该媒体类型暂未支持"}
+
+    # ---- 图片：磁盘推导 image key（XOR+AES，无需内存扫描）----
+    def _kvcomm_dirs(self):
+        home = os.path.expanduser("~")
+        dirs = []
+        if sys.platform == "darwin":
+            dirs.append(os.path.join(home, "Library", "Containers", "com.tencent.xinWeChat",
+                                     "Data", "Documents", "app_data", "net", "kvcomm"))
+        # 由账号目录推导：.../xwechat_files -> .../app_data/net/kvcomm
+        norm = (self.account_dir or "").replace("\\", "/").rstrip("/")
+        idx = norm.find("/xwechat_files")
+        if idx >= 0:
+            dirs.append(norm[:idx] + "/app_data/net/kvcomm")
+        return [d for d in dirs if os.path.isdir(d)]
+
+    def _collect_codes(self):
+        codes = set()
+        for d in self._kvcomm_dirs():
+            try:
+                for fn in os.listdir(d):
+                    m = re.match(r"^key_(\d+)_", fn)
+                    if m:
+                        codes.add(int(m.group(1)))
+            except OSError:
+                pass
+        return codes
+
+    def image_keys(self):
+        """返回 (aes_key_bytes, xor_key_int) 或 None。结果缓存。
+        算法（移植自 WeFlow，全程磁盘）：kvcomm 文件名取 code；_t.dat 尾部反推 xorKey；
+        aesKey=md5(str(code)+wxid)[:16]，用模板密文 AES 验证图片 magic。"""
+        if hasattr(self, "_img_keys_cache"):
+            return self._img_keys_cache
+
+        result = None
+        try:
+            # 模板：收集 _t.dat（V2），从尾部 2 字节反推 xorKey，并取 [0xF:0x1F] 作 AES 模板
+            tdats = glob.glob(os.path.join(self.account_dir, "msg", "**", "*_t.dat"), recursive=True)
+            tdats.sort(key=lambda f: -(os.path.getmtime(f) if os.path.exists(f) else 0))
+            tail_counts = {}
+            template = None
+            for f in tdats[:48]:
+                try:
+                    d = open(f, "rb").read()
+                except OSError:
+                    continue
+                if d[:6] == V2_MAGIC and len(d) >= 0x1F:
+                    tail_counts[(d[-2], d[-1])] = tail_counts.get((d[-2], d[-1]), 0) + 1
+                    if template is None:
+                        template = d[0xF:0x1F]
+            xor_key = None
+            best = 0
+            for (x, y), c in tail_counts.items():
+                if c > best:
+                    k = x ^ 0xFF
+                    if k == (y ^ 0xD9):  # 明文尾 FF D9（JPEG EOI）
+                        best, xor_key = c, k
+
+            if template is not None and xor_key is not None:
+                codes = self._collect_codes()
+                wxids = [self.own_wxid, os.path.basename(self.account_dir or "")]
+                for wxid in wxids:
+                    for code in codes:
+                        ak = hashlib.md5((str(code) + wxid).encode()).hexdigest()[:16].encode()
+                        dec = AES.new(ak, AES.MODE_ECB).decrypt(template)
+                        if _img_magic_kind(dec):
+                            result = (ak, xor_key)
+                            break
+                    if result:
+                        break
+        except Exception as e:
+            log("image_keys error:", e)
+
+        self._img_keys_cache = result
+        return result
+
+    def _decrypt_dat(self, path):
+        keys = self.image_keys()
+        d = open(path, "rb").read()
+        if d[:6] != V2_MAGIC:
+            # 非 V2：可能已是明文图片
+            return d if _img_magic_kind(d) else None
+        if not keys:
+            return None
+        aes_key, xor_key = keys
+        import struct
+        aes_size = struct.unpack("<I", d[6:10])[0]
+        payload = d[0xF:]
+        # AES 段必须按 16 字节块对齐：header 的 aes_size 不一定是 16 的倍数，且高清原图常被
+        # 微信懒下载只下了一半（payload 截断）。两种情况都要把 aes_size 下取整到块边界，
+        # 否则 AES-ECB 会报 "Data must be aligned" 或解密错位导致花屏。
+        aes_size = min(aes_size, len(payload))
+        aes_size -= aes_size % 16
+        head = AES.new(aes_key, AES.MODE_ECB).decrypt(payload[:aes_size]) if aes_size else b""
+        tail = bytes(b ^ xor_key for b in payload[aes_size:])
+        return head + tail
+
+    @staticmethod
+    def _extract_nalus(buf):
+        """提取 annexb HEVC NALU（兼容 3/4 字节起始码，丢弃 forbidden_zero_bit 异常单元）。"""
+        starts = []
+        i, n = 4, len(buf)
+        while i < n - 3:
+            if buf[i] == 0 and buf[i + 1] == 0 and buf[i + 2] == 0 and buf[i + 3] == 1:
+                starts.append((i, 4)); i += 4; continue
+            if buf[i] == 0 and buf[i + 1] == 0 and buf[i + 2] == 1:
+                starts.append((i, 3)); i += 3; continue
+            i += 1
+        units = []
+        for idx, (s, pl) in enumerate(starts):
+            e = starts[idx + 1][0] if idx + 1 < len(starts) else n
+            pay = buf[s + pl:e]
+            if len(pay) >= 2 and (pay[0] & 0x80) == 0:
+                units.append(pay)
+        return units
+
+    # ffmpeg(error 级) 报这些就说明 HEVC 流截断/损坏——它仍会用错误隐藏吐一张「绿屏/花屏」
+    # 图并返回 0，必须丢弃，否则上层会把花屏当成功返回（而不是回退到干净缩略图）。
+    _HEVC_ERR_MARKERS = (
+        b"Could not find ref", b"error while decoding", b"Invalid NAL", b"non-existing",
+        b"concealing", b"Error parsing", b"decode_slice", b"out of range",
+        b"corrupt", b"Invalid data",
+    )
+
+    @staticmethod
+    def _frame_looks_corrupt(jpg_bytes):
+        """像素层面检测 ffmpeg 从截断 HEVC 解出的「绿屏」帧——只认 HEVC 错误隐藏的**填充绿**，
+        不把白底卡片/纯色背景等合法图误判为花屏（关键：避免误杀白底文字卡）。
+        ① 底部约 1/4 近乎纯色**且偏绿**；② 整图大片纯绿。命中任一→判损坏。"""
+        try:
+            import io
+            import numpy as np
+            from PIL import Image
+            im = Image.open(io.BytesIO(jpg_bytes)).convert("RGB")
+            a = np.asarray(im, dtype=np.int16)
+            h, w, _ = a.shape
+            if h < 16 or w < 16:
+                return False
+            r, g, b = a[..., 0], a[..., 1], a[..., 2]
+            # ① 底部 28% 近乎纯色 且 该纯色偏绿（截断解码的填充绿；纯白/纯黑等合法纯色不算）
+            bottom = a[int(h * 0.72):].reshape(-1, 3)
+            bstd = float(bottom.std(axis=0).mean())
+            bmean = bottom.mean(axis=0)
+            if bstd < 6.0 and float(bmean[1] - max(bmean[0], bmean[2])) > 25.0:
+                return True
+            # ② 整图大片纯绿
+            green = (g > 90) & (r < 120) & (b < 120) & ((g - np.maximum(r, b)) > 35)
+            if float(green.mean()) > 0.15:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _ffmpeg_hevc_to_jpg(self, ffmpeg, hevc_bytes):
+        """用 ffmpeg 把一段 HEVC 裸流取第一帧 jpg。仿 WeFlow：依次尝试 -f hevc / -f h265 /
+        自动探测，各配合 frame 0/1/5 偏移；只接受 stderr 无解码错误且像素层无花屏的一帧，
+        否则返回 None 交上层换下一候选/回退缩略图。"""
+        if not hevc_bytes or len(hevc_bytes) < 100:
+            return None
+        inp = tempfile.mktemp(suffix=".hevc")
+        out = tempfile.mktemp(suffix=".jpg")
+        try:
+            with open(inp, "wb") as f:
+                f.write(hevc_bytes)
+            for fmt in (["-f", "hevc"], ["-f", "h265"], []):
+                for sel in ([], ["-vf", "select=eq(n\\,1)"], ["-vf", "select=eq(n\\,5)"]):
+                    try:
+                        if os.path.exists(out):
+                            os.remove(out)
+                    except OSError:
+                        pass
+                    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+                    cmd += fmt + ["-i", inp] + sel
+                    cmd += ["-frames:v", "1", "-q:v", "2", "-f", "image2", out]
+                    try:
+                        r = subprocess.run(cmd, capture_output=True, timeout=30)
+                    except Exception:
+                        continue
+                    if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) <= 1000:
+                        continue
+                    # 流截断时 ffmpeg 照样输出一张花屏并返回 0：① stderr 报解码错误，或
+                    # ② 像素层面检测出绿屏/截断帧——任一命中都丢弃这张，换下个候选。
+                    stderr = r.stderr or b""
+                    if any(mk in stderr for mk in self._HEVC_ERR_MARKERS):
+                        continue
+                    with open(out, "rb") as f:
+                        data = f.read()
+                    if self._frame_looks_corrupt(data):
+                        continue
+                    return data
+            return None
+        finally:
+            for x in (inp, out):
+                try:
+                    os.remove(x)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _merge_nalus(units):
+        """把 NALU 列表重建成 annexb 裸流（每单元前加 00 00 00 01 起始码）。"""
+        parts = []
+        for u in units:
+            if u and len(u) >= 2:
+                parts.append(b"\x00\x00\x00\x01")
+                parts.append(bytes(u))
+        return b"".join(parts)
+
+    def _build_hevc_candidates(self, buf):
+        """构建 HEVC 候选裸流（仿 WeFlow）：
+        ① 按 VPS(32) 分组、只保留含 VCL(19/20/1) 的组，**按字节大小降序**——最大的整图帧优先；
+        ② 全量扫描提取的整条流；③ 兜底：直接跳过 wxgf 头的原始字节。
+        返回 [(name, bytes), ...]，已去重。"""
+        units = self._extract_nalus(buf)
+        candidates = []
+        seen = set()
+
+        def add(name, data):
+            if not data or len(data) < 100:
+                return
+            key = hash(bytes(data))
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append((name, bytes(data)))
+
+        vps_idx = [i for i, u in enumerate(units) if ((u[0] >> 1) & 0x3F) == 32]
+        groups = []
+        for gi in range(len(vps_idx)):
+            start = vps_idx[gi]
+            end = vps_idx[gi + 1] if gi + 1 < len(vps_idx) else len(units)
+            group = units[start:end]
+            if any(((u[0] >> 1) & 0x3F) in (19, 20, 1) for u in group):
+                groups.append(self._merge_nalus(group))
+        groups.sort(key=len, reverse=True)  # 最大 VCL 组优先（最可能是整图主帧）
+        for gi, gdata in enumerate(groups):
+            add("group_%d" % gi, gdata)
+
+        add("scan_all", self._merge_nalus(units))
+        add("raw_skip4", buf[4:])
+        return candidates
+
+    def _wxgf_to_jpg(self, buf):
+        """wxgf 容器（内含 HEVC）→ jpg。先找内嵌 jpeg/png，否则按 WeFlow 思路构建多候选裸流，
+        逐个交 ffmpeg（多格式+多帧偏移）解码，取第一个非花屏的结果。"""
+        # 内嵌传统图片
+        for i in range(4, min(len(buf) - 12, 4096)):
+            if buf[i] == 0xFF and buf[i + 1] == 0xD8 and buf[i + 2] == 0xFF:
+                return "image/jpeg", buf[i:]
+            if buf[i] == 0x89 and buf[i + 1] == 0x50 and buf[i + 2] == 0x4E and buf[i + 3] == 0x47:
+                return "image/png", buf[i:]
+        ffmpeg = os.environ.get("WECHAT_FFMPEG")
+        if not ffmpeg or not os.path.exists(ffmpeg):
+            return None
+
+        for _name, cand in self._build_hevc_candidates(buf):
+            jpg = self._ffmpeg_hevc_to_jpg(ffmpeg, cand)
+            if jpg:
+                return "image/jpeg", jpg
+        return None
+
+    @staticmethod
+    def _image_complete(mime, data):
+        """校验解码后的图片是否完整（关键：微信高清原图常懒下载，磁盘 .dat 可能只下了一半，
+        解出来是截断 JPEG → 顶部正常其余花屏）。"""
+        if mime == "image/jpeg":
+            return data[:3] == b"\xff\xd8\xff" and data.rstrip(b"\x00")[-2:] == b"\xff\xd9"
+        if mime == "image/png":
+            return data[:8] == b"\x89PNG\r\n\x1a\n" and b"IEND" in data[-16:]
+        return len(data) > 64  # gif/webp 等：长度兜底
+
+    def _dat_to_image(self, path):
+        """解密单个 .dat 并转成 (mime, bytes)；不完整/无法解码返回 None（交由上层回退候选）。"""
+        try:
+            dec = self._decrypt_dat(path)
+        except Exception as e:
+            log("decrypt dat error:", path, e)
+            return None
+        if not dec:
+            return None
+        kind = _img_magic_kind(dec)
+        if kind == "wxgf":
+            return self._wxgf_to_jpg(dec)  # ffmpeg 失败(含截断 HEVC)会返回 None
+        if kind:
+            return (kind, dec) if self._image_complete(kind, dec) else None
+        return None
+
+    def _find_dats(self, md5, want_full):
+        """返回候选 .dat 路径（按优先级）。大图优先高清/原图，再回退缩略图；缩略图模式只用 _t.dat。"""
+        base = os.path.join(self.account_dir, "msg")
+
+        def find(suffix):
+            hits = glob.glob(os.path.join(base, "**", md5 + suffix), recursive=True)
+            if suffix == ".dat":
+                hits = [h for h in hits if not h.endswith("_t.dat") and not h.endswith("_h.dat")]
+            return hits
+
+        thumb = find("_t.dat")
+        if not want_full:
+            return thumb
+        ordered = []
+        # _h.dat（高清缩略，~1500px，通常完整可解）优先于常被懒下载截断成花屏的原图 .dat：
+        # 既更快（省掉对截断 .dat 的多次 ffmpeg 尝试），又能直接给出清晰高清。
+        for suffix in ("_h.dat", ".dat"):
+            ordered += find(suffix)
+        ordered += thumb  # 都没有时回退小缩略图（完整、低清但不花屏）
+        return ordered
+
+    def get_image(self, session_username, local_id, want_full=False):
+        if not self.image_keys():
+            return {"ok": False, "error": "未能推导图片密钥（kvcomm code 缺失或微信未产生过图片）"}
+        loc = self.locate_message_table(session_username)
+        if not loc:
+            return {"ok": False, "error": "未定位到消息表"}
+        mdb, table = loc
+        con = self.dec.open_ro(mdb)
+        try:
+            row = con.execute(
+                f"SELECT packed_info_data FROM '{table}' WHERE local_id=?", (local_id,)
+            ).fetchone()
+        finally:
+            con.close()
+        md5 = self._md5_from_packed(bytes(row[0])) if (row and row[0]) else None
+        if not md5:
+            return {"ok": False, "error": "无图片 md5"}
+        # 依次尝试候选，返回第一个**完整**解码的图片
+        for path in self._find_dats(md5, want_full):
+            img = self._dat_to_image(path)
+            if img:
+                mime, data = img
+                return {"ok": True, "mime": mime,
+                        "base64": base64.b64encode(data).decode("ascii"),
+                        "fallbackThumb": want_full and path.endswith("_t.dat")}
+        return {"ok": False, "error": "图片未下全或解码失败（原图可能尚未下载，请在微信里打开一次）"}
+
+    def get_video_path(self, session_username, local_id):
+        loc = self.locate_message_table(session_username)
+        if not loc:
+            return {"ok": False, "error": "未定位到消息表"}
+        mdb, table = loc
+        con = self.dec.open_ro(mdb)
+        try:
+            row = con.execute(
+                f"SELECT packed_info_data FROM '{table}' WHERE local_id=?", (local_id,)
+            ).fetchone()
+        finally:
+            con.close()
+        md5 = self._md5_from_packed(bytes(row[0])) if (row and row[0]) else None

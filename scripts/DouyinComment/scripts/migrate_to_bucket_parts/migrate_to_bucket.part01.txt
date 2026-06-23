@@ -1,0 +1,450 @@
+#!/usr/bin/env python3
+"""
+抖音资源 → HF Bucket 迁移方案（v3）
+
+核心改进：
+1. 每个 task = 一个资源（不是每个 URL）
+2. 每个 task 带 fallback_urls 列表，下载时 CDN failover
+3. 嵌套结构（videos.images）拆分为独立 task
+4. 按首个 URL 分组去重，下载一次批量更新所有关联行
+5. 并发 6 协程
+6. 路径格式：{sec_uid}/{subdir}/{md5}.{ext}
+"""
+
+import asyncio
+import ast
+import hashlib
+import json
+import logging
+import os
+import sqlite3
+import sys
+import tempfile
+import time
+import uuid
+from datetime import datetime
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
+from huggingface_hub import batch_bucket_files
+from tqdm import tqdm
+
+HEIF_SUPPORT = False
+HEIF_IMPORT_ERROR = ""
+
+try:
+    from PIL import Image as _PILImage
+    try:
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+        HEIF_SUPPORT = True
+    except ImportError as e:
+        HEIF_IMPORT_ERROR = f"pillow-heif 未安装: {e}"
+except ImportError as e:
+    HEIF_IMPORT_ERROR = f"Pillow 未安装: {e}"
+
+sys.path.insert(0, os.path.dirname(__file__))
+from douyin_api import (
+    sign_request, DouyinClient,
+    CookieExpiredError, APIRateLimitError, APIServerError, APIError,
+)
+
+# ============================================================
+# 配置
+# ============================================================
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")  # 数据目录（与 scripts 同级的 data/）
+BUCKET_ID = "sunset139/douyin"
+COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookie.txt")
+CONCURRENCY = 6
+
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "migrate")
+
+# 过滤配置（可通过 CLI 覆盖）
+TABLES = None                  # None = 全部表，或 ["videos", "comments", "replies"]
+FIELDS = None                  # None = 全部字段，或 ["video", "images", "comment_avatar", ...]
+MAX_TASKS = None               # None = 不限制，或整数如 100
+DRY_RUN = False                # True = 只扫描不上传
+DIRECT_MODE = False            # True = 跳过 API，直接用数据库中的原始 URL 下载
+BATCH_SIZE = 20                # 每批处理的 aweme_id 数量
+
+# ============================================================
+# 日志
+# ============================================================
+
+# 全局计时 & 失败收集
+_START_TIME: float = 0.0
+_FAILURES: List[Dict] = []          # 收集所有失败项，结束时打印汇总
+_MAX_FAILURE_LOG: int = 200         # 日志中最多打印多少条失败详情
+
+
+def _elapsed() -> str:
+    """返回已运行时长字符串，如 '3m12s'"""
+    if _START_TIME <= 0:
+        return "0s"
+    secs = int(time.time() - _START_TIME)
+    if secs < 60:
+        return f"{secs}s"
+    m, s = divmod(secs, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m{s:02d}s"
+
+
+class _ElapsedFilter(logging.Filter):
+    """在每条日志前注入运行时长和时间戳"""
+    def filter(self, record):
+        record.elapsed = _elapsed()
+        record.wall = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return True
+
+
+def setup_log(log_dir: str) -> str:
+    """创建日志文件，返回路径"""
+    os.makedirs(log_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join(log_dir, f"migrate_{ts}.log")
+
+    fmt = logging.Formatter(
+        "%(wall)s | %(elapsed)s | %(message)s",
+    )
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(fmt)
+    file_handler.addFilter(_ElapsedFilter())
+
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(fmt)
+    stream_handler.addFilter(_ElapsedFilter())
+
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[file_handler, stream_handler],
+    )
+
+    # 静默 httpx/httpcore 噪音（只保留 WARNING+）
+    for noisy in ("httpx", "httpcore", "httpx._client", "httpcore._async"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    return log_path
+
+
+def log(msg: str = ""):
+    """同时输出到控制台和日志文件（实时刷新）"""
+    logging.info(msg)
+    for handler in logging.root.handlers:
+        if isinstance(handler, logging.FileHandler):
+            handler.flush()
+
+
+def record_failure(kind: str, detail: str, source_table: str = "",
+                   aweme_id: str = "", field: str = "", reason: str = ""):
+    """记录一条失败到全局列表，同时打印到日志"""
+    # kind 中文映射
+    kind_cn = {
+        "cache_miss": "签名缺失",
+        "download": "下载失败",
+        "upload": "上传失败",
+        "db_commit": "数据库提交失败",
+    }
+    kind_display = kind_cn.get(kind, kind)
+    entry = {
+        "kind": kind, "kind_display": kind_display, "detail": detail,
+        "source_table": source_table, "aweme_id": aweme_id,
+        "field": field, "reason": reason,
+    }
+    _FAILURES.append(entry)
+    # 日志中只打印前 N 条详情，避免刷屏
+    if len(_FAILURES) <= _MAX_FAILURE_LOG:
+        log(f"  [FAIL] {kind_display} | {detail}"
+            + (f" | 表={source_table}" if source_table else "")
+            + (f" | aweme={aweme_id}" if aweme_id else "")
+            + (f" | 字段={field}" if field else "")
+            + (f" | 原因={reason}" if reason else ""))
+
+
+def print_failure_summary():
+    """结束时打印失败汇总表"""
+    if not _FAILURES:
+        return
+    log(f"\n{'─' * 70}")
+    log(f"  失败汇总 (共 {len(_FAILURES)} 项)")
+    log(f"{'─' * 70}")
+
+    # 按原因分类统计
+    by_kind: Dict[str, int] = {}
+    for f in _FAILURES:
+        k = f["kind_display"]
+        by_kind[k] = by_kind.get(k, 0) + 1
+    for k, v in sorted(by_kind.items(), key=lambda x: -x[1]):
+        log(f"    {k}: {v}")
+
+    # 打印详情（最多 _MAX_FAILURE_LOG 条）
+    if len(_FAILURES) <= _MAX_FAILURE_LOG:
+        for f in _FAILURES:
+            log(f"    • {f['kind_display']} | {f['detail']}"
+                + (f" | {f['reason']}" if f['reason'] else ""))
+    else:
+        log(f"  （详情仅显示前 {_MAX_FAILURE_LOG} 条，完整列表见上方日志）")
+
+    log(f"{'─' * 70}")
+
+SUBDIR_MAP = {
+    "origin_cover": "thumbs",
+    "images": "images",
+    "video": "videos",
+    "comment_avatar": "avatars",
+    "comment_sticker": "stickers",
+    "comment_image": "images",
+    "reply_avatar": "avatars",
+    "reply_sticker": "stickers",
+    "reply_image": "images",
+}
+
+
+# ============================================================
+# 数据库操作
+# ============================================================
+
+class MediaDB:
+    def __init__(self, db_path: str):
+        self.conn = sqlite3.connect(db_path)
+        self.conn.row_factory = sqlite3.Row
+        self._pending_images: Dict[Tuple, List] = {}
+
+    def get_all_tasks(self) -> List[Dict]:
+        """
+        从三张表提取所有 task。
+        每个 task = 一个资源，带 fallback_urls 列表。
+        """
+        tasks = []
+
+        # aweme_id → sec_uid 映射
+        cur = self.conn.execute("SELECT aweme_id, sec_uid, create_time FROM videos")
+        video_meta = {}
+        for row in cur.fetchall():
+            video_meta[str(row[0])] = {"sec_uid": row[1] or "unknown", "create_time": row[2]}
+
+        # ---- videos 表 ----
+        cur = self.conn.execute(
+            "SELECT id, aweme_id, thumb, images, video, sec_uid, create_time FROM videos"
+        )
+        for row in cur.fetchall():
+            db_id, aweme_id, thumb, images, video, sec_uid, create_time = row
+            meta = {"sec_uid": sec_uid or "unknown", "create_time": create_time}
+            aid = str(aweme_id)
+
+            # thumb: 1 task, 多个 CDN URL
+            if thumb:
+                urls = self._parse_flat_urls(thumb)
+                if urls:
+                    tasks.append({
+                        "source_table": "videos", "source_id": db_id,
+                        "field": "thumb", "array_index": -1,
+                        "fallback_urls": urls, "aweme_id": aid,
+                        "api_type": "origin_cover", **meta,
+                    })
+
+            # images: N 张图 = N 个 task，每个 task 多个 CDN URL
+            if images:
+                image_groups = self._parse_nested_urls(images)
+                for i, group_urls in enumerate(image_groups):
+                    if group_urls:
+                        tasks.append({
+                            "source_table": "videos", "source_id": db_id,
+                            "field": "images", "array_index": i,
+                            "fallback_urls": group_urls, "aweme_id": aid,
+                            "api_type": "images", **meta,
+                        })
+
+            # video: 1 task, 多个 CDN URL
+            if video:
+                urls = self._parse_flat_urls(video)
+                if urls:
+                    tasks.append({
+                        "source_table": "videos", "source_id": db_id,
+                        "field": "video", "array_index": -1,
+                        "fallback_urls": urls, "aweme_id": aid,
+                        "api_type": "video", **meta,
+                    })
+
+        # ---- comments 表 ----
+        cur = self.conn.execute(
+            "SELECT id, aweme_id, cid, user_avatar, sticker, image_list, create_time FROM comments"
+        )
+        for row in cur.fetchall():
+            db_id, aweme_id, cid, avatar, sticker, image_list, create_time = row
+            aid = str(aweme_id)
+            meta = {
+                "sec_uid": video_meta.get(aid, {}).get("sec_uid", "unknown"),
+                "create_time": create_time,
+            }
+            cid_str = str(cid)
+
+            # avatar: 单 URL（跳过已处理的 MD5 文件名）
+            if avatar and avatar.startswith("http"):
+                tasks.append({
+                    "source_table": "comments", "source_id": db_id,
+                    "field": "user_avatar", "array_index": -1,
+                    "fallback_urls": [avatar], "aweme_id": aid,
+                    "api_type": "comment_avatar", "cid": cid_str, **meta,
+                })
+
+            # sticker: 单 URL（跳过已处理的 MD5 文件名）
+            if sticker and sticker.startswith("http"):
+                tasks.append({
+                    "source_table": "comments", "source_id": db_id,
+                    "field": "sticker", "array_index": -1,
+                    "fallback_urls": [sticker], "aweme_id": aid,
+                    "api_type": "comment_sticker", "cid": cid_str, **meta,
+                })
+
+            # image_list: 1 task, 多个 CDN URL
+            if image_list:
+                urls = self._parse_flat_urls(image_list)
+                if urls:
+                    tasks.append({
+                        "source_table": "comments", "source_id": db_id,
+                        "field": "image_list", "array_index": -1,
+                        "fallback_urls": urls, "aweme_id": aid,
+                        "api_type": "comment_image", "cid": cid_str, **meta,
+                    })
+
+        # ---- replies 表 ----
+        cur = self.conn.execute(
+            "SELECT id, aweme_id, cid, reply_id, user_avatar, sticker, image_list, create_time FROM replies"
+        )
+        for row in cur.fetchall():
+            db_id, aweme_id, cid, reply_id, avatar, sticker, image_list, create_time = row
+            aid = str(aweme_id)
+            meta = {
+                "sec_uid": video_meta.get(aid, {}).get("sec_uid", "unknown"),
+                "create_time": create_time,
+            }
+            cid_str = str(cid)
+            rid_str = str(reply_id)
+
+            if avatar and avatar.startswith("http"):
+                tasks.append({
+                    "source_table": "replies", "source_id": db_id,
+                    "field": "user_avatar", "array_index": -1,
+                    "fallback_urls": [avatar], "aweme_id": aid,
+                    "api_type": "reply_avatar", "cid": cid_str, "reply_id": rid_str, **meta,
+                })
+
+            if sticker and sticker.startswith("http"):
+                tasks.append({
+                    "source_table": "replies", "source_id": db_id,
+                    "field": "sticker", "array_index": -1,
+                    "fallback_urls": [sticker], "aweme_id": aid,
+                    "api_type": "reply_sticker", "cid": cid_str, "reply_id": rid_str, **meta,
+                })
+
+            if image_list:
+                urls = self._parse_flat_urls(image_list)
+                if urls:
+                    tasks.append({
+                        "source_table": "replies", "source_id": db_id,
+                        "field": "image_list", "array_index": -1,
+                        "fallback_urls": urls, "aweme_id": aid,
+                        "api_type": "reply_image", "cid": cid_str, "reply_id": rid_str, **meta,
+                    })
+
+        return tasks
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+    def get_all_cids(self) -> set:
+        """获取所有 comments 的 aweme_id:cid 集合"""
+        result = set()
+        for row in self.conn.execute("SELECT aweme_id, cid FROM comments"):
+            result.add(f"{row[0]}:{row[1]}")
+        return result
+
+    def get_all_reply_ids(self) -> set:
+        """获取所有 replies 的 aweme_id:cid:reply_id 集合"""
+        result = set()
+        for row in self.conn.execute("SELECT aweme_id, cid, reply_id FROM replies"):
+            result.add(f"{row[0]}:{row[1]}:{row[2]}")
+        return result
+
+    # 数组字段：整体替换为 downloader.py 格式
+    ARRAY_FIELDS = {
+        ("videos", "thumb"), ("videos", "images"), ("videos", "video"),
+        ("comments", "image_list"), ("replies", "image_list"),
+    }
+
+    def update_url(self, source_table: str, source_id: int, field: str,
+                   array_index: int, new_url: str):
+        """替换 URL，数组字段用 downloader.py 格式（str([...])）"""
+        if (source_table, field) in self.ARRAY_FIELDS:
+            if array_index >= 0:
+                # 嵌套 images：先不写，收集到 _pending_images 最后统一写
+                key = (source_table, source_id, field)
+                self._pending_images.setdefault(key, []).append((array_index, new_url))
+            else:
+                # 平数组：整体替换为 str([url])，同 downloader.py
+                self.conn.execute(
+                    f"UPDATE [{source_table}] SET {field} = ? WHERE id = ?",
+                    (str([new_url]), source_id)
+                )
+        else:
+            # 单值字段：直接替换
+            self.conn.execute(
+                f"UPDATE [{source_table}] SET {field} = ? WHERE id = ?",
+                (new_url, source_id)
+            )
+
+    def flush_pending_images(self):
+        """把收集的嵌套 images 按行写入，格式同 downloader.py"""
+        if not self._pending_images:
+            return
+        for (table, row_id, field), items in self._pending_images.items():
+            items.sort(key=lambda x: x[0])
+            result_list = [url for _, url in items]
+            self.conn.execute(
+                f"UPDATE [{table}] SET {field} = ? WHERE id = ?",
+                (str(result_list), row_id)
+            )
+        self._pending_images.clear()
+
+    @staticmethod
+    def _parse_flat_urls(value: str) -> List[str]:
+        """解析为扁平 URL 列表（JSON数组 / Python list / 单URL）"""
+        if not value:
+            return []
+        if value.startswith("http"):
+            return [value]
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return [u for u in parsed if isinstance(u, str) and u.startswith("http")]
+        except (json.JSONDecodeError, ValueError):
+            pass
+        try:
+            parsed = ast.literal_eval(value)
+            if isinstance(parsed, list):
+                return [u for u in parsed if isinstance(u, str) and u.startswith("http")]
+        except (ValueError, SyntaxError):
+            pass
+        return []
+
+    @staticmethod
+    def _parse_nested_urls(value: str) -> List[List[str]]:
+        """
+        解析嵌套列表：[['url1','url2'],['url3','url4']]
+        每个子列表 = 一个资源的多个 CDN URL
+        """
+        if not value:
+            return []
+        try:
+            parsed = ast.literal_eval(value)
+        except (ValueError, SyntaxError):

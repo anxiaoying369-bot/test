@@ -1,0 +1,94 @@
+    meta_path = voice_dir / "voice.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(f"未找到音色: {name}")
+    return json.loads(meta_path.read_text(encoding="utf-8"))
+
+
+def cmd_clone_list(_: argparse.Namespace) -> None:
+    root = _data_dir() / "voice_lab" / "voices"
+    voices = []
+    if root.exists():
+        for meta_path in sorted(root.glob("*/voice.json")):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                voices.append(meta)
+            except Exception as e:
+                _json_err(f"跳过损坏音色配置: {meta_path}: {e}")
+    _json_out({"ok": True, "voices": voices})
+
+
+def cmd_clone_synthesize(args: argparse.Namespace) -> None:
+    _json_err("检查 F5-TTS 环境", progress=5, stage="check")
+    cli = _find_f5_cli()
+    if not cli:
+        raise RuntimeError("未检测到 F5-TTS。请执行 pip install f5-tts，或设置 AUTOCAST_F5_TTS_BIN。")
+    _json_err("读取本地音色", progress=12, stage="voice")
+    meta = _load_voice(args.voice)
+    ref_audio = Path(meta["reference_audio"])
+    if not ref_audio.exists():
+        raise FileNotFoundError(f"参考音频缺失: {ref_audio}")
+    ref_text = (args.reference_text or meta.get("reference_text") or "").strip()
+    if not ref_text:
+        raise RuntimeError("参考音频文字不能为空；注册音色时请填写参考音频对应文本")
+    text = args.text.strip()
+    if not text:
+        raise RuntimeError("合成文本不能为空")
+
+    _json_err("准备输出文件", progress=18, stage="prepare")
+    if args.output:
+        out = Path(args.output).expanduser().resolve()
+    else:
+        filename = f"{_safe_name(args.voice)}_{int(time.time())}.wav"
+        output_dir = _data_dir() / "voice_lab" / "outputs"
+        if not _writable_dir(output_dir):
+            output_dir = Path(tempfile.gettempdir()) / "autocast_voice_lab_outputs"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            _json_err("默认输出目录不可写，已切换到临时目录", output_dir=str(output_dir), progress=20, stage="prepare")
+        out = output_dir / filename
+    _run_f5(cli, ref_audio, ref_text, text, out)
+    _json_out({
+        "ok": True,
+        "audio_path": str(out),
+        "voice": meta,
+        "engine": "f5-tts",
+    })
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="AutoCast AI local audio lab helper")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("asr-check").set_defaults(func=cmd_asr_check)
+    sub.add_parser("asr-download").set_defaults(func=cmd_asr_download)
+    p = sub.add_parser("asr-transcribe")
+    p.add_argument("--audio", required=True)
+    p.set_defaults(func=cmd_asr_transcribe)
+
+    sub.add_parser("clone-check").set_defaults(func=cmd_clone_check)
+    sub.add_parser("clone-install").set_defaults(func=cmd_clone_install)
+    p = sub.add_parser("clone-register")
+    p.add_argument("--name", required=True)
+    p.add_argument("--audio", required=True)
+    p.add_argument("--text", required=True)
+    p.set_defaults(func=cmd_clone_register)
+
+    sub.add_parser("clone-list").set_defaults(func=cmd_clone_list)
+    p = sub.add_parser("clone-synthesize")
+    p.add_argument("--voice", required=True)
+    p.add_argument("--text", required=True)
+    p.add_argument("--reference-text", default="")
+    p.add_argument("--output", default="")
+    p.set_defaults(func=cmd_clone_synthesize)
+
+    args = parser.parse_args()
+    try:
+        args.func(args)
+        return 0
+    except Exception as e:
+        _json_err(str(e), error=True)
+        _json_out({"ok": False, "error": str(e)})
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
