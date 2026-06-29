@@ -48,6 +48,7 @@
     ],
     "resources": [
       "../scripts/*.py",
+      "../scripts/**/*_parts/*",
       "../scripts/*.json",
       "../scripts/static/*",
       "../scripts/video_providers/*.py",
@@ -71,8 +72,8 @@
       "../scripts/DouyinBarrage/scripts/**/*.py",
       "../scripts/wechat/*.py",
       "resources/wechat/**/*",
-      "ffmpeg-runtime/**/*",
-      "python-runtime/*/python/**/*"
+      "ffmpeg-runtime/macos/**/*",
+      "python-runtime/macos/python/**/*"
     ],
     "windows": {
       "wix": {

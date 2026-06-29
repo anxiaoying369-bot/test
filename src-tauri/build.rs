@@ -48,20 +48,26 @@ fn main() {
                 let mut any_changed = false;
                 for r in resources.iter() {
                     let s = r.as_str().unwrap_or("");
-                    let new_s = if runtime_platform != "macos"
-                        && s.contains("python-runtime/macos/python")
-                    {
-                        any_changed = true;
-                        s.replace(
-                            "python-runtime/macos/python",
-                            &format!("python-runtime/{}/python", runtime_platform),
-                        )
-                    } else if runtime_platform != "macos" && s.contains("ffmpeg-runtime/macos") {
-                        any_changed = true;
-                        s.replace(
-                            "ffmpeg-runtime/macos",
-                            &format!("ffmpeg-runtime/{}", runtime_platform),
-                        )
+                    // Rewrite rules:
+                    //   python-runtime/*/python/**/*   →  python-runtime/<platform>/python/**/*
+                    //   ffmpeg-runtime/**/*            →  ffmpeg-runtime/<platform>/**/*
+                    //   scripts/mpt_engine/resource/**/*   →  keep (same on all platforms)
+                    let new_s = if s.contains("python-runtime/") && s.contains("/python/**/*") {
+                        let platform_dir = format!("python-runtime/{}/python/**/*", runtime_platform);
+                        if s != &platform_dir {
+                            any_changed = true;
+                            platform_dir
+                        } else {
+                            s.to_string()
+                        }
+                    } else if s.contains("ffmpeg-runtime/") && s.ends_with("/**/*") {
+                        let platform_dir = format!("ffmpeg-runtime/{}/**/*", runtime_platform);
+                        if s != &platform_dir {
+                            any_changed = true;
+                            platform_dir
+                        } else {
+                            s.to_string()
+                        }
                     } else {
                         s.to_string()
                     };

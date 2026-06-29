@@ -37,9 +37,21 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 
 Expand-Archive -Path $zipfile -DestinationPath $tmpDir -Force
 
-$binFiles = Get-ChildItem -Path $tmpDir -Filter "*.exe" -Recurse | Where-Object { $_.DirectoryName -like "*bin*" }
+$binFiles = Get-ChildItem -Path $tmpDir -Filter "ffmpeg.exe" -Recurse | Where-Object { $_.DirectoryName -like "*bin*" }
 foreach ($file in $binFiles) {
-    Copy-Item -Path $file.FullName -Destination $PLATFORM_DIR -Force
+    Copy-Item -Path $file.FullName -Destination (Join-Path $PLATFORM_DIR "ffmpeg.exe") -Force
+}
+$probeFiles = Get-ChildItem -Path $tmpDir -Filter "ffprobe.exe" -Recurse | Where-Object { $_.DirectoryName -like "*bin*" }
+foreach ($file in $probeFiles) {
+    Copy-Item -Path $file.FullName -Destination (Join-Path $PLATFORM_DIR "ffprobe.exe") -Force
+}
+
+Write-Host "  Copied ffmpeg.exe and ffprobe.exe (skipped ffplay.exe to save ~70MB)"
+
+# 删除缓存 zip 包，避免被 ffmpeg-runtime/**/* 误打进 NSIS（~53MB）
+if (Test-Path $zipfile) {
+    Remove-Item -Force $zipfile
+    Write-Host "  Deleted cached zip: $zipfile"
 }
 
 Remove-Item -Recurse -Force $tmpDir

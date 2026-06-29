@@ -51,6 +51,48 @@ jobs:
       - name: 准备内置运行时
         run: npm run prepare:all
 
+      # 诊断：打印各运行时实际大小（用于后续排查 NSIS 体积问题）
+      - name: 诊断运行时大小
+        run: |
+          Write-Host "=== 运行时目录大小 ==="
+          if (Test-Path src-tauri\python-runtime\windows) {
+            $sz = (Get-ChildItem -Path src-tauri\python-runtime\windows -Recurse -File | Measure-Object -Length -Sum).Sum
+            Write-Host "  python-runtime/windows: $([math]::Round($sz/1MB,1)) MB"
+          }
+          if (Test-Path src-tauri\ffmpeg-runtime\windows) {
+            $sz = (Get-ChildItem -Path src-tauri\ffmpeg-runtime\windows -Recurse -File | Measure-Object -Length -Sum).Sum
+            Write-Host "  ffmpeg-runtime/windows: $([math]::Round($sz/1MB,1)) MB"
+          }
+          if (Test-Path src-tauri\node-runtime) {
+            $sz = (Get-ChildItem -Path src-tauri\node-runtime -Recurse -File | Measure-Object -Length -Sum).Sum
+            Write-Host "  node-runtime: $([math]::Round($sz/1MB,1)) MB"
+          }
+          $total = 0
+          foreach ($dir in @("python-runtime", "ffmpeg-runtime", "node-runtime")) {
+            $p = "src-tauri\$dir"
+            if (Test-Path $p) {
+              $total += (Get-ChildItem -Path $p -Recurse -File | Measure-Object -Length -Sum).Sum
+            }
+          }
+          Write-Host "  以上合计: $([math]::Round($total/1MB,1)) MB"
+          Write-Host ""
+          Write-Host "=== 预计总资源大小（含 scripts, resources） ==="
+          $scriptsSz = (Get-ChildItem -Path scripts -Recurse -File | Measure-Object -Length -Sum).Sum
+          $resourcesSz = (Get-ChildItem -Path src-tauri\resources -Recurse -File | Measure-Object -Length -Sum).Sum
+          $grandTotal = $total + $scriptsSz + $resourcesSz
+          Write-Host "  scripts: $([math]::Round($scriptsSz/1MB,1)) MB"
+          Write-Host "  resources: $([math]::Round($resourcesSz/1MB,1)) MB"
+          Write-Host "  TOTAL: $([math]::Round($grandTotal/1MB,1)) MB"
+          Write-Host ""
+          if ($grandTotal -gt 1800MB) {
+            Write-Host "⚠️ WARNING: 总资源超过 1.8GB，即将触及 NSIS 2GB mmap 上限！"
+          } elseif ($grandTotal -gt 1500MB) {
+            Write-Host "⚠️ WARNING: 总资源超过 1.5GB，需要关注 NSIS 上限！"
+          } else {
+            Write-Host "✅ 总资源在安全范围内"
+          }
+        shell: pwsh
+
       # 触发 tauri build：执行 npm run build（vue-tsc 类型检查 + vite 构建），随后 cargo 编译并生成 NSIS(.exe) 安装包
       - name: 打包 Tauri (Windows)
         run: npm run tauri build
